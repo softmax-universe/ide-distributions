@@ -133,9 +133,9 @@ def test_the_shipped_defaults_per_role(seam):
     assert by_profile["researcher"] == {
         "profile": "researcher",
         "role": "researcher",
-        "model": "recursive/flint-v1.0:free",
+        "model": "moonshotai/kimi-k3.1-pro",
         "provider": "openrouter",
-        "fallbacks": [{"provider": "openrouter", "model": "moonshotai/kimi-k3.1-pro"}],
+        "fallbacks": [{"provider": "openrouter", "model": "z-ai/glm-5.3"}],
     }
 
 
@@ -149,13 +149,17 @@ def test_no_manifest_asks_the_host_for_a_model():
 
 
 def test_set_model_writes_through_hermes_and_records_an_event(seam):
-    reply = seam.client.set_model("researcher", "moonshotai/kimi-k3", fallbacks=["z-ai/glm-5.3"])
+    reply = seam.client.set_model(
+        "researcher", "moonshotai/kimi-k3", fallbacks=["recursive/flint-v1.0:free"]
+    )
 
     assert reply["verified"] is True
     assert reply["changed"] == ["fallback_providers", "model.default"]
-    assert reply["previous"]["model"] == "recursive/flint-v1.0:free"
+    assert reply["previous"]["model"] == "moonshotai/kimi-k3.1-pro"
     assert reply["profile"]["model"] == "moonshotai/kimi-k3"
-    assert reply["profile"]["fallbacks"] == [{"provider": "openrouter", "model": "z-ai/glm-5.3"}]
+    assert reply["profile"]["fallbacks"] == [
+        {"provider": "openrouter", "model": "recursive/flint-v1.0:free"}
+    ]
     written = yaml.safe_load((seam.profiles[1].home / "config.yaml").read_text())
     assert written["model"] == {"default": "moonshotai/kimi-k3", "provider": "openrouter"}
     assert all(call[:3] == ["hermes", "config", "set"] for call in seam.runner.calls)
@@ -168,7 +172,7 @@ def test_set_model_writes_through_hermes_and_records_an_event(seam):
     assert event["seq"] == reply["seq"] and event["subject"] == "researcher"
     assert event["actor"] == "user:local"
     assert event["payload"]["model"] == "moonshotai/kimi-k3"
-    assert event["payload"]["previous"]["model"] == "recursive/flint-v1.0:free"
+    assert event["payload"]["previous"]["model"] == "moonshotai/kimi-k3.1-pro"
     # The orchestrator is untouched.
     assert seam.client.models()["profiles"][0]["model"] == "moonshotai/kimi-k3.1-pro"
 
@@ -228,7 +232,9 @@ def test_a_failed_hermes_write_says_what_was_written(tmp_path):
     seam = Seam(tmp_path, catalog=Catalog(lambda: CATALOG), runner=runner)
     try:
         with pytest.raises(SeamError) as raised:
-            seam.client.set_model("researcher", "moonshotai/kimi-k3", fallbacks=["z-ai/glm-5.3"])
+            seam.client.set_model(
+                "researcher", "moonshotai/kimi-k3", fallbacks=["recursive/flint-v1.0:free"]
+            )
         assert raised.value.status == 400
         assert "after writing fallback_providers" in raised.value.body["error"]
         assert "cannot set model.default" in raised.value.body["problems"][0]
