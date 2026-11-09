@@ -74,6 +74,12 @@ PROTECTED_KEYS: dict[str, Any] = {
     # Hermes's post-turn self-improvement review patches skills in skills.external_dirs: the
     # shipped skills are release content, not a notebook.
     "auxiliary.background_review.enabled": False,
+    # Hermes titles a Session with the main model by default. On `recursive/flint-v1.0:free` that
+    # spends the OpenRouter organization's 1,000 free-model requests per UTC day, and once they are
+    # spent Hermes reads the 429's "purchase credits" hint as a payment error and stops titling
+    # through OpenRouter for 600 s (174 times, 2026-11-06 to 11-09). A small paid model avoids both.
+    "auxiliary.title_generation.provider": "openrouter",
+    "auxiliary.title_generation.model": "google/gemini-3.1-flash-lite",
     "cron.catch_up_missed": True,
     "plugins.enabled": ["<role>"],
     "platform_toolsets.api_server": ["hermes-api-server", "ide-<role>"],
