@@ -613,6 +613,27 @@ def test_prepare_moves_an_orchestrator_off_the_superseded_default_once(homes):
     assert len(_model_events(env)) == 1
 
 
+def test_prepare_moves_a_researcher_fallback_off_kimi_k3_once(homes):
+    fake = FakeHermes(
+        {
+            "model.default": "recursive/flint-v1.0:free",
+            "model.provider": "openrouter",
+            "fallback_providers": [{"provider": "openrouter", "model": "moonshotai/kimi-k3"}],
+        }
+    )
+    profile, env = _prepared(homes, fake, role="researcher")
+    k31 = [{"provider": "openrouter", "model": "moonshotai/kimi-k3.1-pro"}]
+    assert fake.config["fallback_providers"] == k31
+    assert fake.config["model.default"] == "recursive/flint-v1.0:free"
+    [(actor, subject, payload)] = _model_events(env)
+    assert (actor, subject) == ("harness", profile.name)
+    assert payload["fallbacks"] == k31
+    assert payload["previous"]["fallbacks"] == [
+        {"provider": "openrouter", "model": "moonshotai/kimi-k3"}
+    ]
+    assert payload["changed"] == ["fallback_providers"]
+
+
 def test_prepare_keeps_a_kimi_k3_the_user_chose(homes):
     from research_core.store.actors import Actor
     from research_core.store.db import Store

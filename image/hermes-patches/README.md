@@ -16,6 +16,7 @@ uses the unpatched image.
 | `0004-run-binding.patch` | Tell a callback which run it belongs to, so that it never has to look up the session's latest run. |
 | `0005-gateway-exit-flush.patch` | Give plugins one call before the gateway's `os._exit`, which skips every `atexit` step. |
 | `0006-api-listener-ready.patch` | Notify the hosted supervisor when the API listener has bound and registered its routes, replacing readiness polling. |
+| `0007-free-tier-quota-is-a-rate-limit.patch` | Treat OpenRouter's free-model daily cap (`limit_source: openrouter_free_tier_daily`) as the failed model's rate limit, not a payment error. Its hint mentions buying credits, and as a payment error it benched OpenRouter for every auxiliary call for 600 s. While benched, compression ran without a summary (67 times, 2026-11-06 to 11-09), because the main fallback chain's OpenRouter models were skipped too. |
 
 `core/src/research_core/plugin/capture.py` is what uses them.
 
