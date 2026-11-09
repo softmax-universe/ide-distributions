@@ -108,7 +108,7 @@ Finish with `task.complete`. `outcome: succeeded` checks the type's deliverables
 
 **Coworld** (one per Coworld). The Coworld registry: one row per Coworld with its folder, mixin and tool-check status. Written by the Orchestrator and session open.
 
-A record tool returns the updated record, or `pending` for a change the watcher applies; read that. Goals and Tasks are the plan: there is no plan file, and a Goal's "where it stands" is the status report. A claim is a finding with at least one typed evidence link; search before you write one, and retire what new evidence supersedes or refutes. An Experiment's hypothesis and methods lock when it starts; a change after that is a new Experiment. Cite records by id (G-3, T-42, X-5, C-120, V-7). Every write goes to the events log, so your work is visible without a second report.
+Use a record tool's returned record as confirmation; do not reread a successful write. `pending` is not completion: check the command result. Task lists are summaries; `read` supplies full plans and messages. Goals and Tasks are the plan, without a plan file; a Goal's "where it stands" is the status report. Claims need typed evidence: search before writing and retire superseded or refuted claims. An Experiment's hypothesis and methods lock when it starts; changing them requires a new Experiment. Cite record ids (G-3, T-42, X-5, C-120, V-7). Every write enters the events log, so visibility needs no second report.
 
 ## How to act as your Player
 
