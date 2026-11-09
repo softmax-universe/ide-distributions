@@ -74,7 +74,7 @@ def make_instrumentation(
                     "task.id": task_id,
                     "turn.id": turn_id,
                     "observation.boundary": "pre_llm_call_to_session_end",
-                    "gen_ai.model.attempts": 0,
+                    "gen_ai.turn.model_calls": 0,
                 },
             )
             turns[turn_id] = Turn(current, session_id)
@@ -92,7 +92,7 @@ def make_instrumentation(
                 return
             turn = turns[turn_id]
             turn.model_attempts += 1
-            turn.span.set_attribute("gen_ai.model.attempts", turn.model_attempts)
+            turn.span.set_attribute("gen_ai.turn.model_calls", turn.model_attempts)
             turn.attempts[api_request_id] = telemetry.tracer().start_span(
                 "chat",
                 kind=SpanKind.CLIENT,
