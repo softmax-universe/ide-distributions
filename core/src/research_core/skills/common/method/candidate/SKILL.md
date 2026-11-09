@@ -17,8 +17,8 @@ A Version is a policy candidate built on purpose: a commit in the code repositor
 
 1. Read the Experiment (`experiment.read`), the reference policy and the game's build contract in `MIXIN.md` and the lab `AGENTS.md`. Which files carry a lever, how to build and what passes `check` are game-specific: see the mixin's `<coworld>-diagnosis` skill or docs.
 2. Edit only the components the change names. Diff against the baseline's commit (`version.read {version}` gives it): `git diff <baseline commit> -- <paths>` must show that change and nothing else.
-3. Run the mixin's `check` command from `MIXIN.md` in your worktree. A failed check is a result: fix the candidate within the one change, or record the failure. An errored tool is a broken capability (`repair`).
-4. Commit. A Version is a commit, not a working copy: `version.create` refuses a dirty tree or inputs git does not track, and lists the files.
+3. Run the mixin's `check` command from `MIXIN.md` in your worktree. After reviewing the diff, combine the check and commit in one terminal call with `&&`: a failed check must prevent the commit. A failed check is a result: fix the candidate within the one change, or record the failure. An errored tool is a broken capability (`repair`).
+4. A Version is a commit, not a working copy: `version.create` refuses a dirty tree or inputs git does not track, and lists the files. Do not spend another model round solely to commit after a successful check; the conditional command above does both.
 5. `version.create {summary, based_on: [V-base], task, experiment}` (Orchestrator: `worktree: orch-<n>`). It runs `build` detached, hashes the artifact, records the Version at the exact commit and tags it `v/<n>`; the exact bytes are kept so `upload` sends what was built.
 6. Check the artifact implements the change before anyone evaluates it: passed gates alone do not prove the intended value moved. Open the built file or run the inspection the binding names.
 

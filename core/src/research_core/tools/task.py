@@ -127,7 +127,31 @@ def handle_list(call: ToolCall) -> dict:
         type=call.get("type"),
         held_by=call.get("held_by"),
     )
-    return {"records": records}
+    # A list is an index, not every Task's full transcript and research plan. ``read`` keeps
+    # the complete record; the revision here still protects a subsequent assignment.
+    return {
+        "records": [
+            {
+                key: record[key]
+                for key in (
+                    "id",
+                    "title",
+                    "for_human",
+                    "type",
+                    "goal_id",
+                    "status",
+                    "outcome",
+                    "priority",
+                    "held_by",
+                    "waiting_on",
+                    "depends_on",
+                    "stuck",
+                    "updated",
+                )
+            }
+            for record in records
+        ]
+    }
 
 
 def handle_claim(call: ToolCall) -> dict:
@@ -587,7 +611,8 @@ SPEC = durable_tool(
             ),
             ActionSpec(
                 "list",
-                "List Tasks, filtered by status, Goal, type or holder.",
+                "List Task summaries (id, title, status, holder, waits and revision), filtered "
+                "by status, Goal, type or holder. Use read for a Task's full plan and messages.",
                 {
                     "status": a.string("Only Tasks in this status.", enum=list(TASK_STATUSES)),
                     "goal": a.string("Only this Goal's Tasks."),

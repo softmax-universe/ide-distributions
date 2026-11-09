@@ -373,7 +373,24 @@ def task_list(situation: Situation, args: dict) -> dict:
     goal_id = int(_ref("G", goal).split("-")[1]) if goal else None
     return {
         "records": [
-            row
+            {
+                key: row[key]
+                for key in (
+                    "id",
+                    "title",
+                    "for_human",
+                    "type",
+                    "goal_id",
+                    "status",
+                    "outcome",
+                    "priority",
+                    "held_by",
+                    "waiting_on",
+                    "depends_on",
+                    "stuck",
+                    "updated",
+                )
+            }
             for row in rows
             if args.get("status") in (None, "", row["status"])
             and args.get("type") in (None, "", row["type"])
