@@ -1,0 +1,15 @@
+--- a/gateway/platforms/api_server.py
++++ b/gateway/platforms/api_server.py
+@@ -4047,6 +4047,12 @@
+                 return False
+             from gateway.platforms.shared_ingress import listener_base_url
+             self._mark_connected(listener_base=listener_base_url(self._host, self._port))
++            # The hosted supervisor owns this socket; ordinary systemd readiness is separate.
++            if address := os.environ.get("IDE_LISTENER_READY_SOCKET"):
++                import socket
++                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sender:
++                    sender.connect(address)
++                    sender.send(b"READY=1")
+             # Publish a metrics-bearing snapshot at bind and keep it fresh: the
+             # heartbeat loop updates last_heartbeat/metrics_today (#52323).
+             self._publish_runtime_status()

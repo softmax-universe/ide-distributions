@@ -43,6 +43,8 @@ for index, (boot_id, spans) in enumerate(boots.items()):
     assert root["attributes"] == {"workspace.state": state, "startup.complete": True}, root
     for span in spans:
         assert span["status"]["status_code"] != "ERROR", span
+        if span["name"] == "workspace.profile_install":
+            assert span["attributes"]["profile.updated"] is (index == 0), span
         if span is not root:
             assert span["context"]["trace_id"] == root["context"]["trace_id"], span
             assert span["parent_id"] == root["context"]["span_id"], span

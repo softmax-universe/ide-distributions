@@ -18,7 +18,7 @@ from control import serve
 from inference import Availability
 from inference import maintain as maintain_inference
 from opentelemetry import trace
-from processes import managed_process
+from processes import managed_process, ready_process
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 from research_core import telemetry
@@ -123,9 +123,15 @@ async def run(stack: AsyncExitStack) -> None:
     for role in PROFILES:
         with telemetry.span("workspace.profile_install", context=startup_context, role=role):
             home = HOME / "profiles" / role
-            if home.exists():
+            applied = home / ".softmax-distribution-image"
+            current = applied.is_file() and applied.read_text().strip() == image_id
+            trace.get_current_span().set_attribute("profile.updated", not current)
+            if home.exists() and not current:
+                # An interrupted upgrade must not leave an old image's success marker behind.
+                # Otherwise rolling back could reuse partially replaced profile content.
+                applied.unlink(missing_ok=True)
                 await command(HERMES, "profile", "update", role, "--yes", env=common)
-            else:
+            elif not home.exists():
                 await command(
                     HERMES,
                     "profile",
@@ -170,6 +176,10 @@ async def run(stack: AsyncExitStack) -> None:
                 HERMES,
                 env=profile_env,
             )
+        # Publish only after installation and preparation both succeed. A failed upgrade retries.
+        pending = applied.with_suffix(".tmp")
+        pending.write_text(image_id + "\n")
+        pending.replace(applied)
 
     async def observe_ready(phase: str, ready: asyncio.Event) -> None:
         with telemetry.span(f"workspace.{phase}", context=startup_context):
@@ -197,41 +207,20 @@ async def run(stack: AsyncExitStack) -> None:
         ) as client:
             with telemetry.span("workspace.gateway_ready", context=startup_context):
                 gateway = await stack.enter_async_context(
-                    managed_process(PYTHON, "-m", "gateway.run", env=common)
+                    ready_process(PYTHON, "-m", "gateway.run", env=common, timeout=180)
                 )
-                async with asyncio.timeout(180):
-                    while True:
-                        if gateway.returncode is not None:
-                            raise RuntimeError(f"Gateway exited {gateway.returncode}")
-                        result = (
-                            await asyncio.gather(
-                                client.get("/v1/capabilities"), return_exceptions=True
-                            )
-                        )[0]
-                        if isinstance(result, httpx.Response) and result.is_success:
-                            break
-                        await asyncio.sleep(1)
+                # One contract check after the listener's notification, never a readiness poll.
+                (await client.get("/v1/capabilities")).raise_for_status()
             with telemetry.span("workspace.application_wake", context=startup_context):
                 await command(RESEARCH, "workspace", "wake", env=profile_env)
             with telemetry.span("workspace.application_ready", context=startup_context):
                 seam = await stack.enter_async_context(
-                    managed_process(RESEARCH, "serve", "--host", "0.0.0.0", env=profile_env)
+                    ready_process(
+                        RESEARCH, "serve", "--host", "0.0.0.0", env=profile_env, timeout=30
+                    )
                 )
                 async with httpx.AsyncClient(base_url="http://127.0.0.1:8650") as seam_client:
-                    async with asyncio.timeout(30):
-                        while True:
-                            if seam.returncode is not None:
-                                raise RuntimeError(f"Application exited {seam.returncode}")
-                            if gateway.returncode is not None:
-                                raise RuntimeError(f"Gateway exited {gateway.returncode}")
-                            result = (
-                                await asyncio.gather(
-                                    seam_client.get("/health"), return_exceptions=True
-                                )
-                            )[0]
-                            if isinstance(result, httpx.Response) and result.is_success:
-                                break
-                            await asyncio.sleep(1)
+                    (await seam_client.get("/health")).raise_for_status()
 
             async def reconcile_uncertain_execution() -> None:
                 async with httpx.AsyncClient(base_url="http://127.0.0.1:8650") as observer:
