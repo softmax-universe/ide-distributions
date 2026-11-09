@@ -84,8 +84,7 @@ provider_routing:
       only: [moonshotai]
     moonshotai/kimi-k3:
       only: [moonshotai]
-# The model is the profile's own setting: a new install starts here, prepare.py leaves it alone
-# (but for one migration of a kimi-k3 fallback, see migrate_superseded_model),
+# The model is the profile's own setting: a new install starts here, prepare.py never changes it,
 # and the bridge's /models route changes it on the user's request (core/src/research_core/contract/CONTRACT.md). It
 # stays last: Hermes's writer moves a comment that follows a list into the list.
 model:
@@ -93,4 +92,4 @@ model:
   provider: openrouter
 fallback_providers:
   - provider: openrouter
-    model: moonshotai/kimi-k3.1-pro
+    model: moonshotai/kimi-k3

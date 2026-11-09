@@ -135,7 +135,7 @@ def test_the_shipped_defaults_per_role(seam):
         "role": "researcher",
         "model": "recursive/flint-v1.0:free",
         "provider": "openrouter",
-        "fallbacks": [{"provider": "openrouter", "model": "moonshotai/kimi-k3.1-pro"}],
+        "fallbacks": [{"provider": "openrouter", "model": "moonshotai/kimi-k3"}],
     }
 
 

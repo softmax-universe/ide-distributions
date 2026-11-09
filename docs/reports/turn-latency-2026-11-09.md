@@ -39,7 +39,7 @@ The cache read 94.1% of input tokens; no attempt was a retry.
 
 Every Researcher Session starts on the free Flint model, gets HTTP 429 from its daily quota, and
 falls back to Kimi K3 for the rest of the Session (64 such fallbacks; 1,856 of the Researcher's
-2,609 calls). Hence `migrate_superseded_model` and the shipped fallback change.
+2,609 calls). PR #237 changes the model selection: it makes K3.1 Pro the Researcher primary.
 
 ## What fills the context
 
