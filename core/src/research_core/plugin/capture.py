@@ -40,6 +40,7 @@ from research_core.agent_telemetry import (
 )
 from research_core.agent_telemetry.encoder import message_text
 from research_core.plugin.executor import hermes_call_ids
+from research_core.plugin.hermes_prompt import drop_mandatory_tool_use
 from research_core.plugin.repeats import refusal_of
 
 GATEWAY_WRITER = "gateway"
@@ -257,8 +258,13 @@ class GatewayCapture:
         run_id: str | None = None,
         **_: Any,
     ) -> None:
+        # As sent: ``hermes_prompt``'s middleware drops a block from the request, not from this
+        # prompt, and a section is found by its text in the request. Dropped text has no source.
         self._sections[session_id] = [
-            PromptSection(section["source"], system_prompt[section["start"] : section["end"]])
+            PromptSection(
+                section["source"],
+                drop_mandatory_tool_use(system_prompt[section["start"] : section["end"]]),
+            )
             for section in sections
         ]
         self._writer.capture_operation(

@@ -158,7 +158,8 @@ digest instead of guessing. `docs/agent-telemetry.md`, "Retention", says how lon
 ```
 
 Offsets are UTF-8 bytes of the redacted system text, which is in the request's system message. A reader counts bytes that no
-section covers as unattributed.
+section covers as unattributed. A section is placed as it was sent: when request middleware drops text from it, it covers what
+is left, and the dropped text is in no section. A section that cannot be found in the sent text is left out.
 
 ## Context records
 
