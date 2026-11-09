@@ -26,7 +26,7 @@ Replayed the retained text history with reconstructed SOUL and all shipped tool 
 `moonshotai/kimi-k3.1-pro`, pinned to Moonshot through OpenRouter. One interrupted historical tool
 round had no results and was omitted identically from both arms. Multimodal content was reduced
 to its text in both. This is a controlled request replay, not the original wire request or a
-deployed browser latency measurement. No production state was changed.
+deployed browser latency measurement. No production conversation, policy or configuration was changed.
 
 The original setting pruned zero results; the changed setting pruned 65 in 3.7 ms. Provider-reported
 request size fell from **274,409 to 187,633 input tokens: 31.6% fewer**.
