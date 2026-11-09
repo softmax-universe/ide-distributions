@@ -46,9 +46,9 @@ The release dispatcher passes the distribution commit to Metta's generic build w
 That workflow builds `image/Dockerfile`, runs `image/system_tests/start-stop.sh`, and publishes
 an immutable image digest. Hosting consumes that digest without inspecting profile internals.
 
-The image also owns the ide-next application adapter. It exposes native session opening,
-durable message admission and cancellation, workspace snapshots, transcripts and run controls.
-Chat messages are confirmed only after the workspace commits them. Each operation ID names
+Chat reaches the image only through the [AIDE 1.0.0 backend](#aide-100-backend); the
+workspace connection above carries hosting control alone, and refuses any other envelope with
+422 `invalid`. Chat messages are confirmed only after the workspace commits them. Each operation ID names
 one input; reconnecting with that ID cannot create a second run. Messages wait behind the
 previous run in their session, and queued messages survive sleep and restart.
 
@@ -60,7 +60,7 @@ The open receipt and local session registration commit in one transaction. A tem
 opening failure stays queued with its original identity; a permanent failure also fails its
 queued messages. Neither stops the dispatcher from processing unrelated sessions.
 
-Session intake emits OpenTelemetry `session.open` and `session.message` spans, correlated
+Session intake emits OpenTelemetry `session.open` and `message.admit` spans, correlated
 by `op.id`, `session.id`, and `replayed`. Child `intake.transaction` spans mark writer wait,
 acquisition, admission write, registration, and commit with SDK-timestamped events. These
 boundaries preserve the distinction between database contention and execution preparation.
@@ -89,39 +89,20 @@ until the new key arrives, so the gate does not open on the spent key in the sec
 the refill. An outage block lapses at its `until`. The lease file write is essential and a
 failure raises; state writes run off the event loop, and a failed one is logged rather than
 stopping the workspace. While the state blocks, chat, wakes and Researchers start no
-runs, and `session.message` answers 503 with
-`{"kind": "inference_unavailable", "reason": "budget_exhausted", "until": "<ISO time>"}`
-(`InferenceUnavailable` in `image/contract.py`; `reason` and `until` are null when the lease
-is only missing). Work resumes on its own once the state clears or lapses.
-
-## Application contract
-
-`image/contract.py` owns the existing application's request, reply and run-event schemas.
-`contract/openapi.json` is generated from those exact Pydantic models; the adapter imports them.
-This is a schemas-only OpenAPI 3.1 artifact, not an additional HTTP API. The platform
-continues to own authentication, lifecycle and the opaque relay envelope.
-
-Generate with `python tools/export_contract.py`; CI runs it with `--check`. Operation
-requests are a closed union discriminated by `name`, with `op_id` and operation-specific
-`args`. Extra request fields are rejected. `actor` is supplied by the image, never a client.
-Context remains JSON. Native reply extensions are allowed; opaque snapshot records and
-run-control replies make no stronger guarantees than their declared schema.
-
-Metta vendors the artifact from an immutable agent commit and records its SHA-256. Its
-frontend types, runtime request validator and browser fixture consume that artifact.
-Changing a public shape requires regenerating the artifact and checking both consumers
-before release.
+runs, and AIDE `chat.send` answers the `inference_unavailable` error with
+`"reason": "budget_exhausted"` and `"until": "<ISO time>"` (`reason` and `until` are null when
+the lease is only missing). Work resumes on its own once the state clears or lapses.
 
 ## AIDE 1.0.0 backend
 
 `image/aide.py` also connects every workspace to the platform's AIDE backend socket
 (`/v2/workspaces/{id}/aide/1.0.0/backend`, subprotocol `aide.1.0.0`, the bootstrap credential)
 and answers the [AIDE 1.0.0](https://softmax.com/docs/aide) JSON-RPC methods. It runs beside the
-legacy connection, gates neither readiness nor sleep, and reconnects forever; no frontend reaches
+control connection, gates neither readiness nor sleep, and reconnects forever; no frontend reaches
 it until the platform routes one to it. The contract stays in Metta; this image does not
 bundle or validate it, the relay does.
 
-Each method maps to the same seam and gateway calls as the legacy adapter. The AIDE request id
+Each method maps to seam and gateway calls. The AIDE request id
 is the seam `op_id` or gateway `Idempotency-Key`, so retries need no new tables. The gateway
 forgets a prompt once it is resolved, so an applied `input.respond` is also recorded at the
 seam's `/input-response`, which an identical retry replays. Notifications go to the frontends
@@ -163,13 +144,12 @@ keeps its usual five seconds, and its `database is locked` answer recycles the r
 25 holds in a test at about 60 writes a second. A `--max-hold` above the default 30 s has no margin
 either.
 
-The normal image smoke checks execute the real packaged adapter against its running
-seam, including the previously accepted-by-the-stub invalid actor field. Real model
+The normal image smoke checks drive the packaged AIDE backend against its running seam. Real model
 chat remains a target-environment acceptance check with an authorized inference lease.
 
 Run `bash image/system_tests/start-stop.sh ide-distribution:local` after building. The smoke
 uses a fresh volume, then restarts with the same volume under the hosting filesystem
-restrictions. It checks adapter operations, explicit clean-sleep refusal, retained sessions and transport failures.
+restrictions. It checks AIDE intake, explicit clean-sleep refusal, retained sessions and control transport failures.
 It validates eight completed startup spans on each boot: profile install/update, preparation,
 gateway readiness, application wake/readiness and total startup. Missing phases, reused boot
 IDs, broken parent relationships and unexpected startup attributes fail the check.
@@ -185,7 +165,7 @@ STARTUP_CYCLES=6 STARTUP_ARTIFACTS=/tmp/ide-startup-baseline \
 
 The artifact directory must not already exist. It retains the image ID/architecture, checkout
 revision, per-boot logs and per-stage median/minimum/maximum durations. The first boot uses an
-empty volume; later boots retain state and run the same adapter, sleep and persistence checks.
+empty volume; later boots retain state and run the same intake, sleep and persistence checks.
 `workspace.state` on the startup span distinguishes fresh from previously prepared workspaces.
 This is workspace state, not whether the Kubernetes host or image cache was cold.
 
@@ -317,8 +297,7 @@ Spans and boundaries:
 
 | Span | Meaning |
 | --- | --- |
-| `workspace.request` | Adapter request, through response consumption; header event and child validation/annotation spans |
-| `session.open`, `session.message` | Durable intake, with child transaction events |
+| `session.open`, `message.admit` | Durable intake, with child transaction events |
 | `hermes.session.create` | Native session-create HTTP exchange, including replay |
 | `invoke_agent` | Observed pre-LLM callback to session-end callback |
 | `chat` | One observed physical model attempt; retries have separate spans |
@@ -328,7 +307,7 @@ Spans and boundaries:
 
 Native model/tool spans are children of the turn. Hermes isolates tool workers, so distribution
 tool handlers explicitly bind the unique active turn for their native session. Subprocesses
-carry W3C trace context through `TRACEPARENT`/`TRACESTATE`; adapter HTTP requests use the same
+carry W3C trace context through `TRACEPARENT`/`TRACESTATE`; AIDE backend HTTP requests use the same
 propagator through normal trace headers. Durable asynchronous intake and native execution
 continue the platform W3C context carried in relay metadata. Durable message admissions retain
 that original context across retries, queued dispatch and restarts. Native model/tool turns reuse

@@ -1,19 +1,15 @@
-"""Translate the platform's lifecycle envelope into this distribution's sleep command."""
+"""Answer the platform's hosting control requests and translate them into the sleep command."""
 
 import asyncio
 import base64
 import json
 import logging
 import time
-from contextlib import asynccontextmanager
 from typing import Literal
 from uuid import UUID
 
 import httpx
-from application import Operation
-from application import response as application_response
-from inference import Availability
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
@@ -77,43 +73,41 @@ async def reply(
     envelope: dict,
     lifecycle: Lifecycle,
     seam: httpx.AsyncClient,
-    gateway: httpx.AsyncClient,
-    inference: Availability,
 ) -> None:
-    """Send one request's frames on the shared reply websocket (Metta spec 0150)."""
+    """Send one request's frames on the shared reply websocket (Metta spec 0150).
 
-    @asynccontextmanager
-    async def response():
-        if "control" in envelope:
-            body = await lifecycle.status(ControlRequest.model_validate(envelope), seam)
-            yield httpx.Response(200, json=body)
-        else:
-            async with application_response(
-                Operation.model_validate(envelope), seam, gateway, inference
-            ) as result:
-                yield result
+    Hosting control is the only request this connection carries; any other envelope is refused
+    with 422 ``invalid``, as a malformed control request is."""
 
-    async with response() as result:
-        frame = {
-            "request_id": str(UUID(envelope["id"])),
-            "seq": 0,
-            "stream_id": stream_id,
-            "status": result.status_code,
-            "content_type": result.headers.get("content-type", "application/json").split(";", 1)[0],
-            "data": "",
-            "end": False,
-        }
+    async def validate() -> ControlRequest:
+        return ControlRequest.model_validate(envelope)
+
+    (request,) = await asyncio.gather(validate(), return_exceptions=True)
+    if isinstance(request, ValidationError):
+        result = httpx.Response(422, json={"kind": "invalid", "detail": str(request)})
+    elif isinstance(request, BaseException):
+        raise request
+    else:
+        result = httpx.Response(200, json=await lifecycle.status(request, seam))
+    frame = {
+        "request_id": str(UUID(envelope["id"])),
+        "seq": 0,
+        "stream_id": stream_id,
+        "status": result.status_code,
+        "content_type": "application/json",
+        "data": "",
+        "end": False,
+    }
+    await socket.send(json.dumps(frame))
+    frame["stream_id"] = ""
+    for offset in range(0, len(result.content), 65536):
+        frame.update(
+            seq=frame["seq"] + 1,
+            data=base64.b64encode(result.content[offset : offset + 65536]).decode(),
+        )
         await socket.send(json.dumps(frame))
-        frame["stream_id"] = ""
-        async for chunk in result.aiter_bytes():
-            for offset in range(0, len(chunk), 65536):
-                frame.update(
-                    seq=frame["seq"] + 1,
-                    data=base64.b64encode(chunk[offset : offset + 65536]).decode(),
-                )
-                await socket.send(json.dumps(frame))
-        frame.update(seq=frame["seq"] + 1, data="", end=True)
-        await socket.send(json.dumps(frame))
+    frame.update(seq=frame["seq"] + 1, data="", end=True)
+    await socket.send(json.dumps(frame))
 
 
 async def serve(
@@ -122,10 +116,9 @@ async def serve(
     workspace_id: str,
     credential: str,
     env: dict[str, str],
-    inference: Availability,
     connected: asyncio.Event,
 ) -> None:
-    """One bidirectional transport; durable admission and operation idempotency belong to AIDE."""
+    """One bidirectional transport for hosting control; chat is the AIDE backend's (aide.py)."""
     lifecycle = Lifecycle(env)
     root = f"v2/workspaces/{workspace_id}"
     async with (
@@ -134,17 +127,13 @@ async def serve(
             headers={"Authorization": f"Bearer {credential}"},
         ) as player,
         httpx.AsyncClient(base_url="http://127.0.0.1:8650") as seam,
-        httpx.AsyncClient(
-            base_url="http://127.0.0.1:8642/p/orchestrator/",
-            headers={"Authorization": f"Bearer {env['API_SERVER_KEY']}"},
-        ) as gateway,
     ):
         url = player.build_request("GET", root + "/connection").url
         url = url.copy_with(scheme="wss" if url.scheme == "https" else "ws")
 
         async def answer(socket: ClientConnection, stream_id: str, envelope: dict) -> None:
             (result,) = await asyncio.gather(
-                reply(socket, stream_id, envelope, lifecycle, seam, gateway, inference),
+                reply(socket, stream_id, envelope, lifecycle, seam),
                 return_exceptions=True,
             )
             if isinstance(result, httpx.TransportError):
@@ -192,7 +181,6 @@ async def serve(
                             task.add_done_callback(lambda _, key=request_id: running.pop(key))
 
                     (closed,) = await asyncio.gather(receive(), return_exceptions=True)
-                    # Disconnect stops observation, not work already durably admitted by AIDE.
                     for task in running.values():
                         task.cancel()
             if isinstance(closed, BaseException):

@@ -1,6 +1,6 @@
 """The AIDE 1.0.0 backend: the platform relay's JSON-RPC methods over the seam and the gateway.
 
-It runs beside the legacy control connection in every workspace. Reads are authoritative and
+It runs beside the hosting control connection in every workspace. Reads are authoritative and
 come from durable workspace state: request records from the seam's admissions and their events,
 progress from each request's event log in the workspace store, messages from the gateway's
 history. One consumer per open request is that log's only writer: it translates the gateway's

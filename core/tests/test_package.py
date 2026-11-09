@@ -8,7 +8,6 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 DOCS = (
     "README.md",
-    "contract/README.md",
     "core/README.md",
     "docs/hosting.md",
     "docs/local-end-to-end.md",

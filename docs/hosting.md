@@ -191,7 +191,7 @@ hosted workspaces continue to recover automatically through their supervisor.
 ## The bridge (the seam)
 
 `research serve` is the seam. In the image it runs beside the gateway, and clients reach it through
-`image/application.py` over the platform's relay, which does transport only. It stores each user
+the AIDE 1.0.0 backend (`image/aide.py`) over the platform's relay, which does transport only. It stores each user
 message with its context block, the client's typed context validated against `research
 context-schema` and stamped with the client's identity, the Session's Coworld and `contract_version:
 1`. A run's request keeps them apart (`{"input": [message], "context": block, "instructions"}`), and
@@ -203,8 +203,8 @@ applies user edits through `research store apply --actor user:<id> <op> <json>`.
 The model routes of `core/src/research_core/contract/CONTRACT.md` ("Profile models") are served by `research serve`
 itself, which the workspace image runs: it reads each profile's `config.yaml` (`model`,
 `fallback_providers`) and changes them with `hermes config set` under each profile's home. The
-IDE reaches `research serve` only through the operations in `image/contract.py`, and that list
-has no model operations yet, so `/ide-next` cannot show or change a model until they are added.
+IDE reaches `research serve` only through the AIDE 1.0.0 methods, which have no model operations,
+so the IDE cannot show or change a model until AIDE adds them.
 Nothing that starts a run may put a `model` in the run request.
 
 ## Agent telemetry
@@ -248,7 +248,7 @@ the volume survives losing the volume, so backups are part of the contract:
 
 Live transcript rows are not always what a model first received. Once a request reaches
 `compression.proactive_prune_tokens`, Hermes rewrites old large tool results to one-line summaries
-under the same row id, so `session.messages` returns the summary. The original stays in `state.db`
+under the same row id, so AIDE `chat.history` returns the summary. The original stays in `state.db`
 as an archived row (`active = 0`, `compacted = 1`).
 
 A snapshot taken after `research workspace sleep` exited 0 needs nothing more. For a snapshot

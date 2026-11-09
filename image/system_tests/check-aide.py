@@ -1,8 +1,8 @@
-"""Drive the running workspace as the platform: legacy control and AIDE 1.0.0 side by side.
+"""Drive the running workspace as the platform: hosting control and AIDE 1.0.0 side by side.
 
 The container's bootstrap names this script's port as the platform, and the orchestrator's
 model points at its scripted OpenRouter mirror, so the round trip needs no credentials: lease,
-legacy status, then session.open -> chat.send -> chunks -> chat.finished -> chat.history over
+control status, then session.open -> chat.send -> chunks -> chat.finished -> chat.history over
 the AIDE backend socket, then the same request's record and events read again over the socket the
 backend opens after the platform drops the first one.
 """
@@ -24,7 +24,7 @@ REPLY = ["The ", "workspace ", "answers."]
 
 
 async def main() -> None:
-    legacy, backend, done = asyncio.Queue(), asyncio.Queue(), asyncio.Event()
+    control_sockets, backend, done = asyncio.Queue(), asyncio.Queue(), asyncio.Event()
 
     async def lease(request: web.Request) -> web.Response:
         expires = datetime.now(UTC) + timedelta(hours=1)
@@ -44,7 +44,7 @@ async def main() -> None:
         if aide:
             binding = {"backend_id": str(uuid4()), "version": "1.0.0", "max_message_bytes": 1048576}
             await response.send_json({"binding": binding})
-        await (backend if aide else legacy).put(response)
+        await (backend if aide else control_sockets).put(response)
         await done.wait()  # the scenario reads through its own handle
         return response
 
@@ -100,13 +100,13 @@ async def main() -> None:
         await web.TCPSite(runner, "127.0.0.1", port).start()
 
     async with asyncio.timeout(300):
-        control = await legacy.get()
+        control = await control_sockets.get()
         await control.send_json(
             {"stream_id": "status", "envelope": {"id": str(uuid4()), "control": "status"}}
         )
         header = await control.receive_json()
         assert header["status"] == 200, header
-        print("PASS legacy control connection answers beside the AIDE backend", flush=True)
+        print("PASS control connection answers beside the AIDE backend", flush=True)
         # Hermes treats a config base_url under provider openrouter as a mirror (#10622).
         config = Path("/workspace/host/profiles/orchestrator/config.yaml")
         settings = yaml.safe_load(config.read_text())

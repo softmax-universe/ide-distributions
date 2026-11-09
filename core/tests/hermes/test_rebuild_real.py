@@ -441,14 +441,14 @@ def test_direct_gateway_calls_have_access_lines_and_a_run_poll_has_none(hermes_b
             # The run has ended, so the gateway refuses these. A refusal has its access line too.
             with contextlib.suppress(urllib.error.HTTPError):
                 gateway.request("POST", profile, f"/v1/runs/{run_id}/{call}", {})
-        # A poll that fails, and the bridge's ``run.get``, which is not the seam's poll.
+        # A poll that fails, and the AIDE backend's run read, which is not the seam's poll.
         with contextlib.suppress(urllib.error.HTTPError):
             gateway.request("GET", profile, "/v1/runs/no-such-run")
-        bridge = urllib.request.Request(
+        aide_read = urllib.request.Request(
             f"http://127.0.0.1:{gateway.port}/p/{profile}/v1/runs/{run_id}",
             headers={"Authorization": f"Bearer {API_KEY}", "User-Agent": "python-httpx/0.28.1"},
         )
-        urllib.request.urlopen(bridge, timeout=30).close()
+        urllib.request.urlopen(aide_read, timeout=30).close()
     finally:
         gateway.stop()
     records = stored_records(gateway.stream)

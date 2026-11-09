@@ -8,12 +8,10 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from uuid import uuid4
 
 from dotenv import dotenv_values
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from application import Operation, response  # noqa: E402
 from inference import Availability, maintain, record_state  # noqa: E402
 
 from research_core import inference as state  # noqa: E402  (on the path through inference)
@@ -32,22 +30,6 @@ def lease(key: str, expires: datetime) -> tuple[str, str, bytes]:
         "allowance_usd": 1,
     }
     return "200 OK", "", json.dumps(body).encode()
-
-
-async def refusal(availability: Availability) -> dict:
-    message = Operation(
-        id=uuid4(),
-        op_id=uuid4(),
-        name="session.message",
-        args={
-            "session_id": "api_proof",
-            "message": {"role": "user", "content": "hello"},
-            "context": {},
-        },
-    )
-    async with response(message, None, None, availability) as result:
-        assert result.status_code == 503
-        return result.json()
 
 
 async def main(tmp_path: Path):
@@ -73,11 +55,8 @@ async def main(tmp_path: Path):
         requests.append(time.monotonic())
         if len(requests) == 1:
             assert not ready.is_set() and not availability.available() and not marker.exists()
-            assert (await refusal(availability)) == {
-                "kind": "inference_unavailable",
-                "reason": None,
-                "until": None,
-            }
+            # No lease yet: the gate is closed and names no reason or refill time.
+            assert availability.blocking() is None
             status, headers, body = "503 Service Unavailable", "Retry-After: 1\r\n", b"{}"
         elif len(requests) == 2:
             status, headers, body = lease("fixture-key", expires)
@@ -112,9 +91,9 @@ async def main(tmp_path: Path):
                 }
             ).encode()
         else:
-            refused = await refusal(availability)
-            assert refused["reason"] == "budget_exhausted"
-            assert datetime.fromisoformat(refused["until"]) == refill
+            blocking = availability.blocking()
+            assert not availability.available() and blocking.blocked == "budget_exhausted"
+            assert blocking.until == refill
             assert state.read_state(marker).last_error.session_id == "api_proof"
             status, headers, body = lease("fresh-key", expires + timedelta(days=1))
             done.set()

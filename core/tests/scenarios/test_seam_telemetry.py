@@ -1,11 +1,9 @@
 """What ``research serve``, the coordinator and short commands record, read back from the stream.
 
-The bridge's own code (``image/application.py``) drives a real seam over HTTP, on the fake gateway.
+Requests reach a real seam over HTTP, as the AIDE backend sends them, on the fake gateway.
 The dispatcher runs one pass at a time, so the order of records is the order of the test's steps.
 """
 
-# ruff: noqa: E402
-# The image's modules are importable only after the path below is set.
 from __future__ import annotations
 
 import asyncio
@@ -14,22 +12,15 @@ import os
 import subprocess
 import sys
 import threading
-import types
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import uuid4
 
 import httpx
 import pytest
 from opentelemetry import trace
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "image"))
-# The image's inference gate needs python-dotenv, which this environment lacks. Tests pass one.
-sys.modules.setdefault("inference", types.SimpleNamespace(Availability=object))
-import application
-from application import Operation, response
 
 from research_core import attachments, layout, transitions
 from research_core.agent_telemetry import observed
@@ -67,60 +58,48 @@ class Seam:
         self.server._last_native_poll.clear()  # Each pass may read a run's outcome.
         asyncio.run(self.server.dispatch_messages())
 
-    def bridge(
-        self, name: str, args: dict[str, Any], *, op_id: str | None = None, gate=None
-    ) -> tuple[int, str, str, bytes]:
-        """One envelope through the bridge. Returns status, request ID, operation ID and body."""
-        request_id, op_id = str(uuid4()), op_id or str(uuid4())
-        operation = Operation(id=request_id, op_id=op_id, name=name, args=args)
+    def post(self, path: str, body: dict[str, Any]) -> httpx.Response:
+        """One request to the seam, as the AIDE backend makes it."""
+        return httpx.post(f"{self.server.url}{path}", json=body, timeout=10)
 
-        async def call() -> tuple[int, bytes]:
-            async with (
-                httpx.AsyncClient(base_url=self.server.url) as seam,
-                httpx.AsyncClient(base_url="http://gateway.invalid") as gateway,
-            ):
-                async with response(operation, seam, gateway, gate or _Gate(True)) as result:
-                    return result.status_code, await result.aread()
-
-        status, body = asyncio.run(call())
-        return status, request_id, op_id, body
+    def open(self) -> str:
+        opened = self.post("/session-open", _open_body(str(uuid4())))
+        assert opened.status_code == 200, opened.text
+        return opened.json()["session_id"]
 
     def records(self) -> list[dict[str, Any]]:
         self.server.telemetry.flush(10)
-        if application._telemetry is not None:
-            application._telemetry.flush(10)
         return stored_records(Path(os.environ[STREAM_VARIABLE]))
-
-
-class _Gate:
-    def __init__(self, available: bool) -> None:
-        self._available = available
-
-    def available(self) -> bool:
-        return self._available
-
-    def blocking(self) -> None:
-        return None
 
 
 @pytest.fixture
 def seam(tmp_path):
-    application._telemetry = None  # A process has one, on the stream it started with.
     seam = Seam(tmp_path)
     yield seam
     seam.server.shutdown()
 
 
-def _open_args() -> dict[str, Any]:
-    return {"client": {"id": "ide", "kind": "web"}, "coworld": COWORLD}
-
-
-def _message_args(session_id: str, text: str = "Hello") -> dict[str, Any]:
+def _open_body(op_id: str) -> dict[str, Any]:
     return {
+        "op_id": op_id,
+        "client": {"id": "ide", "kind": "web"},
+        "actor": "user:aide",
+        "session_context": {
+            "contract_version": 1,
+            "scope": "coworld",
+            "coworld": COWORLD,
+            "league": "league_1",
+        },
+    }
+
+
+def _message_body(session_id: str, op_id: str, text: str = "Hello") -> dict[str, Any]:
+    return {
+        "op_id": op_id,
         "session_id": session_id,
-        "coworld": COWORLD,
         "message": {"role": "user", "content": text},
         "context": {"contract_version": 1},
+        "actor": "user:aide",
     }
 
 
@@ -164,12 +143,12 @@ def _assigned(seam: Seam) -> dict[str, Any]:
 
 def test_one_chat_joins_from_admission_to_run_to_session(seam, monkeypatch):
     monkeypatch.setenv("IDE_WORKSPACE", str(seam.ctx.ws.root))
-    message_op_id = str(uuid4())
-    opening = seam.bridge("session.open", {**_open_args(), "message_op_id": message_op_id})
-    assert opening[0] == 200, opening
-    session_id = json.loads(opening[3])["session_id"]
-    message = seam.bridge("session.message", _message_args(session_id), op_id=message_op_id)
-    assert message[0] == 200, message
+    open_op_id, message_op_id = str(uuid4()), str(uuid4())
+    opening = seam.post("/session-open", _open_body(open_op_id))
+    assert opening.status_code == 200, opening.text
+    session_id = opening.json()["session_id"]
+    message = seam.post("/message", _message_body(session_id, message_op_id))
+    assert message.status_code == 200, message.text
     seam.dispatch()
     run_id = seam.ctx.wstore.one(
         "SELECT run_id FROM client_admissions WHERE op_id=?", (message_op_id,)
@@ -207,20 +186,17 @@ def test_one_chat_joins_from_admission_to_run_to_session(seam, monkeypatch):
 
     records = seam.records()
 
-    # Opening: the bridge's ID, the operation's and the derived admission ID, on one record.
+    # Opening: the admission ID and the Session it opened, on one record.
     (opened,) = _operations(records, action="admission", native_event_type="session_open")
     assert opened["stage"] == "accepted"
-    assert opened["request_id"] == opening[1]
-    assert opened["operation_id"] == opening[2]
-    assert opened["admission_id"] == str(uuid5(NAMESPACE_URL, f"session-open:{message_op_id}"))
+    assert opened["admission_id"] == open_op_id
     assert opened["session_id"] == session_id
     assert (opened["session_scope"], opened["coworld_id"]) == ("coworld", COWORLD)
 
     # Admission -> run -> Session, in order, each by its own join field.
     (admitted,) = _operations(records, action="admission", native_event_type="message")
     assert admitted["stage"] == "accepted"
-    assert admitted["request_id"] == message[1]
-    assert admitted["admission_id"] == admitted["operation_id"] == message_op_id
+    assert admitted["admission_id"] == message_op_id
     started = _store_event(records, "client.started", admission_id=message_op_id)
     assert (started["run_id"], started["session_id"]) == (run_id, session_id)
     (bound,) = _operations(records, action="admission", stage="bound")
@@ -283,19 +259,20 @@ def test_an_event_not_listed_sends_only_its_type(seam):
 
 
 def test_no_secret_reaches_a_record_from_an_exception_or_a_message(seam, monkeypatch):
-    opened = seam.bridge("session.open", _open_args())
-    session_id = json.loads(opened[3])["session_id"]
+    session_id = seam.open()
 
     def fails(*_: Any, **__: Any) -> None:
         raise attachments.AttachmentError(f"could not read {SECRET}")
 
     monkeypatch.setattr(attachments, "prepare", fails)
     text = f"My key is {SECRET}"
-    delivered = seam.bridge("session.message", _message_args(session_id, text))
-    assert delivered[0] == 200
+    delivered = str(uuid4())
+    assert seam.post("/message", _message_body(session_id, delivered, text)).status_code == 200
     seam.dispatch()
-    refused = seam.bridge("session.message", _message_args(SECRET, text))
-    assert refused[0] != 200
+    other_game = _message_body(session_id, str(uuid4()), text)
+    other_game["context"]["coworld"] = "cow_other"
+    refused = seam.post("/message", other_game)
+    assert refused.status_code == 409, refused.text
 
     wstore = seam.ctx.wstore
     (failed,) = wstore.q("SELECT payload FROM events WHERE kind='client.delivery_failed'")
@@ -306,84 +283,50 @@ def test_no_secret_reaches_a_record_from_an_exception_or_a_message(seam, monkeyp
     assert SECRET not in json.dumps(records)
     (attachment,) = _operations(records, action="attachment", stage="failed")
     assert attachment["reason"] == "attachmenterror"
-    assert attachment["admission_id"] == delivered[2]
-    assert _store_event(records, "client.delivery_failed", admission_id=delivered[2])
+    assert attachment["admission_id"] == delivered
+    assert _store_event(records, "client.delivery_failed", admission_id=delivered)
 
 
-def test_refusals_carry_the_bridge_id_and_reach_rebuild(seam):
-    opened = seam.bridge("session.open", _open_args())
-    session_id = json.loads(opened[3])["session_id"]
+def test_refusals_are_recorded_and_reach_rebuild(seam):
+    session_id = seam.open()
 
-    gated = seam.bridge("session.message", _message_args(session_id), gate=_Gate(False))
-    assert gated[0] == 503
-    invalid = seam.bridge("session.message", {"session_id": session_id})
-    assert invalid[0] == 422
-    unsupported = seam.bridge("no.such.operation", {})
-    assert unsupported[0] == 501
-    unknown = seam.bridge("session.cancel", {"op_id": str(uuid4())})
-    assert unknown[0] == 404
-    history = seam.bridge("session.messages", {"session_id": "no-such-session"})
-    assert history[0] == 404
-    model_request = str(uuid4())
-    model = httpx.post(
-        f"{seam.server.url}/models",
-        json={"actor": "session:x"},
-        headers={"X-Bridge-Request-Id": model_request},
-    )
-    assert model.status_code == 400
+    other_game = _message_body(session_id, str(uuid4()))
+    other_game["context"]["coworld"] = "cow_other"
+    invalid = other_game["op_id"]
+    refused_message = seam.post("/message", other_game)
+    assert refused_message.status_code == 409, refused_message.text
+    unknown = str(uuid4())
+    cancel = seam.post("/message-cancel", {"op_id": unknown, "actor": "user:aide"})
+    assert cancel.status_code == 404, cancel.text
+    model = seam.post("/models", {"actor": "session:x"})
+    assert model.status_code == 400, model.text
 
     records = seam.records()
-    refused = {r["request_id"]: r for r in _operations(records, stage="refused")}
-    assert refused[gated[1]]["reason"] == "inference_unavailable"
-    assert refused[gated[1]]["session_id"] == session_id
-    assert refused[gated[1]]["details"] == {"status": 503}
-    assert refused[invalid[1]]["reason"] == "invalid"
-    assert refused[unsupported[1]]["reason"] == "unsupported"
-    assert refused[unsupported[1]]["native_event_type"] == "unknown"
-    assert refused[unknown[1]]["reason"] == "not_found"
-    assert refused[unknown[1]]["native_event_type"] == "message_cancel"
-    assert refused[history[1]]["reason"] == "session_selection"
-    assert refused[history[1]]["native_event_type"] == "session.messages"
-    assert refused[model_request]["native_event_type"] == "models"
-    assert refused[model_request]["details"] == {"status": 400}
+    refused = {r["native_event_type"]: r for r in _operations(records, stage="refused")}
+    assert refused["message"]["admission_id"] == invalid
+    assert refused["message"]["session_id"] == session_id
+    assert refused["message"]["details"] == {"status": 409}
+    assert refused["message_cancel"]["admission_id"] == unknown
+    assert refused["message_cancel"]["reason"] == "not_found"
+    assert refused["models"]["details"] == {"status": 400}
 
     datadog = FakeDatadog()
     datadog.take_lines(raw_lines(Path(os.environ[STREAM_VARIABLE])))
     report = rebuild_session(LogsSearch(datadog.url, "a", "b"), session_id)
     datadog.close()
-    stages = [event["stage"] for event in report["events"] if event.get("admission_id") == gated[2]]
+    stages = [event["stage"] for event in report["events"] if event.get("admission_id") == invalid]
     assert stages == ["refused"]
 
 
-def test_a_refusal_makes_no_call_to_the_seam():
-    calls = []
-
-    def seam_transport(request: httpx.Request) -> httpx.Response:
-        calls.append(request.url.path)
-        return httpx.Response(200, json={})
-
-    async def call() -> int:
-        operation = Operation(id=str(uuid4()), op_id=str(uuid4()), name="no.such", args={})
-        transport = httpx.MockTransport(seam_transport)
-        async with httpx.AsyncClient(transport=transport, base_url="http://seam") as seam_client:
-            async with response(operation, seam_client, seam_client, _Gate(True)) as result:
-                return result.status_code
-
-    assert asyncio.run(call()) == 501
-    assert calls == []
-
-
-def test_a_retried_request_has_a_new_id_and_no_second_acceptance(seam):
-    opened = seam.bridge("session.open", _open_args())
-    session_id = json.loads(opened[3])["session_id"]
-    args = _message_args(session_id)
-    first = seam.bridge("session.message", args)
-    second = seam.bridge("session.message", args, op_id=first[2])
+def test_a_retried_request_writes_no_second_acceptance(seam):
+    session_id = seam.open()
+    body = _message_body(session_id, str(uuid4()))
+    assert seam.post("/message", body).status_code == 200
+    assert seam.post("/message", body).status_code == 200
     records = seam.records()
     accepted = _operations(records, action="admission", native_event_type="message")
-    assert [r["request_id"] for r in accepted] == [first[1], second[1]]
-    assert {r["admission_id"] for r in accepted} == {first[2]}
-    assert _store_event(records, "client.accepted", admission_id=first[2])
+    assert [r["admission_id"] for r in accepted] == [body["op_id"], body["op_id"]]
+    assert _store_event(records, "client.accepted", admission_id=body["op_id"])
 
 
 def test_a_held_chat_records_its_old_run_and_resumes_on_a_new_one(tmp_path):
