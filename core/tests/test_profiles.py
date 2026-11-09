@@ -49,6 +49,7 @@ def test_orchestrator_config_compaction_and_catch_up():
         "threshold": 0.6,
         "target_ratio": 0.3,
         "proactive_prune_tokens": 64000,
+        "proactive_prune_min_result_chars": 2000,
     }
     assert config["cron"]["catch_up_missed"] is True
 
