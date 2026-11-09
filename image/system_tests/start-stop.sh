@@ -60,6 +60,21 @@ for cycle in $(seq 1 "$cycles"); do
   fi
   docker exec "$name" /opt/hermes/.venv/bin/python -c \
     'import json, urllib.request; s=json.load(urllib.request.urlopen("http://127.0.0.1:8650/status")); assert not s["sleep_started"] and not s["paused"], s'
+  if [[ "$cycle" == "$cycles" ]]; then
+    # The later recovery boot also proves migration from a missing marker and a different image.
+    # Corrupt only release-owned content; owner memory must survive reconciliation.
+    docker exec -i "$name" /opt/hermes/.venv/bin/python - <<'PYTHON'
+from pathlib import Path
+root = Path("/workspace/host/profiles")
+(root / "orchestrator/.softmax-distribution-image").write_text("previous-image\n")
+(root / "researcher/.softmax-distribution-image").unlink()
+for role in ("orchestrator", "researcher"):
+    home = root / role
+    (home / "SOUL.md").write_text("obsolete release content\n")
+    (home / "memories").mkdir(exist_ok=True)
+    (home / "memories/reuse-proof.txt").write_text("owner memory\n")
+PYTHON
+  fi
   docker exec -e HERMES_HOME=/workspace/host/profiles/orchestrator "$name" \
     /opt/workspace-env/bin/research workspace sleep
   docker exec "$name" /opt/hermes/.venv/bin/python -c \

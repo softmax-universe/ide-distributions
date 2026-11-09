@@ -15,6 +15,17 @@ ready() {
 }
 deadline=$((SECONDS + 240))
 until ready; do (( SECONDS < deadline )); sleep 1; done
+# Both upgrade cases must reconcile release content while preserving owner data.
+docker exec -i "$name" /opt/hermes/.venv/bin/python - <<'PYTHON'
+from pathlib import Path
+source = Path("/opt/distribution")
+for role in ("orchestrator", "researcher"):
+    home = Path("/workspace/host/profiles") / role
+    assert (home / "SOUL.md").read_bytes() == (source / role / "SOUL.md").read_bytes()
+    assert (home / ".softmax-distribution-image").read_bytes() == (source / "image-id").read_bytes()
+    assert (home / "memories/reuse-proof.txt").read_text() == "owner memory\n"
+print("PASS profile reconciliation: missing/different image markers, owner memory preserved")
+PYTHON
 # Fault injection models a durable admission whose native acceptance reply was lost.
 recovery_started=$SECONDS
 docker exec -i "$name" /opt/workspace-env/bin/python - <<'PY'
