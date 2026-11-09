@@ -133,13 +133,14 @@ def test_claim_evidence_items_carry_the_handler_rules():
     assert set(item["properties"]) == {"type", "ref", "stance", "note"}
     assert item["required"] == ["type", "ref", "stance"]
     assert "additionalProperties" not in item  # the store ignores extra keys, it does not refuse
-    assert "code <path>:<a>-<b>@<sha>" in item["properties"]["ref"]["description"]
+    assert "for code, <path>:<a>-<b>@<sha>" in item["properties"]["ref"]["description"]
 
 
 def test_task_failure_matches_the_store():
     from research_core.store import tasks
 
-    failure = catalog.TOOLS["task"].schema("researcher")["parameters"]["properties"]["failure"]
+    schema = catalog.TOOLS["task_complete"].schema("researcher")
+    failure = schema["parameters"]["properties"]["failure"]
     assert failure["required"] == list(tasks.FAILURE_REQUIRED)
     assert set(failure["properties"]) == set(tasks.FAILURE_REQUIRED + tasks.FAILURE_OPTIONAL)
     assert failure["additionalProperties"] is False  # unknown keys are refused

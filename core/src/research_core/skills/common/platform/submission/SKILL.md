@@ -31,7 +31,7 @@ The bar is on your initiative, not on the user: they can turn it off (`settings_
 
 ## Researchers
 
-A Researcher never submits. `task_propose_submission {task, version, reason}` records the proposal; a management wake applies the rule above, and in mode `ask` the Orchestrator asks the user. `task.complete` carries `submission_candidate: yes|no` with `submission_reason`. Waiting for a placed submission is `task_wait {task, kind: submission, detail: "V-n in <league>", ref: <its policy version id>}`.
+A Researcher never submits. `task_propose_submission {task, version, reason}` records the proposal; a management wake applies the rule above, and in mode `ask` the Orchestrator asks the user. `task_complete` carries `submission_candidate: yes|no` with `submission_reason`. Waiting for a placed submission is `task_wait {task, kind: submission, detail: "V-n in <league>", ref: <its policy version id>}`.
 
 ## Options and after
 

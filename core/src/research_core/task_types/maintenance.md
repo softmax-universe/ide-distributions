@@ -43,9 +43,9 @@ evaluate details: see the mixin's docs.
 Ask (`task_ask`) when two fixes differ in what the user would want (upgrade or pin a runtime);
 decide everything else.
 
-End: `task.complete {task, commit, summary, capability, merge: "yes", result}`. `commit` is on
+End: `task_complete {task, commit, summary, capability, merge: "yes", result}`. `commit` is on
 your branch; `capability` is required for a repair. The change merges after review once build
 and check pass again; the watcher then rechecks the capabilities.
 
-When the Task cannot succeed, `task.complete {task, outcome: "failed", failure: {what_failed,
+When the Task cannot succeed, `task_complete {task, outcome: "failed", failure: {what_failed,
 next_step}}`.

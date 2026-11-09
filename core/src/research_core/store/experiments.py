@@ -284,11 +284,29 @@ def add_run(
 
 
 def require_run_of(store: Store, run_id: int, experiment_id: int) -> None:
-    """Refuse a run that belongs to another Experiment than the caller named."""
+    """Refuse a run that does not exist or belongs to another Experiment than the caller named,
+    naming that Experiment's run ids."""
     run = store.one("SELECT experiment_id FROM experiment_runs WHERE id = ?", (run_id,))
-    if run is not None and run["experiment_id"] != experiment_id:
-        owner = display_id("X", run["experiment_id"])
-        raise StoreError([f"run {run_id} belongs to {owner}, not X-{experiment_id}"])
+    if run is None or run["experiment_id"] != experiment_id:
+        # Run ids count across all Experiments; models send a run's position (2026-11).
+        ids = [
+            row["id"]
+            for row in store.q(
+                "SELECT id FROM experiment_runs WHERE experiment_id = ? ORDER BY id",
+                (experiment_id,),
+            )
+        ]
+        where = (
+            "does not exist"
+            if run is None
+            else f"belongs to {display_id('X', run['experiment_id'])}, not X-{experiment_id}"
+        )
+        raise StoreError(
+            [
+                f"run {run_id} {where}; X-{experiment_id}'s run ids are"
+                f" {', '.join(map(str, ids)) or 'none yet'} (experiment.read lists them)"
+            ]
+        )
 
 
 def update_run(
@@ -303,12 +321,19 @@ def update_run(
 ) -> dict[str, Any]:
     """Progress on a run: its platform state, episodes done, numbers, validity. Returns the run.
 
+    ``results`` keys replace the stored ones; keys not given are kept.
+
     ``validity`` is ``valid`` or ``invalid: <reason>``. Only while the Experiment is running.
     Event ``experiment.run``.
     """
     run = store.one("SELECT * FROM experiment_runs WHERE id = ?", (run_id,))
     if run is None:
-        raise NotFound([f"run {run_id} does not exist"])
+        raise NotFound(
+            [
+                f"run {run_id} does not exist; give a run's id as experiment.read lists it under"
+                " runs (ids count across all Experiments, not from 1 in each)"
+            ]
+        )
     row = _fetch(store, run["experiment_id"])
     xid = display_id("X", row["id"])
     problems: list[str] = []
@@ -326,7 +351,9 @@ def update_run(
         changes["episodes_completed"] = episodes_completed
     if results is not None:
         if require(problems, isinstance(results, dict), "results must be an object"):
-            changes["results"] = json_field(results)
+            # Merged by key: xp.request keeps the Version a run plays here, and xp.status needs
+            # it after a caller stores rows (a replaced dict crashed xp.status, 2026-11-09).
+            changes["results"] = json_field({**parse_json(run["results"], {}), **results})
     if validity is not None:
         require(
             problems,
@@ -377,7 +404,10 @@ def close(
         0
     ]
     require(
-        problems, runs >= 1, f"{xid} has no runs; an Experiment closes only after at least one run"
+        problems,
+        runs >= 1,
+        f"{xid} has no runs; an Experiment closes only after at least one run: record runs with"
+        f" xp.request, or experiment.abandon {{experiment: {xid}, reason}} when none will run",
     )
     require(problems, verdict in VERDICTS, "verdict must be confirmed, refuted or inconclusive")
     metrics = parse_json(row["methods"], {}).get("metrics") or []
@@ -564,7 +594,7 @@ def _check_methods(store: Store, methods: Any, problems: list[str]) -> dict[str,
         )
         if baseline is not None:
             checked["baseline"] = display_id("V", baseline)
-    if methods.get("candidate") is not None:
+    if methods.get("candidate") not in (None, ""):  # empty: not built yet, as the schema says
         candidate = _require_record(
             store,
             methods["candidate"],

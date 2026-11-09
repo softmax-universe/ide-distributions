@@ -27,9 +27,9 @@ EVIDENCE_LINK = a.obj(
     {
         "type": EVIDENCE_TYPE,
         "ref": a.string(
-            "The reference, in the type's format: "
+            "The reference in the type's format, without the type name: "
             + "; ".join(
-                f"{name} {kind.ref_format}"
+                f"for {name}, {kind.ref_format}"
                 for name, kind in sorted(evidence_types.EVIDENCE_TYPES.items())
             )
             + "."
@@ -83,6 +83,7 @@ def handle(call: ToolCall) -> dict:
         )
         return {"record": record}
     if call.action == "retire":
+        # A note alone is not a link: models send one with a supersede to say why (2026-11).
         killing = {name: call.get(name) for name in ("type", "ref", "note") if call.get(name)}
         record = claims.retire(
             store,
@@ -90,7 +91,7 @@ def handle(call: ToolCall) -> dict:
             claim_id,
             status=call.get("status"),
             superseded_by=call.get("superseded_by"),
-            evidence=killing or None,
+            evidence=killing if call.get("type") or call.get("ref") else None,
         )
         return {"record": record}
     raise AssertionError(call.action)

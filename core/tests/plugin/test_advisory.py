@@ -43,7 +43,7 @@ def test_a_note_names_a_tool_the_role_has():
     assert "submit tool" in rules.notes_for("terminal", submit, {}, "orchestrator")[0]
     push = {"command": "git push --force origin main"}
     assert "workspace.change_complete" in rules.notes_for("terminal", push, {}, "orchestrator")[0]
-    assert "task.complete" in rules.notes_for("terminal", push, {}, "researcher")[0]
+    assert "task_complete" in rules.notes_for("terminal", push, {}, "researcher")[0]
 
 
 def test_notes_point_at_repair_task():

@@ -120,8 +120,9 @@ MEASUREMENT = a.obj(
 # xp.status writes rows, so a call rarely does; a bad row is named at close. The keys are spelled
 # out in words, not as a schema: a schema with them was the largest single part of this tool.
 RESULTS = a.free_object(
-    "The run's results. xp.status writes evaluation rows under rows: [{episode_id, game_version, "
-    "policy_version, seed, seats, opponents, metrics, status?, reason?}]."
+    "The run's results; each key given replaces that key, others are kept. xp.status writes "
+    "evaluation rows under rows: [{episode_id, game_version, policy_version, seed, seats, "
+    "opponents, metrics, status?, reason?}]."
 )
 # The design fields create takes and update replaces (a section or a list as a whole).
 DESIGN = {
@@ -580,7 +581,10 @@ SPEC = tool(
                 "Progress on a run: platform state, episodes done, result rows, validity. "
                 "An invalid run's rows do not count at close.",
                 {
-                    "run": a.integer("The run id from the Experiment's runs."),
+                    "run": a.integer(
+                        "The run's id as experiment.read lists it under runs; ids count across "
+                        "all Experiments, so it is not the run's position."
+                    ),
                     "state": a.string("The platform's state of the request."),
                     "episodes_completed": a.integer("Episodes finished so far."),
                     "results": RESULTS,
@@ -594,7 +598,7 @@ SPEC = tool(
             ActionSpec(
                 "close",
                 "Record the verdict: computed from the stored rows by the decision rule, or "
-                "explicit when verdict is given.",
+                "explicit when verdict is given. Either needs at least one run from xp.request.",
                 {
                     "experiment": EXPERIMENT,
                     "verdict": a.string(

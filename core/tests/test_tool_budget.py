@@ -35,6 +35,7 @@ OWN_TOOLS_ORCHESTRATOR = {
 }
 OWN_TOOLS_RESEARCHER = {
     "task_ask",
+    "task_complete",
     "task_propose",
     "task_propose_submission",
     "task_release",
@@ -47,6 +48,7 @@ INPROC = {
     "goal_set_status",
     "task",
     "task_abandon",
+    "task_complete",
     "directive",
     "claim",
     "claim_write",
@@ -74,7 +76,7 @@ def test_a_broken_tool_module_fails_loudly(tmp_path, monkeypatch):
 
 def test_tool_counts_match_the_design():
     assert names("orchestrator") == ORCHESTRATOR and len(ORCHESTRATOR) == 24
-    assert names("researcher") == RESEARCHER and len(RESEARCHER) == 22
+    assert names("researcher") == RESEARCHER and len(RESEARCHER) == 23
     assert len(ORCHESTRATOR) <= catalog.TOOL_BUDGET
 
 

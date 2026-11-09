@@ -75,7 +75,7 @@ RULES: tuple[Rule, ...] = (
         r"\bgit\b[^\n|;&]*\bpush\b[^\n|;&]*(\s--force(-with-lease)?\b|\s-f\b|\s\+\S)",
         "task",
         "Force-pushing a shared branch loses other Sessions' work. Keep every commit on your "
-        "Task branch and finish with task.complete; the watcher merges reviewed work.",
+        "Task branch and finish with task_complete; the watcher merges reviewed work.",
         note_for={
             "orchestrator": "Force-pushing a shared branch loses other Sessions' work. Keep every "
             "commit on your branch and finish with workspace.change_complete; the watcher merges "

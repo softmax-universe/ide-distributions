@@ -57,13 +57,15 @@ def handle(call: ToolCall) -> dict:
     if call.action == "read":
         stores = stores_available(ctx)
         key = call.get("key")
-        if key:
+        # A group's name (submissions) reads every key under it (submissions.mode, ...).
+        group = [found for name, found in settings.SETTINGS.items() if name.startswith(f"{key}.")]
+        if key and not group:
             return {"record": describe(settings.spec(key), settings.get(stores, key))}
         kinds = {store.kind for store in stores}
         return {
             "records": [
                 describe(found, settings.get(stores, found.key))
-                for found in settings.SETTINGS.values()
+                for found in group or settings.SETTINGS.values()
                 if found.scope in kinds
             ]
         }
@@ -100,7 +102,11 @@ SPEC = tool(
             ActionSpec(
                 "read",
                 "Read one setting, or all of them with their types, defaults and scopes.",
-                {"key": a.string(f"{KEY}; without it, all of them.")},
+                {
+                    "key": a.string(
+                        f"{KEY}, or a group such as submissions; without it, all of them."
+                    )
+                },
             ),
             ActionSpec(
                 "update",

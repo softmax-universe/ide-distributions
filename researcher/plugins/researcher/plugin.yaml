@@ -19,6 +19,7 @@ provides_tools:
   - softmax_api
   - task
   - task_ask
+  - task_complete
   - task_propose
   - task_propose_submission
   - task_release
