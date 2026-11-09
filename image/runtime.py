@@ -127,6 +127,9 @@ async def run(stack: AsyncExitStack) -> None:
             current = applied.is_file() and applied.read_text().strip() == image_id
             trace.get_current_span().set_attribute("profile.updated", not current)
             if home.exists() and not current:
+                # An interrupted upgrade must not leave an old image's success marker behind.
+                # Otherwise rolling back could reuse partially replaced profile content.
+                applied.unlink(missing_ok=True)
                 await command(HERMES, "profile", "update", role, "--yes", env=common)
             elif not home.exists():
                 await command(
