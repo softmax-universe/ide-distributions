@@ -14,7 +14,7 @@ In order, ``prepare``:
    unions the shipped ``terminal.env_passthrough`` entries with the owner's. A new install
    takes the model settings (``model``, ``fallback_providers``) from the shipped
    ``config.yaml`` and the bridge's ``/models`` route changes them; the one exception is
-   ``migrate_orchestrator_model``. It adds the shipped OpenRouter host pins
+   ``migrate_superseded_model``. It adds the shipped OpenRouter host pins
    (``PROVIDER_ROUTING_MODELS``) the owner's routing does not already decide, so the two
    shipped Kimi models go only to Moonshot's own endpoint;
 4. (Orchestrator) removes the retired observation cron; research serve owns scheduling;
@@ -138,10 +138,9 @@ PROVIDER_ROUTING_MODELS: dict[str, dict[str, Any]] = {
     "moonshotai/kimi-k3.1-pro": {"only": ["moonshotai"]},
     "moonshotai/kimi-k3": {"only": ["moonshotai"]},
 }
-# The Orchestrators installed before Kimi K3.1 Pro became the default: see
-# migrate_orchestrator_model.
-SUPERSEDED_ORCHESTRATOR_MODEL = "moonshotai/kimi-k3"
-ORCHESTRATOR_MODEL = "moonshotai/kimi-k3.1-pro"
+# The profiles installed before Kimi K3.1 Pro replaced Kimi K3: see migrate_superseded_model.
+SUPERSEDED_MODEL = "moonshotai/kimi-k3"
+CURRENT_MODEL = "moonshotai/kimi-k3.1-pro"
 # Lists the shipped config contributes to: the union of the shipped and retained entries is kept.
 ENV_PASSTHROUGH: dict[str, list[str]] = {
     "common": [
@@ -467,36 +466,56 @@ def _model_change_recorded(ws: Workspace, profile_name: str) -> bool:
     return row is not None
 
 
-def migrate_orchestrator_model(hermes: HermesCli, ws: Workspace, profile_name: str) -> list[str]:
-    """Move an Orchestrator still on the superseded default to the current one.
+def migrate_superseded_model(
+    hermes: HermesCli, ws: Workspace, profile_name: str, role: str
+) -> list[str]:
+    """Move a profile off the superseded Kimi K3: an Orchestrator's default, and any profile's
+    OpenRouter fallback entry that names it.
 
     The one case where preparation changes a model. Kimi K3 refuses far more first-try tool
-    calls than K3.1 Pro (Asana 1220151358122555), and workspaces installed earlier kept it only
-    because they were installed earlier. A ``profile.model_updated`` event for the profile means
-    the model was chosen on purpose, so it stays, K3 included. The change records that event
-    itself, so a user who moves back to K3 afterwards stays there.
+    calls than K3.1 Pro (Asana 1220151358122555), and is slower: from 2026-11-07 to 11-09 a K3
+    call took 10.2 s at the median against 4.3 s for K3.1 Pro, at similar input and output sizes
+    (53 against 172 output tokens a second; ``docs/reports/turn-latency-2026-11-09.md``). A
+    Researcher reaches its fallback whenever its free primary is rate-limited, which was most
+    of its calls. Workspaces installed earlier kept K3 only because they were installed earlier.
+    A ``profile.model_updated`` event for the profile means the model was chosen on purpose, so
+    it stays, K3 included. The change records that event itself, so a user who moves back to K3
+    afterwards stays there.
     """
-    if (
-        hermes.config_get("model.default") != SUPERSEDED_ORCHESTRATOR_MODEL
-        or hermes.config_get("model.provider") != "openrouter"
-        or _model_change_recorded(ws, profile_name)
+    if hermes.config_get("model.provider") != "openrouter" or _model_change_recorded(
+        ws, profile_name
     ):
         return []
-    hermes.config_set("model.default", ORCHESTRATOR_MODEL)
-    action = f"config: moved model.default to {ORCHESTRATOR_MODEL} (one-time migration)"
-    if hermes.dry_run:
-        return [action]
+    model = hermes.config_get("model.default")
     fallbacks = [
         {"provider": entry.get("provider") or "", "model": entry.get("model") or ""}
         for entry in hermes.config_get("fallback_providers") or []
         if isinstance(entry, dict)
     ]
+    moved = [
+        {**entry, "model": CURRENT_MODEL}
+        if entry == {"provider": "openrouter", "model": SUPERSEDED_MODEL}
+        else entry
+        for entry in fallbacks
+    ]
+    changed = []
+    if role == "orchestrator" and model == SUPERSEDED_MODEL:
+        hermes.config_set("model.default", CURRENT_MODEL)
+        changed.append("model.default")
+    if moved != fallbacks:
+        hermes.config_set("fallback_providers", moved)
+        changed.append("fallback_providers")
+    if not changed:
+        return []
+    action = f"config: moved {' and '.join(changed)} to {CURRENT_MODEL} (one-time migration)"
+    if hermes.dry_run:
+        return [action]
     current = {
         "profile": profile_name,
-        "role": "orchestrator",
-        "model": ORCHESTRATOR_MODEL,
+        "role": role,
+        "model": CURRENT_MODEL if "model.default" in changed else model,
         "provider": "openrouter",
-        "fallbacks": fallbacks,
+        "fallbacks": moved,
     }
     store = Store.open(ws.store_path, kind="workspace")
     try:
@@ -506,8 +525,8 @@ def migrate_orchestrator_model(hermes: HermesCli, ws: Workspace, profile_name: s
                 profile_name,
                 {
                     **current,
-                    "previous": {**current, "model": SUPERSEDED_ORCHESTRATOR_MODEL},
-                    "changed": ["model.default"],
+                    "previous": {**current, "model": model, "fallbacks": fallbacks},
+                    "changed": changed,
                 },
             )
     finally:
@@ -706,8 +725,8 @@ def prepare(
         actions.append("config: add workspace terminal shell initialization")
 
     marker = profile / PREPARED_MARKER
+    actions.extend(migrate_superseded_model(cli, ws, profile.name, role))
     if role == "orchestrator":
-        actions.extend(migrate_orchestrator_model(cli, ws, profile.name))
         if not check:
             actions.append(retire_watcher_job(profile))
     actions.extend(
