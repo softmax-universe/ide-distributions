@@ -208,12 +208,12 @@ that sends it.
 
 `research_core/agent_telemetry/observed.py` holds one writer per process: `research-serve` (the seam and its coordinator loops),
 the gateway's, and `research-command` for every other `research` command, including a workspace tool's subprocess.
-`image/application.py` has one of its own, `bridge`. All of this is metadata. Text reaches Datadog only through the gateway
+All of this is metadata. Text reaches Datadog only through the gateway
 writer.
 
 | `action` / `stage`                        | Written by             | Says                                                                                                   |
 | ----------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------ |
-| `admission` / `accepted`, `refused`       | `research serve`, or the bridge for a request it refused itself | One POST to a route in `RECORDED_ROUTES` (`serve.py`), or one request the bridge refused. Reads such as `GET /snapshot` have none. The only record with `request_id`. `native_event_type` names the route, or on a bridge refusal the operation, `unknown` if unsupported, and a failed Session selection has `reason: session_selection`. `details.status` is the status. On a refusal, `session_id` is what the client sent, unchecked |
+| `admission` / `accepted`, `refused`       | `research serve`       | One POST to a route in `RECORDED_ROUTES` (`serve.py`). Reads such as `GET /snapshot` have none. `native_event_type` names the route. `details.status` is the status. On a refusal, `session_id` is what the client sent, unchecked |
 | `admission` / `bound`                     | gateway                | An admission's native row: `admission_id`, `run_id` from Hermes, `session_id`, `hermes_message_id`     |
 | `store_event` / `committed`               | whichever process commits | One committed `events` row. `native_event_type` is its kind and `details.store_seq` its `seq`       |
 | `workspace_tool` / `completed`            | the process running the tool | One `run_tool` completion, with `run_tool`'s outcome names                                        |
@@ -235,13 +235,10 @@ records nothing.
 
 ### How to join them
 
-- **A request to its admission:** `request_id` is the bridge envelope's `id`, and the platform's `workspace_request_id`.
-  `operation_id` is the envelope's `op_id`. `admission_id` is the `op_id` of the store row. For a message the two are the same.
-  A request from the AIDE backend (`image/aide.py`) has no envelope, so `request_id` and `operation_id` are null. `admission_id`
-  is its JSON-RPC request ID, and a retry keeps it.
-- **An opening created with its first message:** `admission_id` is `uuid5(NAMESPACE_URL, "session-open:<message op_id>")`, and
-  the record shares the message's `session_id`.
-- **A retry:** a new `request_id`, the same `admission_id`, and no second `client.accepted`. Count acceptance from that event.
+- **A request to its admission:** `admission_id` is the `op_id` of the store row. For a request from the AIDE backend
+  (`image/aide.py`) it is the JSON-RPC request ID, and a retry keeps it.
+- **A retry:** another `accepted` record with the same `admission_id`, and no second `client.accepted`. Count acceptance from
+  that event.
 - **An admission to its runs:** the `store_event` `client.started`, by `admission_id`. There can be several: a held chat has
   `client.waiting` naming the run that failed (`run_id`, `reason`, `details.resume_after_s`), then `client.resumed`, then
   `client.started` with the new run, all under one admission. `details.steered` means the input joined a run already going.

@@ -33,7 +33,7 @@ The single budgeted key did its job as a hard cap. What all three tasks miss is 
 
 **Terms used in this report.** A *Coworld* is one game on the Softmax platform, and a *league* is a competition inside a Coworld; one Coworld can have several leagues. A *Player* is the user's platform identity, and a league's *champion* is the policy version that represents that Player in the league. The *Orchestrator* is the research-lead agent profile the user chats with. A *Researcher* is a worker profile that runs one Task in the background, and *Flint* is the free model Researchers use by default. The *watcher* is the Orchestrator's periodic job that syncs platform state and starts wake Sessions. The *lease* is the time-limited OpenRouter key the platform issues to a workspace, with a dollar limit. The workspace records the lease's expiry in a file named `.inference-lease`.
 
-The task statements built their story from Datadog logs, which cut tool arguments short and do not name the Session. The ops route `session.messages` returns Hermes's stored messages with full arguments, `workspace.snapshot` lists every Session with the event that triggered it, and `run.get` returns each run's status and token usage. OpenRouter's activity report for the key gives the exact dollars per model. Together they show three causes stacked on each other.
+The task statements built their story from Datadog logs, which cut tool arguments short and do not name the Session. The ops transcript read returns Hermes's stored messages with full arguments, the ops snapshot read lists every Session with the event that triggered it, and the ops run read returns each run's status and token usage. OpenRouter's activity report for the key gives the exact dollars per model. Together they show three causes stacked on each other.
 
 **Many runs from one event.** `leagues_of` returns the leagues whose Coworld is the active one, "else every league the platform lists" (`core/src/research_core/watcher/champion_sync.py:102-107`). The design rule it implements, A4.9, says "every league of the active Coworld's game" (`docs/plans/ide-profile-refactor/08-amendments.md:150-151`); the fallback goes beyond it. The platform lists 501 leagues and none carries the workspace's version id. Generals does have three leagues (Build 1v1, FFA and Classic 1v1). A league runs its Coworld's canonical version unless an admin locks it. The workspace was on generals-competition 0.6.3, and the match compared exact version ids, so it found nothing and the step pulled in all 14 leagues where the Player has a membership. `champion.sync` treats a league with no stored row as a change (`core/src/research_core/store/champion.py:64-66`) and emits `champion.changed` (`champion.py:100-118`), which starts a model wake (`core/src/research_core/watcher/handlers.py:114`). The watcher joins repeat events into one Session only when they share a kind *and* a subject (`core/src/research_core/watcher/wakes.py:22-25`). The subject is the league id, so 14 leagues gave 14 Sessions. Only the gateway held them back: Hermes `gateway.api_server.max_concurrent_runs` defaults to 10 (`hermes_cli/config_defaults.py:2236`).
 
@@ -200,7 +200,7 @@ The first change alone would have removed about $5.00 of the $10.02: none of the
 
 All times PST, November 2, 2026.
 
-**Spend.** OpenRouter's activity report for the workspace key on November 2 (UTC day; the incident lies inside it) gives $10.02 over 689 requests: Kimi K3 $8.95 (39.0M prompt tokens, 244k completion) and GLM-5.3 $1.07 (11.8M prompt, 30k completion). Per-run token counts come from `run.get`. Dollars per Session are estimates: prompt tokens at $0.133 per million plus output tokens at $12 per million, a blended rate that reproduces the key's total. The chat's first run was cancelled and reports no usage, so its tokens are estimated from the transcript's size. The Researcher's runs are not reachable through `run.get`, so its share is the remainder. Treat each figure as ±25%.
+**Spend.** OpenRouter's activity report for the workspace key on November 2 (UTC day; the incident lies inside it) gives $10.02 over 689 requests: Kimi K3 $8.95 (39.0M prompt tokens, 244k completion) and GLM-5.3 $1.07 (11.8M prompt, 30k completion). Per-run token counts come from the ops run read. Dollars per Session are estimates: prompt tokens at $0.133 per million plus output tokens at $12 per million, a blended rate that reproduces the key's total. The chat's first run was cancelled and reports no usage, so its tokens are estimated from the transcript's size. The Researcher's runs are not reachable through the ops run read, so its share is the remainder. Treat each figure as ±25%.
 
 | Session(s) | Input tokens | Output tokens | Model at run end | Approx. cost |
 |---|---|---|---|---|
@@ -213,7 +213,7 @@ All times PST, November 2, 2026.
 
 "Model at run end" is the model that served the run's last call. The two GLM runs started on Kimi K3 and moved to the GLM fallback after the 402. No Flint calls appear for the key, so the Researcher ran on its Kimi K3 fallback. All 14 champion wakes and the setup wake ended `completed`; the chat's last three runs ended `failed` on the key limit.
 
-**Calls.** Counts come from `session.messages` for each Session. "Refused" counts every tool result that starts with `{"ok": false`, whatever the tool. "Active" runs from the first to the last stored message, so it shows when a run actually began work, not when its Session row was created (all 14 champion rows were created at 1:31:54–55).
+**Calls.** Counts come from the ops transcript read for each Session. "Refused" counts every tool result that starts with `{"ok": false`, whatever the tool. "Active" runs from the first to the last stored message, so it shows when a run actually began work, not when its Session row was created (all 14 champion rows were created at 1:31:54–55).
 
 | Session | Kind | Active | Messages | Refused | `claim` calls |
 |---|---|---|---|---|---|
@@ -287,7 +287,7 @@ The three failed admissions (1:46:44, 1:47:00 and 1:50:57 PM) all carry "HTTP 40
 - Hermes v0.21.6 `agent/error_classifier.py:34-66`
 - Hermes v0.21.6 `agent/api_request_hooks.py:163-200`
 - Hermes v0.21.6 `hermes_cli/config_defaults.py:1296-1300,2236`
-- Workspace `58bda2da` transcripts (ops `session.messages`), snapshot (ops `workspace.snapshot`) and run records (ops `run.get`), read November 2, 2026
+- Workspace `58bda2da` transcripts, snapshot and run records (the workspace's ops reads, since retired), read November 2, 2026
 - OpenRouter activity report for the workspace key, November 2, 2026 (UTC)
 - Softmax platform `GET /v2/leagues`, read November 2, 2026
 - Asana JAME-174, JAME-175, JAME-176

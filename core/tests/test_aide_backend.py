@@ -1644,20 +1644,20 @@ def test_frontend_closed_ends_its_subscriptions(system):
     run(system, scenario)
 
 
-def test_relay_failures_reconnect_without_touching_the_legacy_connection(monkeypatch):
-    from control import serve as legacy
+def test_relay_failures_reconnect_without_touching_the_control_connection(monkeypatch):
+    from control import serve as control_serve
     from websockets.asyncio.server import serve as websocket_server
 
     # No seam runs here, and an unreachable seam ends the backend.
     monkeypatch.setattr(aide.Backend, "watch", lambda self: asyncio.Event().wait())
 
     async def main():
-        attempts, legacy_connections, bound = [], [], asyncio.Event()
+        attempts, control_connections, bound = [], [], asyncio.Event()
         binding = {"backend_id": str(uuid4()), "version": "1.0.0", "max_message_bytes": 1048576}
 
         async def platform(socket):
             if socket.request.path.endswith("/connection"):
-                legacy_connections.append(socket)
+                control_connections.append(socket)
                 await socket.wait_closed()
                 return
             attempts.append(socket.request.headers["Authorization"])
@@ -1676,14 +1676,12 @@ def test_relay_failures_reconnect_without_touching_the_legacy_connection(monkeyp
             common = {"platform_url": url, "workspace_id": "w", "credential": "proof"}
             env = {"API_SERVER_KEY": "proof"}
             connected = asyncio.Event()
-            control = asyncio.create_task(
-                legacy(**common, env=env, inference=Availability(), connected=connected)
-            )
+            control = asyncio.create_task(control_serve(**common, env=env, connected=connected))
             backend = asyncio.create_task(aide.serve(**common, env=env, inference=Availability()))
             async with asyncio.timeout(10):
                 await bound.wait()
                 await connected.wait()
-            assert len(legacy_connections) == 1
+            assert len(control_connections) == 1
             assert attempts == ["Bearer proof", "Bearer proof"]
             assert not control.done() and not backend.done()
             backend.cancel()

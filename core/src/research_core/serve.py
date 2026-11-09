@@ -35,8 +35,8 @@ page ``ui/index.html``, a self-contained page that exercises every route from a 
 so the page can show the watcher's liveness without a shell.
 
 The HTTP boundary also records each POST to ``RECORDED_ROUTES`` as metadata
-(``SeamServer.record_request``). A header
-carries the bridge's ID. ``agent_telemetry/CONTRACT.md`` says what is recorded and how it joins.
+(``SeamServer.record_request``).
+``agent_telemetry/CONTRACT.md`` says what is recorded and how it joins.
 """
 
 from __future__ import annotations
@@ -106,10 +106,6 @@ RETRY_AFTER_S = 1
 UI_ACTIONS = ("answer", "reaction")
 # An applied input response is its ``client.input_responded`` event, keyed by the client's op_id.
 INPUT_RESPONSE = "SELECT payload FROM events WHERE kind='client.input_responded' AND subject=?"
-# The bridge envelope's ``id``. ``Idempotency-Key`` holds its ``op_id``. Readers join this to the
-# platform's ``workspace_request_id``. It is a header because an admission's body must stay the same
-# when a request is retried, and each attempt has its own ID.
-BRIDGE_REQUEST_HEADER = "X-Bridge-Request-Id"
 RECORDED_ROUTES = {
     "/session-open": "session_open",
     "/message": "message",
@@ -569,7 +565,7 @@ class SeamServer:
                 "problems": problems,
             }
 
-    @span("session.message")
+    @span("message.admit")
     def message(self, body: dict) -> dict:
         """Confirm a durable input once; dispatch serially with Hermes's durable run key."""
         current = trace.get_current_span()
@@ -1108,14 +1104,12 @@ class SeamServer:
         result: dict | None = None,
         reason: str | None = None,
     ) -> None:
-        """One record per request, the only one that carries the bridge's ID. A second attempt of
-        an admission has a new ``request_id`` and writes no second ``client.accepted``."""
+        """One record per request. A second attempt of an admission writes no second
+        ``client.accepted``."""
         try:
             # Only a string has its tokens masked, and a refused body can hold anything.
             op_id = body.get("op_id")
             fields: dict[str, Any] = {
-                "request_id": headers.get(BRIDGE_REQUEST_HEADER),
-                "operation_id": headers.get("Idempotency-Key"),
                 "admission_id": op_id if isinstance(op_id, str) else None,
                 "size_bytes": int(headers.get("Content-Length") or 0),
                 "native_event_type": RECORDED_ROUTES[path],

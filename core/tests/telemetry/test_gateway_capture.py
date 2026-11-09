@@ -609,7 +609,7 @@ POLL_TEXT = '"GET /p/researcher/v1/runs/run_1 HTTP/1.1" 200 12 "-" "Python-urlli
         _access_line("POST /p/researcher/v1/runs/run_1/approval"),
         _access_line("POST /p/researcher/v1/runs/run_1/stop"),
         _access_line("POST /p/researcher/v1/runs"),
-        # The bridge's ``run.get``: the same call from another client.
+        # The AIDE backend's run read: the same call from another client.
         _access_line("GET /p/researcher/v1/runs/run_1", agent="python-httpx/0.28.1"),
         _access_line("GET /p/researcher/v1/runs/run_1", status=404),
         _access_line("GET /p/researcher/v1/runs/run_1", status=500),

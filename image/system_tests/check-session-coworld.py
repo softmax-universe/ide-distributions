@@ -1,4 +1,4 @@
-"""Two session-bound games through the packaged adapter, tools, prompts and native terminals."""
+"""Two session-bound games through the packaged AIDE backend, tools, prompts and terminals."""
 
 import asyncio
 import json
@@ -12,7 +12,7 @@ from dotenv import dotenv_values
 
 sys.path.insert(0, "/opt/distribution/image")
 sys.path.insert(0, "/opt/hermes")
-from application import Operation, response
+from aide import Backend, History, Open, Refusal, StateList
 from gateway.session_context import scoped_current_session_id
 from hermes_cli.plugins import discover_plugins
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -41,28 +41,19 @@ async def main():
                     + Path("/workspace/host/.gateway-key").read_text().strip(),
                 },
             ) as gateway,
+            asyncio.TaskGroup() as work,
         ):
+            backend = Backend(seam, gateway, Availability(), work)
+            frontend = uuid4()
             bound = []
             for game in ("cow_scope_diplomacy", "cow_scope_arena"):
-                context = {
-                    "contract_version": 1,
-                    "scope": "coworld",
-                    "coworld": game,
-                    "league": "league_" + game,
-                }
-                operation = Operation(
-                    id=uuid4(),
-                    op_id=uuid5(NAMESPACE_URL, f"packaged-session-scope:{game}"),
-                    name="session.open",
-                    args={
-                        "client": {"id": "scope-proof", "kind": "test"},
-                        "coworld": game,
-                        "league": context["league"],
-                    },
+                scope = {"scope": "coworld", "coworld": game, "league": "league_" + game}
+                opening = Open.model_validate(
+                    {"scope": scope, "client": {"id": "scope-proof", "kind": "test"}}
                 )
-                async with response(operation, seam, gateway, Availability()) as reply:
-                    assert reply.status_code == 200, await reply.aread()
-                    session_id = reply.json()["session_id"]
+                request_id = str(uuid5(NAMESPACE_URL, f"packaged-session-scope:{game}"))
+                opened = await backend.open(frontend, request_id, opening)
+                session_id = opened["session"]["id"]
                 ctx = ToolContext.from_env("orchestrator", {**env, "IDE_SESSION_ID": session_id})
                 try:
                     assert ctx.coworld().coworld_id == game
@@ -193,30 +184,28 @@ async def main():
                     finally:
                         ctx.wstore.close()
             for game, session_id, _ in bound:
-                listing = Operation(
-                    id=uuid4(),
-                    op_id=uuid4(),
-                    name="workspace.snapshot",
-                    args={"store": "workspace", "coworld": game, "league": "league_" + game},
+                scope = {"scope": "coworld", "coworld": game, "league": "league_" + game}
+                listing = await backend.list_state(
+                    frontend,
+                    str(uuid4()),
+                    StateList.model_validate({"resource": "sessions", "scope": scope}),
                 )
-                async with response(listing, seam, gateway, Availability()) as reply:
-                    assert reply.status_code == 200, await reply.aread()
-                    assert [row["id"] for row in reply.json()["records"]["sessions"]] == [
-                        session_id
-                    ]
-            foreign_read = Operation(
-                id=uuid4(),
-                op_id=uuid4(),
-                name="session.messages",
-                args={
-                    "session_id": bound[1][1],
-                    "coworld": bound[0][0],
-                    "league": "league_" + bound[0][0],
-                },
+                assert [item["id"] for item in listing["items"]] == [session_id], listing
+            first_game = bound[0][0]
+            foreign_scope = {
+                "scope": "coworld",
+                "coworld": first_game,
+                "league": "league_" + first_game,
+            }
+            foreign_read = History.model_validate(
+                {"session_id": bound[1][1], "scope": foreign_scope}
             )
-            async with response(foreign_read, seam, gateway, Availability()) as reply:
-                assert reply.status_code == 409, await reply.aread()
-                assert reply.json()["kind"] == "scope_mismatch"
+            refusal = None
+            try:
+                await backend.history(uuid4(), str(uuid4()), foreign_read)
+            except Refusal as refused:
+                refusal = refused
+            assert refusal is not None and refusal.code == "forbidden", refusal
             mismatch = await seam.post(
                 "/message",
                 json={

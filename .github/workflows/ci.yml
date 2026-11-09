@@ -83,9 +83,6 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: uv run python tools/check_prompts.py --model
-      - name: Agent application contract is current
-        if: env.RUN_TESTS == 'true'
-        run: /opt/hermes/.venv/bin/python tools/export_contract.py --check
       - name: Tests against the installed Hermes
         if: env.RUN_TESTS == 'true'
         run: uv run pytest -q -m hermes core/tests/hermes

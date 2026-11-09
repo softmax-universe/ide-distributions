@@ -75,7 +75,7 @@ The harness builds, in a fresh temporary directory, what hosting builds in a san
 | `IDE_WORKSPACE=<root>/workspace` in every `.env`, plus `IDE_PLATFORM`, `SOFTMAX_PLAYER_ID`, `IDE_RESEARCHER_PROFILES=researcher` and `OPENROUTER_API_KEY` | The per-profile `.env` `image/runtime.py` writes (no `SOFTMAX_PLAYER_ID`) |
 | `prepare.py --source <checkout>/<role> --hermes $HERMES_BIN` for each role, which records the core path, creates the stores, applies the protected config keys, removes the former watcher cron job and builds the workspace environment (`uv sync`) under `workspace/tools/venv` | The same script, run after every install and update; the environment is prebuilt at image build |
 | `hermes gateway run` with `GATEWAY_MULTIPLEX_PROFILES=true`, ready when `GET /v1/capabilities` answers 200; its output in `gateway.log` | The multiplexing gateway |
-| `SeamServer` (`research serve`'s class) in the pytest process, bound to a free loopback port | The same server in the image, reached through `image/application.py` |
+| `SeamServer` (`research serve`'s class) in the pytest process, bound to a free loopback port | The same server in the image, reached through the AIDE backend (`image/aide.py`) |
 | `research serve` owns watcher ticks every 60 seconds; the scenario only polls for completion | The same coordinator, without an observation cron |
 
 The gateway enables its API server from the host home's `.env`, not from the process
@@ -352,7 +352,7 @@ exec`:
 | `prepare.py --source /src/<role> --hermes /opt/hermes/.venv/bin/hermes` with the image's Python, each with `HERMES_HOME=<profile home>` and that profile's `.env` exported (`as-profile.sh`); the first run builds the workspace environment with `uv sync` into `/opt/data/workspace/tools/venv` (uv's cache and the CPython 3.12 it fetches stay on the volume) | The same script; the environment is prebuilt at image build |
 | Fake platform: build the fakegame fixture repository at `/opt/data/upstream/fakegame_repo` and point the fake's manifest at it (`tools/local_stack/configure_fake_platform.py`, as the real-Hermes test does) | n/a |
 | `hermes gateway run` with the host home, in the background, log `/opt/data/gateway.log`; ready when `GET /v1/capabilities` answers 200 with the key. The lifetime `research serve` coordinator owns observation and workflow advancement | The multiplexing gateway |
-| `research serve --host 0.0.0.0 --port 8650` from the workspace environment with the Orchestrator's environment, log `/opt/data/serve.log`; ready when `GET /health` answers | The same server, reached through `image/application.py` |
+| `research serve --host 0.0.0.0 --port 8650` from the workspace environment with the Orchestrator's environment, log `/opt/data/serve.log`; ready when `GET /health` answers | The same server, reached through the AIDE backend (`image/aide.py`) |
 
 Timings on November 4, 2026 (Apple silicon), fresh volume: both profile installs 3 s, the two
 preparations 4 s including the `uv sync`, fixture under a second, gateway ready 4 s after start,
@@ -484,7 +484,7 @@ with `session_context.coworld` registers that Coworld (`POST /session-open`).
   workspace wake` run the sleep cycle by hand (the container keeps running; `docs/hosting.md`,
   "Coordinator and pause").
 - **The relay.** Clients talk to `research serve` directly (`curl`, `ScriptedClient`), not through
-  the platform's relay and `image/application.py`.
+  the platform's relay and the AIDE backend (`image/aide.py`).
 - **Player provisioning.** Hosting selects the Player at workspace creation and mints one `cga_`
   token, which the image reads from `bootstrap.json` at each boot; here you paste a test Player's
   credential or use a 24-hour player session, and nothing refreshes it. `SOFTMAX_USER_CREDENTIAL`

@@ -32,7 +32,6 @@ RUN bash /opt/distribution/image/install-native-attachments.sh \
     && chmod -R a+rX /opt/models/whisper-base \
     && rm -rf /tmp/uv-cache
 COPY image/workspace-path.sh /etc/profile.d/workspace-path.sh
-COPY contract /opt/distribution/contract
 # Hosted workspaces use the built-in API transport. Keep other bundled plugins,
 # without discovering messaging adapters in the host or either profile.
 RUN mkdir /opt/workspace-plugins \
@@ -44,7 +43,7 @@ RUN mkdir /opt/workspace-plugins \
 # What names this image on every telemetry record: a hash of the sources it was built from, because
 # the build has no git history. image/runtime.py passes it on as IDE_IMAGE.
 RUN cd /opt/distribution \
-    && find pyproject.toml uv.lock core orchestrator researcher image contract -type f \
+    && find pyproject.toml uv.lock core orchestrator researcher image -type f \
          ! -path '*/__pycache__/*' -print0 \
        | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16 > image-id
 ENV PYTHONUNBUFFERED=1 \
