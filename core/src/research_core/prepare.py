@@ -91,11 +91,10 @@ PROTECTED_KEYS: dict[str, Any] = {
     # `todo`: the plan is Goals and Tasks, and no call in 1,981 used it. `delegation` stays: the
     # expert-consultation skill needs it, and a child without a Coworld is told so when it tries.
     "agent.disabled_toolsets": ["browser", "connections", "cronjob", "todo"],
-    # Compaction starts above 500,000 tokens on the shipped Kimi models, so old tool output
-    # otherwise stays in every request. From this request size, Hermes replaces results over 8,000
-    # characters that are older than compression.protect_last_n messages with a one-line summary
-    # (JAME-178).
+    # Reclaim stale results below Hermes's 8,000-character default cutoff as well. The existing
+    # deterministic prune protects recent results and archives originals without a model call.
     "compression.proactive_prune_tokens": 64000,
+    "compression.proactive_prune_min_result_chars": 2000,
 }
 
 # Orchestrator chats are long: compaction protects more of the head and tail and compacts less

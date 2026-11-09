@@ -13,11 +13,11 @@ approvals:
   cron_mode: approve
   single_query_mode: approve
   unattended_mode: approve
-# Old tool output otherwise stays in every request until compaction. From this request size, Hermes
-# replaces results over 8,000 characters that are older than the last 20 messages (Hermes's default
-# protect_last_n) with a one-line summary. prepare.py keeps this key (PROTECTED_KEYS).
+# Above 64,000 tokens, use Hermes's existing deterministic prune without a model call:
+# prune results over 2,000 characters older than the protected tail; archive originals.
 compression:
   proactive_prune_tokens: 64000
+  proactive_prune_min_result_chars: 2000
 # Hermes tools these agents never called, each sent on every model call. Hermes disables whole
 # toolsets: `browser` also takes browser_vault, browser_cdp and browser_dialog. prepare.py keeps
 # this key (PROTECTED_KEYS).

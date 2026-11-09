@@ -477,9 +477,12 @@ def test_prepared_config_prunes_an_old_tool_result_during_one_turn(hermes_bin, h
     in an archived row. A small result stays as it was."""
     prepare(hermes_bin, host, "orchestrator")
     large = tmp_path / "large.txt"
-    large.write_text("".join(f"large-file-line {line}\n" for line in range(3000)))
+    large.write_text("".join(f"large-file-line {line}\n" for line in range(300)))
     for index in range(22):
-        (tmp_path / f"small-{index}.txt").write_text(f"small-file-{index}\n")
+        text = f"small-file-{index}\n"
+        if index < 5:
+            text += "older output\n" * 400
+        (tmp_path / f"small-{index}.txt").write_text(text)
     script = r"""
 import json, sys, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -531,20 +534,21 @@ try:
         enabled_toolsets=["file"], quiet_mode=True, skip_context_files=True, skip_memory=True,
         skip_background_review=True, session_id=session, session_db=db, max_iterations=30)
     assert agent.context_compressor.proactive_prune_tokens == 64000
+    assert agent.context_compressor.proactive_prune_min_result_chars == 2000
     result = agent.run_conversation("Read the files.", conversation_history=[])
     assert result["final_response"] == "Finished", result
     def tool_texts(request):
         return [m["content"] for m in request["messages"] if m["role"] == "tool"]
-    assert "large-file-line 1999" in tool_texts(requests[1])[0], requests[1]["messages"]
+    assert "large-file-line 199" in tool_texts(requests[1])[0], requests[1]["messages"]
     final = tool_texts(requests[-1])
-    assert "large-file-line 1999" not in final[0] and len(final[0]) < 500, final[0]
-    assert "small-file-0" in final[1], final[1]
+    assert "large-file-line 199" not in final[0] and len(final[0]) < 500, final[0]
+    assert "small-file-6" in final[7], final[7]
     live = [m for m in db.get_messages(session) if m["role"] == "tool"]
-    assert "large-file-line 1999" not in live[0]["content"], live[0]
+    assert "large-file-line 199" not in live[0]["content"], live[0]
     archived = db._conn.execute(
         "SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND active = 0",
         (session,)).fetchall()
-    assert any("large-file-line 1999" in row[0] for row in archived), archived
+    assert any("large-file-line 199" in row[0] for row in archived), archived
     print("PASS")
 finally:
     server.shutdown()

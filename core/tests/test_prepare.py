@@ -137,13 +137,15 @@ def test_protected_keys_for_role_substitutes_the_role():
     for keys in (orchestrator, researcher):
         assert keys["agent.disabled_toolsets"] == ["browser", "connections", "cronjob", "todo"]
         assert keys["compression.proactive_prune_tokens"] == 64000
+        assert keys["compression.proactive_prune_min_result_chars"] == 2000
     # Compression protection is Orchestrator only (design F.5).
     assert orchestrator["compression.protect_first_n"] == 6
     assert orchestrator["compression.protect_last_n"] == 30
     assert orchestrator["compression.threshold"] == 0.6
     assert orchestrator["compression.target_ratio"] == 0.3
     assert {key for key in researcher if key.startswith("compression.")} == {
-        "compression.proactive_prune_tokens"
+        "compression.proactive_prune_tokens",
+        "compression.proactive_prune_min_result_chars",
     }
     assert "<role>" not in json.dumps(orchestrator) + json.dumps(researcher)
 
