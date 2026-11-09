@@ -22,6 +22,7 @@ from research_core.plugin.capture import (
     wire_request,
     with_row_ids,
 )
+from research_core.plugin.hermes_prompt import without_mandatory_tool_use
 from tests.telemetry.conftest import (
     HERMES_STYLE_SECRET,
     objects_of,
@@ -396,6 +397,45 @@ def test_a_system_prompt_cut_in_two_for_cache_markers_keeps_every_source(
     body = json.loads(objects[json.loads(objects[digest])["prompt_sections_digest"]])
     assert set(body) == {"sections"}
     assert [section["name"] for section in body["sections"]] == ["soul", "plugin_sections"]
+
+
+def test_a_block_the_middleware_drops_leaves_every_source_attributed(capture, writer, stream_file):
+    """``hermes_prompt`` drops a block from the middle of a section of the request, not the stored
+    prompt. That section keeps what was sent, and the dropped text is credited to no source."""
+    block = "<mandatory_tool_use>\nUSE A TOOL\n</mandatory_tool_use>\n\n"
+    guidance = f"GUIDANCE BEFORE\n{block}GUIDANCE AFTER"
+    prompt = f"SOUL TEXT\n\n{guidance}\n\nPLUGIN TEXT"
+    start = prompt.index(guidance)
+    capture.on_system_prompt_built(
+        session_id="ses_1",
+        system_prompt=prompt,
+        sections=[
+            {"source": "soul", "start": 0, "end": 9},
+            {"source": "tool_guidance", "start": start, "end": start + len(guidance)},
+            {"source": "plugin_sections", "start": len(prompt) - 11, "end": len(prompt)},
+        ],
+    )
+    request = {"model": "m", "messages": [{"role": "system", "content": prompt}]}
+    sent = without_mandatory_tool_use(request=request)["request"]
+    _attempt(capture, request=sent)
+    records = _flushed(writer, stream_file)
+    objects = objects_of(records)
+    manifest = json.loads(
+        objects[_digest(_operations(records, "model_attempt", "request")[0], "request_manifest")]
+    )
+    sections = json.loads(objects[manifest["prompt_sections_digest"]])["sections"]
+    system = json.loads(objects[manifest["messages"][0]])["content"].encode()
+    placed = {
+        section["name"]: system[
+            section["byte_offset"] : section["byte_offset"] + section["byte_length"]
+        ]
+        for section in sections
+    }
+    assert placed == {
+        "soul": b"SOUL TEXT",
+        "tool_guidance": b"GUIDANCE BEFORE\nGUIDANCE AFTER",
+        "plugin_sections": b"PLUGIN TEXT",
+    }
 
 
 def test_turn_context_is_placed_in_the_next_request_only(capture, writer, stream_file):
