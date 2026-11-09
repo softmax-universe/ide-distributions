@@ -354,3 +354,25 @@ reclaim orphaned observations without evicting active calls or backoff. An obser
 missing callback ends with `observation.complete=false` and a reason. Its end is an observation
 boundary, not an invented native completion timestamp. Capacity rejection emits a diagnostic
 span. Session restoration, isolated retry backoff, and frontend delivery are not inferred.
+
+## Retained-wake fast path
+
+After a profile's install/update and preparation both succeed, the supervisor atomically records
+`/opt/distribution/image-id` in that profile's `.softmax-distribution-image`. On another boot of
+the same image it skips the Hermes profile-update process. Missing markers and different images
+run the normal update, so existing volumes migrate on their first boot of this release. Interrupted
+updates cannot record success. Preparation, protected configuration and per-boot credentials still
+run every time. Profile-install spans include `profile.updated` to distinguish reconciliation from
+reuse. The image ID includes the distribution, runtime and dependencies, not a mutable image tag.
+
+Distribution-owned payload files are release content. The fast path no longer repairs arbitrary
+manual edits to those files on every wake; invalidate the marker to request reconciliation. Owner
+configuration, conversations and workspace data retain their normal update semantics.
+
+Gateway and application readiness use per-process Unix datagram notifications. Each supervisor
+binds a fresh private socket before launch; old boots cannot satisfy a new wait. Process exit and
+the startup deadline fail the wait. The gateway announces its bound API listener, and the application
+announces its bound listener after store initialization, ownership acquisition and dispatcher start.
+Each notification is followed by one HTTP contract check. There is no periodic startup probe.
+
+See [the polling audit](../docs/reports/workspace-polling-audit-2026-11-09.md) for remaining work.

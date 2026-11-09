@@ -52,8 +52,11 @@ for cycle in $(seq 1 "$cycles"); do
   docker exec "$name" /opt/hermes/.venv/bin/python /opt/distribution/image/system_tests/check-session-coworld.py
   if [[ "$cycle" == 1 ]]; then
     docker exec "$name" sh -c 'printf %s "$1" > /workspace/.state-proof' sh "$sentinel"
+    docker exec "$name" cat /workspace/host/profiles/orchestrator/distribution.yaml > "$scratch/installed-profile.yaml"
   else
     test "$(docker exec "$name" cat /workspace/.state-proof)" = "$sentinel"
+    # Same image: preserve the installed manifest, including installed_at, instead of recopying.
+    docker exec "$name" cat /workspace/host/profiles/orchestrator/distribution.yaml | cmp "$scratch/installed-profile.yaml" -
   fi
   docker exec "$name" /opt/hermes/.venv/bin/python -c \
     'import json, urllib.request; s=json.load(urllib.request.urlopen("http://127.0.0.1:8650/status")); assert not s["sleep_started"] and not s["paused"], s'
