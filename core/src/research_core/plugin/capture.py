@@ -29,6 +29,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from research_core import telemetry
 from research_core.agent_telemetry import (
     ContextPart,
     Producer,
@@ -820,12 +821,15 @@ def _gateway_writer() -> TelemetryWriter:
     global _writer
     with _writer_lock:
         if _writer is None:
+            redactor = hermes_redactor()
             _writer = TelemetryWriter(
                 stream_path(),
                 Producer.for_process(GATEWAY_WRITER),
-                redactor=hermes_redactor(),
+                redactor=redactor,
             )
             observed.bind(_writer, hermes_call_ids)
+            # Hermes's stderr handler writes JSON lines from here on, through the same scanner.
+            telemetry.json_console(logging.getLogger().handlers, redactor.text)
             logging.getLogger().addHandler(DiagnosticsHandler(_writer))
         return _writer
 

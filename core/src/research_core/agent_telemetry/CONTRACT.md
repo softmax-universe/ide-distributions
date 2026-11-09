@@ -216,7 +216,7 @@ writer.
 | `admission` / `accepted`, `refused`       | `research serve`       | One POST to a route in `RECORDED_ROUTES` (`serve.py`). Reads such as `GET /snapshot` have none. `native_event_type` names the route. `details.status` is the status. On a refusal, `session_id` is what the client sent, unchecked |
 | `admission` / `bound`                     | gateway                | An admission's native row: `admission_id`, `run_id` from Hermes, `session_id`, `hermes_message_id`     |
 | `store_event` / `committed`               | whichever process commits | One committed `events` row. `native_event_type` is its kind and `details.store_seq` its `seq`       |
-| `workspace_tool` / `completed`            | the process running the tool | One `run_tool` completion, with `run_tool`'s outcome names                                        |
+| `workspace_tool` / `completed`            | the process running the tool | One `run_tool` completion, with `run_tool`'s outcome names, `reason` its span's `error.type` and `turn_id` |
 | `attachment` / `prepared`, `failed`       | `research serve`       | One file's type (`native_event_type`), original `size_bytes` and change (`outcome`), or why it failed  |
 | `coordinator` / `report`                  | `research serve`       | One workflow pass as numbers. Sent only when it differs from the last                                  |
 | `coordinator` / `failed`, `runtime_recovered` | `research serve`   | A pass raised (`reason` is the exception's type), or a new runtime retired an old one's executions    |
