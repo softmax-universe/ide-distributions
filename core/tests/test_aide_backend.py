@@ -1237,6 +1237,49 @@ def test_scope_mismatches_are_forbidden_and_unscoped_sessions_are_hidden(system)
     run(system, scenario)
 
 
+def test_page_offers_and_resolves_a_different_coworld_without_changing_the_source(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        source = await opened(backend, LEAGUE)
+        previous = {"scope": "coworld", "coworld": "cow_other_previous", "league": "league_other"}
+        target = await opened(backend, previous)
+        page = {**previous, "coworld": "cow_other"}
+        params = {
+            "session_id": source,
+            "scope": LEAGUE,
+            "page": page,
+            "related_uploads": [previous["coworld"]],
+        }
+        same_game = await call(backend, "session.page", {**params, "related_uploads": [COWORLD_ID]})
+        assert same_game["result"] == {"kind": "stay"}
+        offer = await call(backend, "session.page", params)
+        assert offer["result"] == {"kind": "offer", "target_session_id": target}
+        confirmed = await call(backend, "session.page", {**params, "target_session_id": target})
+        assert confirmed["result"]["session"]["id"] == target
+        assert confirmed["result"]["session"]["scope"] == previous
+        assert (
+            code(await call(backend, "session.page", {**params, "target_session_id": source}))
+            == "not_found"
+        )
+        still_open = await call(
+            backend, "state.get", {"resource": "sessions", "id": source, "scope": LEAGUE}
+        )
+        assert still_open["result"]["item"]["scope"] == LEAGUE
+
+        empty = {**params, "page": {**page, "league": "league_empty"}}
+        assert (await call(backend, "session.page", empty))["result"] == {
+            "kind": "offer",
+            "target_session_id": None,
+        }
+        create = {**empty, "target_session_id": None}
+        first, retry = await asyncio.gather(
+            call(backend, "session.page", create), call(backend, "session.page", create)
+        )
+        assert first["result"]["session"]["scope"] == empty["page"]
+        assert first["result"]["session"]["id"] == retry["result"]["session"]["id"]
+
+    run(system, scenario)
+
+
 def test_a_wrong_scope_is_refused_to_that_request_alone_and_is_not_recorded(system):
     """A wrong scope on a session no frontend subscribed to yet must not become the scope the
     event watcher reads with: its refusal there would end the backend and recycle the runtime."""
