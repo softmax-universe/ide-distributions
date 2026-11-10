@@ -103,8 +103,9 @@ def render_context_block(parsed: dict) -> str | None:
         lines.append(f"voice: {kept['voice']}")
     if client_data := kept.get("client_data"):
         lines.append(f"client data (not interpreted): {client_data}")
-        upload = client_data.get("coworld_upload_id") if isinstance(client_data, dict) else None
-        if kept.get("coworld") and isinstance(upload, str) and upload != kept["coworld"]:
+    if upload := kept.get("viewed_coworld"):
+        lines.append(f"viewed Coworld upload (reported by the page): {upload}")
+        if kept.get("coworld") and upload != kept["coworld"]:
             lines.append(
                 "The page reports a different Coworld upload from this session's bound upload. "
                 "Keep the session scope. If the version matters to the request, verify the current "

@@ -35,6 +35,7 @@ from pydantic import (
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
+from research_core.contract import CONTRACT_VERSION
 from research_core.run_failures import CONTINUATION_PREFIX
 from research_core.store.db import DEFAULT_MAX_HOLD_S
 from research_core.store.migrate import BUSY_TIMEOUT_MS
@@ -110,12 +111,17 @@ class Open(Closed):
     client: Client | None = None
 
 
+class FrontendContext(Closed):
+    coworld_upload_id: str = Field(min_length=1, max_length=120)
+
+
 class Send(Closed):
     session_id: str
     messages: list[dict[str, JsonValue]]
     scope: Scope
     context: dict[str, JsonValue] | None = None
     instructions: str | None = Field(default=None, max_length=64000)
+    frontend_context_id: UUID | None = None
 
 
 class History(Closed):
@@ -798,6 +804,7 @@ class Backend:
         self.seam, self.gateway, self.inference, self.work = seam, gateway, inference, work
         self.epoch, self.revision = str(uuid4()), 0
         self.socket: ClientConnection | None = None
+        self.frontend_contexts: dict[UUID, dict[str, str]] = {}
         self.subscribers: dict[str, Subscription] = {}
         self.boards: dict[str, BoardFeed] = {}
         self.requests: dict[str, str] = {}  # admission op id -> session id
@@ -1472,7 +1479,30 @@ class Backend:
         session = await self.project(row, snapshot.records.requests)
         return {"session": session.model_dump(mode="json")}
 
+    async def register_frontend_context(
+        self, frontend_id: UUID, request_id: str, params: FrontendContext
+    ) -> dict:
+        contexts = self.frontend_contexts.setdefault(frontend_id, {})
+        if contexts.setdefault(request_id, params.coworld_upload_id) != params.coworld_upload_id:
+            raise Refusal("id_reused", "This context id already names a different Coworld upload")
+        return {"registered": True}
+
     async def send_chat(self, frontend_id: UUID, request_id: str, params: Send) -> dict:
+        context = params.context
+        if params.frontend_context_id is not None:
+            contexts = self.frontend_contexts.get(frontend_id, {})
+            upload = contexts.get(str(params.frontend_context_id))
+            if upload is None:
+                raise Refusal(
+                    "frontend_context_missing",
+                    "Register the viewed Coworld on this connection before sending",
+                    outcome="not_delivered",
+                )
+            context = {
+                "contract_version": CONTRACT_VERSION,
+                **(context or {}),
+                "viewed_coworld": upload,
+            }
         await self.touch(params.session_id, params.scope, frontend_id)
         if len(params.messages) != 1 or params.messages[0]["role"] != "user":
             raise Refusal("unsupported", "Send exactly one user message")
@@ -1493,7 +1523,9 @@ class Backend:
             "session_id": params.session_id,
             "message": params.messages[0],
             "actor": "user:aide",
-        } | params.model_dump(mode="json", include={"context", "instructions"}, exclude_none=True)
+        } | params.model_dump(mode="json", include={"instructions"}, exclude_none=True)
+        if context is not None:
+            body["context"] = context
         await self.call(self.seam, "POST", "/message", command=True, json=body)
         if not replay:
             self.ensure_consumer(request_id, params.session_id, params.scope)
@@ -1734,6 +1766,7 @@ class Backend:
             message = frame.message
             request_id, method = str(message["id"]), str(message["method"])
             handlers = {
+                "frontend.context": (FrontendContext, self.register_frontend_context),
                 "session.open": (Open, self.open),
                 "chat.send": (Send, self.send_chat),
                 "chat.history": (History, self.history),
@@ -1773,6 +1806,7 @@ class Backend:
 
     def closed(self, frontend_id: UUID) -> None:
         """The relay reports a frontend connection ended: its subscriptions end with it."""
+        self.frontend_contexts.pop(frontend_id, None)
         for subscription in self.subscribers.values():
             subscription.frontends.discard(frontend_id)
         for coworld, feed in list(self.boards.items()):
@@ -1804,12 +1838,19 @@ class Backend:
                             # This backend sends no reverse requests, so no replies arrive.
                             if frame.message.get("method") == "frontend.closed":
                                 self.closed(frame.frontend_id)
+                            elif (
+                                frame.message.get("method") == "frontend.context"
+                                and "id" in frame.message
+                            ):
+                                # Install before a later frontend.closed.
+                                await self.answer(socket, frame)
                             elif "method" in frame.message and "id" in frame.message:
                                 replies.create_task(self.answer(socket, frame))
                     except ConnectionClosed:  # superseded or expired; in-flight commands finish
                         log.info("AIDE relay closed the connection")
             finally:
                 self.socket = None
+                self.frontend_contexts.clear()
                 for feed in self.boards.values():
                     if feed.watcher is not None:
                         feed.watcher.cancel()

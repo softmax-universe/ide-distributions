@@ -65,6 +65,7 @@ bridge never writes them:
 |---|---|---|
 | `client` — the client that opened the Session (`id`, `kind`, `guide`) | bridge | the block; it overrides any `client` the message carried |
 | `coworld` — the Session's Coworld | bridge | the block; a block naming another Coworld is refused (409) |
+| `viewed_coworld` — the upload shown by the frontend | AIDE frontend registration | the admitted turn as advisory context |
 | the changes since this conversation's last turn | turn hook | `[changed since your last turn]` |
 | the unread notices | turn hook | `[notices since your last turn]` |
 

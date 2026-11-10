@@ -20,6 +20,7 @@
     },
     "scope": {"type": "string", "enum": ["workspace", "coworld"], "description": "Workspace assistant or a session bound to one Coworld."},
     "coworld": {"type": ["string", "null"], "maxLength": 120, "description": "The Coworld bound at session open; conflicting per-turn Coworlds are refused."},
+    "viewed_coworld": {"type": "string", "minLength": 1, "maxLength": 120, "description": "Advisory Coworld upload shown on the page when the turn was submitted."},
     "mode": {"$ref": "#/$defs/instruction"},
     "command": {"$ref": "#/$defs/instruction"},
     "league": {"type": ["string", "null"], "maxLength": 120},

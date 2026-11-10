@@ -110,6 +110,10 @@ that named a session in the last ten minutes: run output (`chat.event`, `chat.ch
 `chat.message`, `chat.finished`) and session changes from the seam's event stream
 (`state.changed`). Coworld sessions without a league have no AIDE scope and are not listed.
 
+`frontend.context` registers the browser's viewed upload for its connection. A send can reference
+that registration to snapshot the upload into its durable turn context. The session's bound Coworld
+still governs scope and authorization.
+
 Run progress is durable. One consumer per open request reads the gateway's run stream,
 translates each event to an AIDE `ChatEvent` (consecutive text deltas merge for 250 ms), appends
 it to the workspace store's `request_events` log through the seam (`POST /message-events`), and

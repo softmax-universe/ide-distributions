@@ -46,13 +46,13 @@ def test_context_distinguishes_viewed_upload_from_bound_coworld():
     context = {
         "contract_version": 1,
         "coworld": "cow_original",
-        "client_data": {"coworld_upload_id": "cow_new"},
+        "viewed_coworld": "cow_new",
     }
     changed = turn.render_context_block(context)
     assert "coworld: cow_original" in changed
     assert "cow_new" in changed
     assert "consult its release notes" in changed
-    context["client_data"]["coworld_upload_id"] = "cow_original"
+    context["viewed_coworld"] = "cow_original"
     assert "different Coworld upload" not in turn.render_context_block(context)
 
 

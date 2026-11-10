@@ -335,14 +335,27 @@ def test_chat_round_trip_pushes_what_the_reads_return_to_every_subscriber(system
             frontend=OTHER,
         )
         assert watching["result"]["item"]["id"] == session_id
+        upload = {"coworld_upload_id": "cow_viewed"}
+        context_id = str(uuid4())
+        registered = await call(backend, "frontend.context", upload, request_id=context_id)
+        assert registered["result"] == {"registered": True}
         request_id = str(uuid4())
-        params = {"session_id": session_id, "messages": say("hi"), "scope": WORKSPACE}
+        params = {
+            "session_id": session_id,
+            "messages": say("hi"),
+            "scope": WORKSPACE,
+            "frontend_context_id": context_id,
+        }
+        denied = await call(backend, "chat.send", params, request_id=request_id, frontend=OTHER)
+        assert code(denied) == "frontend_context_missing"
         accepted = await call(backend, "chat.send", params, request_id=request_id)
         assert accepted["result"] == {
             "accepted": True,
             "session_id": session_id,
             "request_id": request_id,
         }
+        row = ctx.wstore.one("SELECT payload FROM client_admissions WHERE op_id=?", (request_id,))
+        assert json.loads(row["payload"])["context"]["viewed_coworld"] == "cow_viewed"
         socket = backend.socket
         await until(lambda: socket.notes("chat.finished") and socket.notes("chat.finished", OTHER))
         (run_id,) = hermes.runs
@@ -418,6 +431,14 @@ def test_chat_round_trip_pushes_what_the_reads_return_to_every_subscriber(system
         frames = len(socket.frames)
         again = await call(backend, "chat.send", params, request_id=request_id)
         assert again["result"] == accepted["result"]
+        inline_context = {
+            "session_id": session_id,
+            "messages": say("hi"),
+            "scope": WORKSPACE,
+            "context": {"contract_version": 1, "viewed_coworld": "cow_viewed"},
+        }
+        inline_replay = await call(backend, "chat.send", inline_context, request_id=request_id)
+        assert inline_replay["result"] == accepted["result"]
         assert all("id" in f["message"] for f in socket.frames[frames:])
         changed = {**params, "messages": say("other")}
         assert code(await call(backend, "chat.send", changed, request_id=request_id)) == "id_reused"
@@ -425,6 +446,18 @@ def test_chat_round_trip_pushes_what_the_reads_return_to_every_subscriber(system
         # A new backend process reads the same records, events and seqs from durable state.
         requested = len(gateway.event_requests)
         restarted = await backend.restart()
+        assert code(await call(restarted, "chat.send", params, request_id=request_id)) == (
+            "frontend_context_missing"
+        )
+        new_context_id = str(uuid4())
+        await call(restarted, "frontend.context", upload, request_id=new_context_id)
+        replayed = await call(
+            restarted,
+            "chat.send",
+            {**params, "frontend_context_id": new_context_id},
+            request_id=request_id,
+        )
+        assert replayed["result"] == accepted["result"]
         assert (await events_read(restarted, session_id, request_id))["result"] == read
         reread = await call(
             restarted, "state.get", {"resource": "requests", "id": request_id, "scope": WORKSPACE}
