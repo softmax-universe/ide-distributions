@@ -298,7 +298,7 @@ class SeamServer:
                 )
                 # The constructor bound the listener and initialized/recovered the stores.
                 # Notify the supervisor only after acquiring ownership and starting dispatch.
-                if address := self.env.get("IDE_LISTENER_READY_SOCKET"):
+                if address := self.env.get("NOTIFY_SOCKET"):
                     with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sender:
                         sender.connect(address)
                         sender.send(b"READY=1")

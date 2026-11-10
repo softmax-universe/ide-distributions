@@ -1,7 +1,7 @@
 # Hermes patches
 
-Our own small changes to Hermes for telemetry hooks and hosted listener readiness. They apply to the Hermes in the image that `image/Dockerfile` pins (v0.22.6, upstream commit
-`f0d94882e89ab8d4098b5bb2f166adfb9ee0a0ab`). We do not propose them upstream. A Hermes update means
+Our own small changes to Hermes for telemetry hooks. They apply to the Hermes in the image that `image/Dockerfile` pins (v0.22.6, upstream commit
+`f0d94882e89ab8d4098b5bb2f166adfb9ee0a0ab`). Each one is to be proposed upstream and deleted once Hermes has it; a new one needs the `hermes-patch-approved` label (`.github/workflows/hermes-patch-guard.yml`). A Hermes update means
 reapplying them, rebuilding the image and rerunning `core/tests/hermes/test_hermes_patches.py`.
 
 `image/Dockerfile` applies them with `git apply`, in file-name order. The `core` job in
@@ -15,8 +15,6 @@ uses the unpatched image.
 | `0003-tool-results-and-commits.patch` | Report a tool result in the final form the model receives, and every row at the moment it becomes durable, with its database ID. |
 | `0004-run-binding.patch` | Tell a callback which run it belongs to, so that it never has to look up the session's latest run. |
 | `0005-gateway-exit-flush.patch` | Give plugins one call before the gateway's `os._exit`, which skips every `atexit` step. |
-| `0006-api-listener-ready.patch` | Notify the hosted supervisor when the API listener has bound and registered its routes, replacing readiness polling. |
-| `0007-payload-free-tool-error-log.patch` | Drop the `Tool X returned error` warning, which logged the tool's output. The plugin's `post_tool_call` logs each failure without it (`research_core.telemetry.finish_tool_call`). |
 
 `core/src/research_core/plugin/capture.py` is what uses the hooks.
 
@@ -72,12 +70,3 @@ require regenerating the later ones. Extract `/opt/hermes` from the pinned image
 scratch repository, apply the patches as one commit each, edit, and regenerate with
 `git diff HEAD~1 HEAD`. The image holds no Hermes tests. They are in the public repository at the
 commit above.
-
-## Hosted readiness
-
-`0006` sends `READY=1` to `IDE_LISTENER_READY_SOCKET` after the API listener
-binds. It does not alter systemd readiness or enable its watchdog. The image supervisor binds a private socket before
-launching the gateway, then waits for its notification or process exit, with a startup deadline.
-It performs one authenticated capabilities request after notification. This proves the same
-listener boundary as the previous HTTP polling; it does not assert inference availability.
-No upstream release or external integration is required.

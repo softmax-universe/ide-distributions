@@ -1,0 +1,26 @@
+name: hermes-patch-guard
+# Hermes patches are a fork tax re-paid on every Hermes bump (image/hermes-patches/README.md). A PR
+# that adds or changes one needs the hermes-patch-approved label; deleting one never does.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths: ['image/hermes-patches/**']
+permissions:
+  contents: read
+jobs:
+  guard:
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'hermes-patch-approved') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: No added or changed Hermes patch without approval
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          grown=$(git diff --name-only --diff-filter=AMR "$BASE"...HEAD -- 'image/hermes-patches/*.patch')
+          if [ -n "$grown" ]; then
+            echo "::error::Hermes patches added or changed without the hermes-patch-approved label: $grown"
+            exit 1
+          fi

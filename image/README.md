@@ -333,7 +333,7 @@ class and never text from the call: the distribution's outcome, a refusal's `kin
 result's `kind`, `timeout` or `degraded` status, `exit_code_nonzero`), else `tool_error`. The same
 call logs one line on `research_core.tool_call` with those fields and its duration, INFO when it
 succeeded and WARNING when it failed; it replaces Hermes's `Tool X returned error` line, which held
-the output (`hermes-patches/0007`). A failed `chat` span has `error.type`, Hermes's classification
+the output and which a logger filter in `plugin/capture.py` drops. A failed `chat` span has `error.type`, Hermes's classification
 (`rate_limit`, `server_error`, `unknown`...), and `exception.type`. A stream that fails after an HTTP
 200, such as OpenRouter's "Provider returned error" event, has no status code. At session end
 `invoke_agent` counts its model attempts, native tool calls and failed ones in
@@ -367,10 +367,13 @@ Distribution-owned payload files are release content. The fast path no longer re
 manual edits to those files on every wake; invalidate the marker to request reconciliation. Owner
 configuration, conversations and workspace data retain their normal update semantics.
 
-Gateway and application readiness use per-process Unix datagram notifications. Each supervisor
-binds a fresh private socket before launch; old boots cannot satisfy a new wait. Process exit and
-the startup deadline fail the wait. The gateway announces its bound API listener, and the application
-announces its bound listener after store initialization, ownership acquisition and dispatcher start.
+Gateway and application readiness use per-process Unix datagram notifications on systemd's
+`NOTIFY_SOCKET`. Each supervisor binds a fresh private socket before launch; old boots cannot
+satisfy a new wait. Process exit and the startup deadline fail the wait. The gateway sends Hermes's
+own `READY=1` once its adapters, cron and housekeeping run, which needs its systemd watchdog on
+(`systemd_watchdog_seconds` in the host `config.yaml` and `WATCHDOG_USEC`, both one hour). The
+application announces its bound listener after store initialization, ownership acquisition and
+dispatcher start.
 Each notification is followed by one HTTP contract check. There is no periodic startup probe.
 
 See [the polling audit](../docs/reports/workspace-polling-audit-2026-11-09.md) for remaining work.
