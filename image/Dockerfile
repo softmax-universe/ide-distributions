@@ -12,10 +12,13 @@ ENV UV_PYTHON_INSTALL_DIR=/opt/python \
     UV_PROJECT_ENVIRONMENT=/opt/workspace-env \
     UV_CACHE_DIR=/tmp/uv-cache \
     UV_PYTHON=3.12 \
-    IDE_WORKSPACE_ENV=/opt/workspace-env
-# Runtime files are read-only; compile dependencies and editable source at build time.
-RUN uv sync --frozen --no-dev --compile-bytecode --project /opt/distribution \
-    && /opt/workspace-env/bin/python -m compileall -q /opt/distribution/core \
+    IDE_WORKSPACE_ENV=/opt/workspace-env \
+    PYTHONPYCACHEPREFIX=/opt/python-bytecode
+# The Hermes launcher honors PYTHONPYCACHEPREFIX. Populate the same read-only cache that
+# both bundled interpreters and the launcher will read, including the workspace dependencies.
+RUN uv sync --frozen --no-dev --project /opt/distribution \
+    && /opt/workspace-env/bin/python -m compileall -q -x '/tests/' \
+       /opt/python /opt/workspace-env/lib /opt/distribution/core/src \
     && sha256sum /opt/distribution/uv.lock | cut -d ' ' -f1 > /opt/workspace-env/.lock-sha \
     && chmod -R a+rX /opt/python /opt/workspace-env /opt/distribution \
     && rm -rf /tmp/uv-cache
@@ -25,8 +28,10 @@ COPY image /opt/distribution/image
 RUN bash /opt/distribution/image/install-native-attachments.sh \
     && /opt/hermes/.venv/bin/python -m compileall -q -l /opt/hermes \
     && /opt/hermes/.venv/bin/python -m compileall -q -x '/(tests|node_modules)/' \
-       /opt/hermes/agent /opt/hermes/cron /opt/hermes/gateway /opt/hermes/hermes_cli \
-       /opt/hermes/plugins /opt/hermes/pm /opt/hermes/tools \
+       "$(/opt/hermes/.venv/bin/python -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')" \
+       /opt/hermes/.venv/lib /opt/hermes/agent /opt/hermes/cron /opt/hermes/gateway \
+       /opt/hermes/hermes_cli /opt/hermes/plugins /opt/hermes/pm /opt/hermes/tools \
+       /opt/distribution/core/src /opt/distribution/image \
     && chmod -R a+rX /opt/models/whisper-base \
     && rm -rf /tmp/uv-cache
 COPY image/workspace-path.sh /etc/profile.d/workspace-path.sh

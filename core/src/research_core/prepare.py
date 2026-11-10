@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any
 
 from research_core import layout
-from research_core.frozen_sessions import refresh_frozen_sessions
+from research_core.frozen_sessions import STATE_DB, refresh_frozen_sessions
 from research_core.layout import Workspace
 from research_core.locks import file_lock
 from research_core.store import coworlds
@@ -57,8 +57,6 @@ WATCHER_JOB_ID = "watcher"
 PREPARED_MARKER = ".softmax-prepared"
 CORE_PATH_FILE = Path("local") / "core-path.txt"
 LOCK_STAMP = ".lock-sha"
-# Nothing else in a boot waits on this command's success: a stuck one must not hold up the start.
-PROMPT_REFRESH_TIMEOUT_S = 120
 
 # Config keys the profile machinery relies on, re-applied at every preparation so that an edit
 # by the owner or an agent never switches a gate back on. ``<role>`` is substituted.
@@ -270,12 +268,10 @@ class HermesCli:
         self.env = {**env, "HERMES_HOME": str(profile)}
         self.run = run
 
-    def _call(self, *args: str, **run_options: Any) -> subprocess.CompletedProcess:
+    def _call(self, *args: str) -> subprocess.CompletedProcess:
         argv = [self.hermes, *args]
         try:
-            return self.run(
-                argv, env=self.env, capture_output=True, text=True, check=False, **run_options
-            )
+            return self.run(argv, env=self.env, capture_output=True, text=True, check=False)
         except FileNotFoundError as exc:
             raise PrepareError(f"hermes executable not found: {self.hermes}") from exc
 
@@ -308,14 +304,6 @@ class HermesCli:
         if _key_not_set(result):
             return False
         raise _failed(result)
-
-    def request_prompt_refresh(self) -> None:
-        """Ask every session in this profile to rebuild its system prompt on its next turn."""
-        result = self._call(
-            "sessions", "refresh-prompts", "--json", timeout=PROMPT_REFRESH_TIMEOUT_S
-        )
-        if result.returncode != 0:
-            raise _failed(result)
 
 
 class HermesConfig(HermesCli):
@@ -689,8 +677,9 @@ def prepare(
     """Prepare the profile at ``$HERMES_HOME`` from the distribution folder ``source``.
 
     ``source`` is ``<checkout>/orchestrator`` or ``<checkout>/researcher``; its name is the
-    role. ``cli`` configures the selected Hermes profile. The lifetime research serve
-    service owns observation and scheduling; preparation retires its former cron job.
+    role. ``cli`` configures the selected Hermes profile. Preparation runs under Hermes's
+    interpreter so a changed surface can request a refresh through its native session store.
+    The research serve service owns observation and scheduling.
     """
     source = Path(source)
     role = source.name
@@ -750,9 +739,18 @@ def prepare(
     if role == "orchestrator":
         if not check:
             actions.append(retire_watcher_job(profile))
-    actions.extend(
-        refresh_frozen_sessions(profile, source, cli.request_prompt_refresh, check=check)
-    )
+
+    def request_prompt_refresh() -> None:
+        from hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap
+        from hermes_state import SessionDB
+        from pm.paths import install_root
+
+        # Preserve the revision-gated home maintenance that the refresh command ran first.
+        maybe_run_boot_bootstrap(install_root())
+        with SessionDB(profile / STATE_DB) as state:
+            state.request_prompt_refresh()
+
+    actions.extend(refresh_frozen_sessions(profile, source, request_prompt_refresh, check=check))
 
     if check:
         actions.extend(cli.planned)

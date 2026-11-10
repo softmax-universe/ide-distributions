@@ -24,7 +24,8 @@ The host supplies a durable `/workspace`, writable `/tmp`, and a read-only
 `/run/workspace/bootstrap.json` containing `workspace_id`, `platform_url`, and
 `credential`. Run the image entrypoint as its declared numeric user, with a read-only
 root filesystem and no Linux capabilities. No source checkout or dependency installation
-is needed outside the image.
+is needed outside the image. The image compiles the Hermes and workspace Python environments
+into the same read-only cache prefix used at runtime, including by the Hermes launcher.
 
 The hosted image selects its bundled plugins through Hermes's supported
 `HERMES_BUNDLED_PLUGINS` setting. It preserves the base image's plugins except

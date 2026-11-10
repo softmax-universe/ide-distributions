@@ -4,13 +4,14 @@
 small ``state.db`` with Hermes's column names stands in, so the decisions run in the default suite.
 """
 
-import json
 import os
 import shutil
 import sqlite3
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -320,8 +321,7 @@ def test_check_reports_and_writes_nothing(release, profile):
     assert refresh.calls == 0
 
 
-def test_prepare_runs_the_refresh_through_the_hermes_command(tmp_path):
-    """The whole of prepare: the existing session is refreshed through ``hermes sessions``."""
+def test_prepare_requests_refresh_from_the_native_session_store(tmp_path, monkeypatch):
     from research_core import prepare as prepare_module
     from tests.test_prepare import FakeHermes
 
@@ -343,14 +343,23 @@ def test_prepare_runs_the_refresh_through_the_hermes_command(tmp_path):
     connection.commit()
     connection.close()
 
-    class Hermes(FakeHermes):
-        def run(self, argv, **kwargs):
-            if [str(part) for part in argv][1:3] == ["sessions", "refresh-prompts"]:
-                self.calls.append(([str(part) for part in argv], kwargs))
-                return subprocess.CompletedProcess(argv, 0, json.dumps({"epoch": 1}), "")
-            return super().run(argv, **kwargs)
+    calls = []
 
-    fake = Hermes()
+    @contextmanager
+    def session_db(path):
+        assert path == home / "state.db"
+        yield SimpleNamespace(request_prompt_refresh=lambda: calls.append("refresh"))
+        calls.append("close")
+
+    monkeypatch.setitem(sys.modules, "hermes_state", SimpleNamespace(SessionDB=session_db))
+    install = tmp_path / "hermes-install"
+    monkeypatch.setitem(sys.modules, "pm.paths", SimpleNamespace(install_root=lambda: install))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.boot_bootstrap",
+        SimpleNamespace(maybe_run_boot_bootstrap=lambda root: calls.append(("bootstrap", root))),
+    )
+    fake = FakeHermes()
     env = {
         "HERMES_HOME": str(home),
         "HERMES_REAL_HOME": str(tmp_path / "host"),
@@ -362,11 +371,4 @@ def test_prepare_runs_the_refresh_through_the_hermes_command(tmp_path):
 
     assert "open sessions: refreshed tools and system prompts" in summary["actions"]
     assert pin(home) is None
-    refresh_calls = [argv for argv in fake.hermes_calls() if argv[1:2] == ["sessions"]]
-    assert refresh_calls == [["hermes", "sessions", "refresh-prompts", "--json"]]
-    # Bounded, so a stuck command cannot hold up the boot.
-    assert all(
-        kwargs["timeout"] == prepare_module.PROMPT_REFRESH_TIMEOUT_S
-        for argv, kwargs in fake.calls
-        if argv[1:2] == ["sessions"]
-    )
+    assert calls == [("bootstrap", install), "refresh", "close"]
