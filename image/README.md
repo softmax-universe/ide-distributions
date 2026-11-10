@@ -371,7 +371,7 @@ Gateway and application readiness use per-process Unix datagram notifications on
 `NOTIFY_SOCKET`. Each supervisor binds a fresh private socket before launch; old boots cannot
 satisfy a new wait. Process exit and the startup deadline fail the wait. The gateway sends Hermes's
 own `READY=1` once its adapters, cron and housekeeping run, which needs its systemd watchdog on
-(`systemd_watchdog_seconds` in the host `config.yaml` and `WATCHDOG_USEC`, both one hour). The
+(`gateway.systemd_watchdog_seconds` in the host `config.yaml` and `WATCHDOG_USEC`, both one hour). The
 application announces its bound listener after store initialization, ownership acquisition and
 dispatcher start.
 Each notification is followed by one HTTP contract check. There is no periodic startup probe.

@@ -209,7 +209,7 @@ async def run(stack: AsyncExitStack) -> None:
                 # Hermes notifies NOTIFY_SOCKET only with its systemd watchdog on, which needs
                 # both the config key and WATCHDOG_USEC. An hour apart, its pings are inert.
                 await command(
-                    HERMES, "config", "set", "systemd_watchdog_seconds", "3600", env=common
+                    HERMES, "config", "set", "gateway.systemd_watchdog_seconds", "3600", env=common
                 )
                 gateway = await stack.enter_async_context(
                     ready_process(
