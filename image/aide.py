@@ -1482,7 +1482,9 @@ class Backend:
             rows = [
                 row
                 for row in snapshot.records.sessions
-                if row.scope() is not None and (params.scope is None or row.scope() == params.scope)
+                if (scope := row.scope()) is not None
+                and (params.scope is None or scope == params.scope)
+                and (params.scope_id is None or scope.coworld == params.scope_id)
             ]
         else:
             coworld = params.scope.coworld if params.scope else params.scope_id
