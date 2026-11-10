@@ -75,6 +75,10 @@ def report(proof):
     return rebuilt(proof)
 
 
+# The title call starts with the turn and can write its request before the main one.
+AUXILIARY = b'"model_attempt_id":"aux-'
+
+
 def main_requests(report: dict) -> list[dict]:
     return [r for r in report["requests"] if r["native_event_type"] in MAIN]
 
@@ -493,7 +497,9 @@ def test_a_kill_during_a_call_keeps_its_request(hermes_bin, tmp_path):
         )
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
-            calls = sum(request in line for line in raw_lines(gateway.stream))
+            calls = sum(
+                request in line and AUXILIARY not in line for line in raw_lines(gateway.stream)
+            )
             if calls == 2 and stub.tool_followups_at:
                 break
             time.sleep(0.05)
@@ -527,7 +533,7 @@ def test_a_kill_during_the_first_call_keeps_the_users_message(hermes_bin, tmp_pa
         )
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
-            if any(request in line for line in raw_lines(gateway.stream)):
+            if any(request in line and AUXILIARY not in line for line in raw_lines(gateway.stream)):
                 break
             time.sleep(0.05)
         gateway.process.send_signal(signal.SIGKILL)
