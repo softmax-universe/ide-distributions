@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -759,6 +760,84 @@ def test_hermes_classification_of_a_failed_attempt_stays_in_the_report(
     assert attempt["failed"]["reason"] == "rate_limit"
     assert attempt["failed"]["details"] == {"status_code": 429}
     assert report["missing"] == []
+
+
+def test_a_failure_before_any_attempt_of_its_call_is_kept_and_the_rest_rebuilds(
+    writer, stream_file, datadog, home
+):
+    """Hermes reports a call whose request could not be built, so ``pre_api_request`` never
+    recorded an attempt of it. Such a failure binds to no other call's attempt, and the rebuild
+    keeps it as an event beside the rest of the Session."""
+    capture = GatewayCapture(writer, "researcher")
+
+    def unbuilt(call: str) -> None:
+        capture.api_request_error(
+            session_id="ses_1",
+            reason="unknown",
+            api_request_id=call,
+            error={"type": "ValueError", "message": f"could not build {call}"},
+        )
+
+    unbuilt("t:api:1")
+    capture.keep_request(
+        request=request_body([{"role": "user", "content": "Go"}]), session_id="ses_1"
+    )
+    capture.pre_api_request(session_id="ses_1", api_request_id="t:api:2")
+    capture.post_api_request(
+        session_id="ses_1",
+        api_request_id="t:api:2",
+        assistant_message=SimpleNamespace(content="done", tool_calls=None),
+    )
+    unbuilt("t:api:3")
+    records = sent(writer, stream_file, datadog)
+    failures = [r for r in records if r.get("stage") == "failed"]
+    assert [("model_attempt_id" in r, r["api_request_id"]) for r in failures] == [
+        (False, "t:api:1"),
+        (False, "t:api:3"),
+    ]
+
+    report = rebuild_session(search_of(datadog), "ses_1")
+    [attempt] = report["requests"]
+    assert attempt["model_attempt_id"] == "t:api:2#1" and "failed" not in attempt
+    assert attempt["response"]["message"] == {"role": "assistant", "content": "done"}
+    events = [e for e in report["events"] if e["action"] == "model_attempt"]
+    assert [(e["stage"], e["error"]) for e in events] == [
+        ("failed", "could not build t:api:1"),
+        ("failed", "could not build t:api:3"),
+    ]
+
+
+def test_a_stream_retried_inside_its_attempt_keeps_the_partial_and_the_final_reply(
+    writer, stream_file, datadog, home
+):
+    """Hermes retries a broken stream inside one attempt: what the broken one showed and the
+    retry's reply share the attempt and the ``response`` stage, and both come back."""
+    capture = GatewayCapture(writer, "researcher")
+    capture.keep_request(
+        request=request_body([{"role": "user", "content": "Go"}]), session_id="ses_1"
+    )
+    capture.pre_api_request(session_id="ses_1", api_request_id="t:api:1")
+    capture.on_stream_start(session_id="ses_1")
+    capture.on_stream_delta(session_id="ses_1", delta="first thoughts", kind="reasoning")
+    capture.on_stream_end(session_id="ses_1", final_text="Half an", finished=False)
+    capture.on_stream_start(session_id="ses_1")
+    capture.post_api_request(
+        session_id="ses_1",
+        api_request_id="t:api:1",
+        assistant_message=SimpleNamespace(content="Half an answer, whole", tool_calls=None),
+    )
+    sent(writer, stream_file, datadog)
+
+    [attempt] = rebuild_session(search_of(datadog), "ses_1")["requests"]
+    assert attempt["response"]["partial"] is False
+    assert attempt["response"]["message"]["content"] == "Half an answer, whole"
+    [partial] = attempt["partial_responses"]
+    assert partial["partial"] is True and partial["outcome"] == "failed"
+    assert partial["message"] == {
+        "role": "assistant",
+        "content": "Half an",
+        "reasoning_content": "first thoughts",
+    }
 
 
 def test_a_users_message_survives_a_kill_during_its_first_call(writer, stream_file, datadog, home):

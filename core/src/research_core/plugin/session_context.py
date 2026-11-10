@@ -10,6 +10,7 @@ A3.3). Stdlib only.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 MAX_CHARS = 3800
@@ -99,12 +100,13 @@ def render(ctx: Any, session_id: str, max_chars: int = MAX_CHARS) -> str:
 
 
 def make_section(role: str):
-    def section(info: Any = None, **_: Any) -> str:
+    def section(info: Mapping[str, Any], **_: Any) -> str:
+        """Hermes passes ``info`` as a read-only mapping, not a dict."""
+        session_id = info["session_id"]
         try:
             from research_core.plugin.executor import profile_env
             from research_core.tools.base import ToolContext
 
-            session_id = (info or {}).get("session_id", "") if isinstance(info, dict) else ""
             ctx = ToolContext.from_env(role, profile_env(IDE_SESSION_ID=session_id))
             return render(ctx, session_id)
         except Exception as error:

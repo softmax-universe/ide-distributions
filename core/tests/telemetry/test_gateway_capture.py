@@ -7,14 +7,18 @@ cover what a stub model there does not produce: failures, compaction, approvals 
 
 import json
 import logging
+import os
 import sqlite3
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
+from research_core.agent_telemetry import TelemetryWriter
 from research_core.plugin.capture import (
     ACCESS_LOGGER,
     NO_SESSION,
@@ -523,3 +527,88 @@ def test_the_log_handler_stays_on_the_callers_thread_after_logging_moves_to_its_
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"
+
+
+@pytest.fixture
+def stalled_writer(tmp_path, producer, redactor):
+    """A writer whose stream is a pipe that is open and never read, as a stalled container pipe."""
+    fifo = tmp_path / "stalled"
+    os.mkfifo(fifo)
+    reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+    instance = TelemetryWriter(str(fifo), producer, redactor=redactor)
+    yield instance
+    os.close(reader)
+
+
+def test_a_turn_end_never_waits_for_a_stalled_stream(stalled_writer, home):
+    """Telemetry never delays the agent: with the pipe full and the writer's thread stuck on it,
+    a turn's end still only enqueues."""
+    capture = GatewayCapture(stalled_writer, "orchestrator")
+    big = {**REQUEST, "messages": [*REQUEST["messages"], {"role": "user", "content": "x" * 2**20}]}
+    _request(capture, request=big)
+    _reply(capture)
+    started = time.monotonic()
+    capture.on_session_end(session_id="ses_1", turn_id="turn-1", completed=True)
+    # A few milliseconds alone, more on a loaded CI runner; a wait on the writer would never end.
+    assert time.monotonic() - started < 1.0
+
+
+def test_a_turns_calls_are_forgotten_at_its_end_and_its_failures_stay_attributed(
+    capture, writer, stream_file
+):
+    """A Session's calls must not accumulate state across turns, and a failure during the turn
+    still names its attempt."""
+    for number in range(1, 1001):
+        call = f"turn-1:api:{number}"
+        capture.keep_request(request=REQUEST, session_id="ses_1")
+        capture.pre_api_request(
+            session_id="ses_1", api_request_id=call, conversation_history=HISTORY
+        )
+        capture.post_api_request(
+            session_id="ses_1",
+            api_request_id=call,
+            assistant_message=SimpleNamespace(content="ok", tool_calls=None),
+        )
+    capture.keep_request(request=REQUEST, session_id="ses_1")
+    capture.pre_api_request(session_id="ses_1", api_request_id="turn-1:api:1001")
+    capture.api_request_error(session_id="ses_1", api_request_id="turn-1:api:1001", reason="x")
+    capture.on_session_end(session_id="ses_1", turn_id="turn-1", completed=True)
+    assert (capture._attempts, capture._open_attempt, capture._turn_calls) == ({}, {}, {})
+    records = _flushed(writer, stream_file)
+    [failed] = _operations(records, "model_attempt", "failed")
+    assert failed["model_attempt_id"] == "turn-1:api:1001#1"
+
+
+def test_a_stalled_log_destination_never_holds_up_the_logging_thread():
+    """Behind ``telemetry``'s queue a record that does not fit is dropped and counted, and the
+    destination hears the count when it takes records again."""
+    from research_core.telemetry import LOG_QUEUE_SIZE, DroppingQueueHandler, DropReportingListener
+
+    released = threading.Event()
+    heard: list[str] = []
+
+    class Stalled(logging.Handler):
+        def emit(self, record):
+            released.wait()
+            heard.append(record.getMessage())
+
+    handler = DroppingQueueHandler()
+    listener = DropReportingListener(handler, Stalled())
+    listener.start()
+    logger = logging.Logger("stalled")
+    logger.addHandler(handler)
+    started = time.monotonic()
+    for number in range(LOG_QUEUE_SIZE + 100):
+        logger.warning("line %d", number)
+    assert time.monotonic() - started < 1.0
+    assert handler.dropped >= 99
+    released.set()
+    deadline = time.monotonic() + 10
+    while not handler.queue.empty() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    logger.warning("after")
+    while heard[-1:] != ["after"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    listener.stop()
+    assert heard[-1] == "after"
+    assert f"logging: {handler.dropped} records dropped so far" in heard

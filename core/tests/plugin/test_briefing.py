@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 
 from research_core.plugin import briefing
 from research_core.store import (
@@ -321,17 +322,24 @@ def test_an_item_that_raises_does_not_break_the_rest(tmp_path, monkeypatch):
 
 
 def test_make_section_reads_the_session_id_and_never_raises(tmp_path, monkeypatch):
+    """Hermes passes the session info as a read-only mapping, not a dict."""
     monkeypatch.setenv("IDE_WORKSPACE", str(tmp_path))
     make_ctx(tmp_path)
     section = briefing.make_section("researcher")
-    assert section({"session_id": "chat1"}).startswith("[briefing]")
-    assert section(None).startswith("[briefing]")
+    info = MappingProxyType({"session_id": "chat1", "model": "m"})
+    assert section(info).startswith("[briefing]")
+    rendered_for = []
+    monkeypatch.setattr(
+        briefing, "render", lambda ctx, session_id, **_: rendered_for.append(session_id) or ""
+    )
+    section(info)
+    assert rendered_for == ["chat1"]
 
     def boom(*args, **kwargs):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(briefing, "render", boom)
-    assert section({"session_id": "chat1"}) == "Briefing unavailable: RuntimeError: boom"
+    assert section(info) == "Briefing unavailable: RuntimeError: boom"
 
 
 def test_the_briefing_says_when_it_was_written_and_that_it_does_not_update(tmp_path):

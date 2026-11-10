@@ -861,6 +861,29 @@ def test_metadata_uses_native_identity_for_identical_messages(seam, monkeypatch)
     ]
 
 
+def test_a_truncated_stream_continuation_binds_the_users_row_not_the_nudge(seam, monkeypatch):
+    """Hermes continues a truncated stream with a user nudge it never commits, so the nudge has no
+    row ID. The turn's user message is the last committed one."""
+    from research_core.plugin import messages as message_plugin
+
+    monkeypatch.setattr("research_core.plugin.executor.profile_env", lambda **_: seam.ctx.env)
+    seam.client.open(session_context={"contract_version": 1, "coworld": COWORLD_ID})
+    sent = seam.say("go on", context={"contract_version": 1})
+    message_plugin.record_native_message(
+        span_for_session=lambda _: 1 / 0,  # Tracing is not under test.
+        session_id=seam.client.session_id,
+        conversation_history=[
+            {"role": "user", "content": "go on", "_row_id": 7},
+            {"role": "assistant", "content": "Half", "_length_continuation_fragment": True},
+            {"role": "user", "content": "[continue]", "_length_continuation_nudge": True},
+        ],
+    )
+    row = seam.wstore.one(
+        "SELECT native_message_id FROM client_admissions WHERE op_id=?", (sent["op_id"],)
+    )
+    assert row["native_message_id"] == 7
+
+
 def test_ui_answer_and_delivery_obligation_roll_back_together(seam, monkeypatch):
     from research_core.store import admissions
     from research_core.store.errors import StoreError

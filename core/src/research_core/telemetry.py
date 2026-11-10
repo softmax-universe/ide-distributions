@@ -78,6 +78,47 @@ def json_console(handlers: Iterable[logging.Handler], redact: Callable[[str], st
             handler.setFormatter(JsonLines(redact))
 
 
+LOG_QUEUE_SIZE = 2048
+
+
+class DroppingQueueHandler(QueueHandler):
+    """Never waits for a destination: a record that does not fit in the queue is counted instead."""
+
+    def __init__(self) -> None:
+        super().__init__(queue.Queue(maxsize=LOG_QUEUE_SIZE))
+        self.dropped = 0
+
+    def enqueue(self, record: logging.LogRecord) -> None:
+        # ``Handler.handle`` holds this handler's lock, and only the listener takes records out.
+        if self.queue.full():
+            self.dropped += 1
+        else:
+            self.queue.put_nowait(record)
+
+
+class DropReportingListener(QueueListener):
+    """Tells the destinations how many records the queue dropped, before the next one it passes."""
+
+    def __init__(self, source: DroppingQueueHandler, *handlers: logging.Handler) -> None:
+        super().__init__(source.queue, *handlers, respect_handler_level=True)
+        self.source = source
+        self.reported = 0
+
+    def handle(self, record: logging.LogRecord) -> None:
+        if self.source.dropped != self.reported:
+            self.reported = self.source.dropped
+            notice = logging.makeLogRecord(
+                {
+                    "name": __name__,
+                    "levelno": logging.WARNING,
+                    "levelname": "WARNING",
+                    "msg": f"logging: {self.reported} records dropped so far",
+                }
+            )
+            super().handle(notice)
+        super().handle(record)
+
+
 def configure_logging() -> None:
     """Standard bounded logging queue; slow handlers never run on functional threads.
 
@@ -99,9 +140,9 @@ def configure_logging() -> None:
         logging.StreamHandler(sys.stderr)
     ]
     json_console(destinations, mask_softmax_tokens)
-    handler = QueueHandler(queue.Queue(maxsize=2048))
+    handler = DroppingQueueHandler()
     root.handlers = [handler, *direct]
-    QueueListener(handler.queue, *destinations, respect_handler_level=True).start()
+    DropReportingListener(handler, *destinations).start()
     _logging_started = True
 
 

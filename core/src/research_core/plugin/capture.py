@@ -16,7 +16,9 @@ no agent; Hermes logs it.
 - The run: ``plugin/runs.py``, from the Session's started admission.
   An auxiliary call keeps the run its Session's turn was in when the call began.
 
-A hard exit loses what the writer still had queued. One writer serves the whole gateway process,
+Telemetry never waits on the agent's path: a hook only enqueues. The writer's thread is a daemon,
+and Hermes ends the gateway with ``os._exit``, so any exit loses what the writer still had queued.
+One writer serves the whole gateway process,
 because a multiplexed gateway registers this plugin once per profile. Each profile has its own
 ``GatewayCapture``, for its name and per-session state.
 
@@ -78,11 +80,9 @@ def remember_section(name: str, render: Callable[..., str]) -> Callable[..., str
     """``render`` for ``register_system_prompt_section``, keeping what it gave each Session, so
     that its stretch of the system prompt can be attributed to it."""
 
-    def section(info: Any = None, **kwargs: Any) -> str:
+    def section(info: Mapping[str, Any], **kwargs: Any) -> str:
         text = render(info, **kwargs)
-        # Hermes passes a read-only mapping, not a dict.
-        session_id = str(info.get("session_id") or "") if isinstance(info, Mapping) else ""
-        _plugin_sections[session_id][name] = text
+        _plugin_sections[info["session_id"]][name] = text
         return text
 
     return section
@@ -224,6 +224,11 @@ class GatewayCapture:
         self._requests: dict[str, Mapping[str, Any]] = {}
         self._attempts: dict[str, int] = defaultdict(int)
         self._attempt: dict[str, str] = {}
+        # Each call's attempt in flight, by ``api_request_id``, until Hermes reports it failed.
+        # Hermes also reports a call whose request could not be built, before it has an attempt.
+        self._open_attempt: dict[str, str] = {}
+        # The calls of each Session's current turn, whose state its end clears.
+        self._turn_calls: dict[str, list[str]] = defaultdict(list)
         self._results_seen: dict[str, set[str]] = defaultdict(set)
         self._turn_parts: dict[str, list[ContextPart]] = {}
         self._reasoning: dict[str, list[str]] = defaultdict(list)
@@ -348,8 +353,10 @@ class GatewayCapture:
             return
         call = api_request_id or str(uuid.uuid4())
         self._attempts[call] += 1
+        self._turn_calls[session_id].append(call)
         attempt_id = f"{call}#{self._attempts[call]}"
         self._attempt[session_id] = attempt_id
+        self._open_attempt[call] = attempt_id
         wire = wire_request(request)
         wire["messages"] = with_row_ids(wire.get("messages", ()), row_keys(conversation_history))
         identity = {key: value for key, value in ids.items() if key != "session_id"}
@@ -464,7 +471,9 @@ class GatewayCapture:
         ended_at: float | None = None,
         **_: Any,
     ) -> None:
-        """Hermes's verdict on a failed attempt, with its error text."""
+        """Hermes's verdict on a failed attempt, with its error text. A call that failed before its
+        request was recorded, such as one whose request could not be built, has no attempt: its
+        record has no ``model_attempt_id``."""
         ids = self._ids(session_id, api_request_id=api_request_id)
         error = error or {}
         self._writer.capture_operation(
@@ -472,7 +481,7 @@ class GatewayCapture:
             "failed",
             occurred_at=ended_at,
             content={"error": error.get("message")} if error.get("message") else None,
-            model_attempt_id=self._attempt.get(session_id),
+            model_attempt_id=self._open_attempt.pop(api_request_id or "", None),
             reason=_name(reason) or _name(error.get("type")),
             duration_ms=_milliseconds(started_at, ended_at),
             details=_numbers(status_code=status_code),
@@ -699,6 +708,7 @@ class GatewayCapture:
             )
             if old_session_id in _plugin_sections:
                 _plugin_sections[session_id] = _plugin_sections.pop(old_session_id)
+            self._turn_calls[session_id] += self._turn_calls.pop(old_session_id, [])
         self._writer.capture_operation(
             "compaction",
             "committed",
@@ -725,6 +735,9 @@ class GatewayCapture:
     ) -> None:
         """In Hermes this ends a turn, not a Session."""
         self._turn_parts.pop(session_id, None)
+        for call in self._turn_calls.pop(session_id, ()):
+            self._attempts.pop(call, None)
+            self._open_attempt.pop(call, None)
         self._capture_commits(session_id, self._turn_run.pop(session_id, None))
         self._writer.capture_operation(
             "turn",
@@ -862,6 +875,9 @@ def _gateway_writer() -> TelemetryWriter:
 
             telemetry.json_console(logging.getLogger().handlers, redactor.text)
             logging.getLogger().addHandler(DiagnosticsHandler(_writer))
+            # Hermes's stderr handler writes on the logging thread, which can be the agent's: from
+            # here on it sits behind a queue that drops instead of waiting for a stalled pipe.
+            telemetry.configure_logging()
             # Hermes logs a failed tool's output with its `Tool X returned error` warning, and the
             # output can hold file contents and tracebacks. ``telemetry.finish_tool_call`` logs
             # each failure without it. A logger filter drops the record before any handler.

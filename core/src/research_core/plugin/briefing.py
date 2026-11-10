@@ -35,6 +35,7 @@ Watcher bookkeeping read from ``meta`` (the watcher and the doctor write these k
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -145,10 +146,11 @@ def render(
 
 
 def make_section(role: Role):
-    """The callable Hermes registers: reads ``info["session_id"]``, never raises."""
+    """The callable Hermes registers: reads ``info["session_id"]``, never raises. Hermes passes
+    ``info`` as a read-only mapping, not a dict."""
 
-    def section(info: Any = None, **_: Any) -> str:
-        session_id = (info or {}).get("session_id", "") if isinstance(info, dict) else ""
+    def section(info: Mapping[str, Any], **_: Any) -> str:
+        session_id = info["session_id"]
         ctx = None
         try:
             from research_core.tools.base import ToolContext

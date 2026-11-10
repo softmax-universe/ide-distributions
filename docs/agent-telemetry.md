@@ -31,7 +31,8 @@ writes, so a stuck stream holds up no callback and no commit through this path. 
 seconds. [`CONTRACT.md`](../core/src/research_core/agent_telemetry/CONTRACT.md), "Lines", says how each line is written.
 These exit flushes are this path's own: "no process exit waits for a telemetry flush" in [`image/README.md`](../image/README.md) is about spans and logs.
 
-`research_core/telemetry.py` moves the root logger's handlers behind its own queue at a process's first span. The gateway's
+`research_core/telemetry.py` moves the root logger's handlers behind its own queue, which drops and counts a record that does
+not fit rather than wait, at a process's first span, and the gateway at plugin registration. The gateway's
 log handler stays on the root logger, so a stuck handler cannot hold its records and an exit flush covers them.
 
 Other output shares this stream and can leave a line open at any moment, so each telemetry line starts with a newline of its own, and that output cannot join it (`test_real_prints_beside_telemetry_lines_on_one_pipe_lose_no_line`). The price is a blank line on the stream for each telemetry line: see "Proof and cost". [`stream.py`](../core/src/research_core/agent_telemetry/stream.py) says why buffering would not do.
@@ -44,7 +45,7 @@ each lost nothing with no wait, one run each. A line is searchable 12 to 27 seco
 | Loss | Why it is accepted |
 |---|---|
 | Nothing confirms delivery. A line that never arrives is not noticed, a stream that cannot be opened stays closed for the life of that process, and `flush` answers true regardless | There is no sender to tell. Rebuild reports what a surviving record refers to |
-| A crash, a SIGKILL, a watchdog exit, or a SIGTERM to a short command loses what the memory queue still holds. A process killed during a call leaves `model_request` / `started` and what it had committed, because request content is written when the attempt ends. So a user's message survives through its commit, and rebuild names the call `call_with_no_attempt` (`test_a_kill_during_a_call_leaves_only_the_started_record`, `test_a_kill_during_the_first_call_keeps_the_users_message`) | The queue empties as records arrive. Exit flushes cover a normal exit, and SIGTERM on the gateway and `research serve` |
+| A crash, a SIGKILL, a watchdog exit, or a SIGTERM to a short command loses what the memory queue still holds. A process killed during a call leaves `model_request` / `started` and what it had committed, because request content is written when the attempt ends. So a user's message survives through its commit, and rebuild names the call `call_with_no_attempt` (`test_a_kill_during_a_call_leaves_only_the_started_record`, `test_a_kill_during_the_first_call_keeps_the_users_message`) | The queue empties as records arrive. Exit flushes cover a normal exit and SIGTERM on `research serve`. The gateway has none: Hermes ends it with `os._exit`, and no hook on the agent's path waits for the writer |
 | The Agent falling behind by more than the retained log files would lose lines. Untested | 240 MB over about 15 rotations lost nothing with the Agent keeping up |
 | A full queue drops records, which a stream that has stopped soon causes. The writer's thread logs the count each time it changes. A capture over the 64 MiB byte limit goes in only when nothing is queued, so a request that large captured just after another record, such as its own context parts, is dropped, and rebuild shows `call_with_no_attempt` | A caller must never wait |
 | Any process in the workspace can write a line that looks like ours | James: restriction work matters very little here |
@@ -73,13 +74,14 @@ It prints one JSON object. Each entry is the record as written, with the text of
 each reference's name:
 
 - `requests`: each model request in wire order, whole, with `response`, `failed` or `unread` (the record
-  of how the attempt ended), `tools` (its tool activity, including each `result`), and `tokens_by_source`.
+  of how the attempt ended), `partial_responses` (what each broken stream of the attempt had shown),
+  `tools` (its tool activity, including each `result`), and `tokens_by_source`.
 - `rows`: each committed native row, with `message` as it was first sent and `rewritten_to` if a prune
   later changed it. `message` means "first sent" only when `missing` is empty: if a row's original was
   lost, it shows the first form that survived. A row no request lists never reached a model, such as a
   turn's last reply or the text Hermes's tool guard ends a turn with. It shows the text its commit
   recorded, and a tool row the result recorded for it.
-- `events`: admissions, model calls started and Hermes's classification of failed ones, store events, approvals, lifecycle, compaction, log lines and everything else. Each
+- `events`: admissions, model calls started, a call that failed before any attempt of it was recorded, store events, approvals, lifecycle, compaction, log lines and everything else. Each
   holds its own IDs, and `CONTRACT.md`, "How to join them", says how they join.
 - `context`: where each piece of a user message came from.
 - `missing`: see below.
@@ -138,7 +140,7 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 | The provider-billed `cost` is not captured: `post_api_request` passes a token summary without the provider's raw usage. | `agent/api_request_hooks.py`, `_usage_summary_for_api_request_hook` |
 | Auxiliary requests and replies are Hermes's capped hook payloads (`HERMES_PLUGIN_PAYLOAD_MAX_CHARS`, 50,000 characters, 8,000 per string). | `agent/auxiliary_hooks.py` |
 | Prompt sections name SOUL and this plugin's own sections, found by their text. Hermes's guidance, the project's rules and the skill index are unattributed. | `plugin/capture.py`, `_sections` |
-| Committed rows are read from `state.db` at the end of each turn. Rows of a turn that a killed gateway never ended are not recorded (they stay in `state.db`), and a new process records only rows written after it started. A hard exit also loses what the writer still had queued. | `plugin/capture.py`, `_capture_commits` |
+| Committed rows are read from `state.db` at the end of each turn. Rows of a turn that a killed gateway never ended are not recorded (they stay in `state.db`), and a new process records only rows written after it started. Any gateway exit, graceful or not, also loses what the writer still had queued. | `plugin/capture.py`, `_capture_commits` |
 | `extra_headers` and `extra_query` are not captured, because they are not part of the request body. | `plugin/capture.py`, `wire_request` |
 | After a restart the first Session ID is lost too. Rebuild follows `parent_session_id` on `compaction` records. | `test_compaction_is_followed_in_both_directions_after_a_restart` |
 | Hermes gives a row ID only to rows committed since its last prune or restart, so a `full` manifest after one names few rows. Text is not lost: rebuild joins by row ID first, and a listing with none through its tool call ID, unless the row's own result has other text. | `test_each_committed_row_equals_state_db` |

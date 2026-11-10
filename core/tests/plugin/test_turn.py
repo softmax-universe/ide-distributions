@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 
 from research_core.plugin import session_context, turn
 from research_core.store import coworlds, notices, sessions
@@ -141,9 +142,11 @@ def test_session_context_section(tmp_path, monkeypatch):
     none = session_context.render(ctx, "unknown")
     assert "No session context" in none and "No client capabilities" in none
     monkeypatch.setattr("research_core.plugin.executor.profile_env", lambda **_: ctx.env)
-    assert "[session context]" in session_context.make_section("researcher")(
-        {"session_id": "chat1"}
+    # Hermes passes the session info as a read-only mapping, not a dict.
+    section = session_context.make_section("researcher")(
+        MappingProxyType({"session_id": "chat1", "model": "m"})
     )
+    assert '"research"' in section and "No session context" not in section
 
 
 def test_only_a_chat_is_told_to_ask_in_chat(tmp_path):
