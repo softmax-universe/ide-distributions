@@ -1492,7 +1492,9 @@ class Backend:
         await self.touch(params.session_id, params.scope, frontend_id)
         # Related uploads are page context for grouping. Every session keeps its own checked scope.
         uploads = {params.page.coworld, *params.related_uploads}
-        if params.scope.coworld is None or params.scope.coworld in uploads:
+        if params.scope.coworld is None or (
+            params.scope.coworld in uploads and params.scope.league == params.page.league
+        ):
             return {"kind": "stay"}
         confirmed = "target_session_id" in params.model_fields_set
         if confirmed and params.target_session_id is None:

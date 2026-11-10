@@ -1249,8 +1249,20 @@ def test_page_offers_and_resolves_a_different_coworld_without_changing_the_sourc
             "page": page,
             "related_uploads": [previous["coworld"]],
         }
-        same_game = await call(backend, "session.page", {**params, "related_uploads": [COWORLD_ID]})
+        same_game = await call(
+            backend,
+            "session.page",
+            {
+                **params,
+                "page": {**page, "league": LEAGUE["league"]},
+                "related_uploads": [COWORLD_ID],
+            },
+        )
         assert same_game["result"] == {"kind": "stay"}
+        other_league = await call(
+            backend, "session.page", {**params, "page": {**page, "coworld": COWORLD_ID}}
+        )
+        assert other_league["result"]["kind"] == "offer"
         offer = await call(backend, "session.page", params)
         assert offer["result"] == {"kind": "offer", "target_session_id": target}
         confirmed = await call(backend, "session.page", {**params, "target_session_id": target})
