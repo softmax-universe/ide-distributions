@@ -12,7 +12,8 @@ no agent; Hermes logs it.
   ``api_request_error``; what a broken stream had shown is ``on_stream_end``'s ``final_text``.
 - A tool result: as the model got it, from the next request that carries it. A tool row's own
   text is on its commit too, for a turn that ends before a request carries it (a guard halt).
-- Committed rows: read from ``state.db`` at the end of each turn (``on_session_end``).
+- Committed rows: read from ``state.db`` on the writer's thread after each turn's end
+  (``on_session_end``).
 - The run: ``plugin/runs.py``, from the Session's started admission.
   An auxiliary call keeps the run its Session's turn was in when the call began.
 
@@ -38,12 +39,14 @@ import uuid
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from research_core.agent_telemetry import (
     ContextPart,
     Producer,
+    PromptFile,
     PromptSection,
     TelemetryWriter,
     hermes_redactor,
@@ -299,12 +302,12 @@ class GatewayCapture:
             return []
         from hermes_constants import get_hermes_home
 
-        soul = Path(get_hermes_home()) / "SOUL.md"
-        sources = [
-            ("soul", soul.read_text(encoding="utf-8") if soul.exists() else ""),
-            *(("plugin_sections", text) for text in _plugin_sections[session_id].values()),
+        plugin = [("plugin_sections", text) for text in _plugin_sections[session_id].values()]
+        # SOUL is read on the writer's thread; a refresh can change it while the gateway runs.
+        return [
+            PromptFile("soul", str(Path(get_hermes_home()) / "SOUL.md")),
+            *prompt_sections(message_text(messages[0]) or "", plugin),
         ]
-        return prompt_sections(message_text(messages[0]) or "", sources)
 
     # Model requests and replies.
 
@@ -738,7 +741,16 @@ class GatewayCapture:
         for call in self._turn_calls.pop(session_id, ()):
             self._attempts.pop(call, None)
             self._open_attempt.pop(call, None)
-        self._capture_commits(session_id, self._turn_run.pop(session_id, None))
+        if session_id:
+            from hermes_constants import get_hermes_home
+
+            ids = self._ids(session_id)
+            run_id = self._turn_run.pop(session_id, None)
+            if run_id is not None:
+                ids["run_id"] = run_id
+            db = Path(get_hermes_home()) / "state.db"
+            # Hermes stamps a row when it commits it, so the turn's rows are those up to now.
+            self._writer.defer(partial(self._capture_commits, db, session_id, ids, time.time()))
         self._writer.capture_operation(
             "turn",
             "ended",
@@ -747,27 +759,24 @@ class GatewayCapture:
             **self._ids(session_id, turn_id=turn_id, hermes_task_id=task_id),
         )
 
-    def _capture_commits(self, session_id: str, run_id: str | None) -> None:
-        """Each row of the Session that Hermes committed since the last turn's end, or since this
-        process started. ``occurred_at`` is the row's own timestamp. The copy Hermes keeps of a row
-        it prunes (``compacted``) and its ``session_meta`` notes are no messages of the Session."""
-        from hermes_constants import get_hermes_home
-
-        db = Path(get_hermes_home()) / "state.db"
-        if not session_id or not db.exists():
+    def _capture_commits(
+        self, db: Path, session_id: str, ids: dict[str, Any], ended_at: float
+    ) -> None:
+        """On the writer's thread: each row of the Session that Hermes committed after the last
+        turn's end, or after this process started, until this turn's end at ``ended_at``.
+        ``occurred_at`` is the row's own timestamp. The copy Hermes keeps of a row it prunes
+        (``compacted``) and its ``session_meta`` notes are no messages of the Session."""
+        if not db.exists():
             return
         with closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)) as connection:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(
                 "SELECT id, role, content, tool_call_id, tool_calls, tool_name, timestamp, "
                 "finish_reason, reasoning_content FROM messages "
-                "WHERE session_id = ? AND id > ? AND timestamp >= ? AND NOT compacted "
-                "AND role != 'session_meta' ORDER BY id",
-                (session_id, self._committed.get(session_id, 0), self._started),
+                "WHERE session_id = ? AND id > ? AND timestamp >= ? AND timestamp <= ? "
+                "AND NOT compacted AND role != 'session_meta' ORDER BY id",
+                (session_id, self._committed.get(session_id, 0), self._started, ended_at),
             ).fetchall()
-        ids = self._ids(session_id)
-        if run_id is not None:
-            ids["run_id"] = run_id
         for row in rows:
             self._committed[session_id] = row["id"]
             message = {name: row[name] for name in _ROW_TEXT_FIELDS if row[name]}

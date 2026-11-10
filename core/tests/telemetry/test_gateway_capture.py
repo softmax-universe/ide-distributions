@@ -303,7 +303,7 @@ def test_commits_are_read_from_state_db_at_the_end_of_a_turn(capture, home, writ
         db.executemany(
             "INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls, "
             "finish_reason, reasoning_content, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [(*row, capture._started + 1) for row in rows],
+            [(*row, capture._started) for row in rows],
         )
     capture.on_session_end(session_id="ses_1", turn_id="t", completed=True)
     capture.on_session_end(session_id="ses_1", turn_id="t2", completed=True)
@@ -540,17 +540,26 @@ def stalled_writer(tmp_path, producer, redactor):
     os.close(reader)
 
 
-def test_a_turn_end_never_waits_for_a_stalled_stream(stalled_writer, home):
+def test_no_hook_waits_for_a_stalled_stream(stalled_writer, home):
     """Telemetry never delays the agent: with the pipe full and the writer's thread stuck on it,
-    a turn's end still only enqueues."""
+    each hook only enqueues."""
     capture = GatewayCapture(stalled_writer, "orchestrator")
     big = {**REQUEST, "messages": [*REQUEST["messages"], {"role": "user", "content": "x" * 2**20}]}
-    _request(capture, request=big)
-    _reply(capture)
-    started = time.monotonic()
-    capture.on_session_end(session_id="ses_1", turn_id="turn-1", completed=True)
+    slowest = 0.0
+    for _ in range(20):
+        hooks = [
+            lambda: capture.pre_llm_call(session_id="ses_1"),
+            lambda: _request(capture, request=big),
+            lambda: _reply(capture),
+            lambda: capture.post_tool_call(tool_name="goal", session_id="ses_1", status="ok"),
+            lambda: capture.on_session_end(session_id="ses_1", turn_id="t", completed=True),
+        ]
+        for hook in hooks:
+            started = time.monotonic()
+            hook()
+            slowest = max(slowest, time.monotonic() - started)
     # A few milliseconds alone, more on a loaded CI runner; a wait on the writer would never end.
-    assert time.monotonic() - started < 1.0
+    assert slowest < 1.0
 
 
 def test_a_turns_calls_are_forgotten_at_its_end_and_its_failures_stay_attributed(

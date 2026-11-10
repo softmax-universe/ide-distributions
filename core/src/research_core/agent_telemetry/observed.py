@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from research_core.agent_telemetry.records import Producer
 from research_core.agent_telemetry.stream import stream_path
-from research_core.agent_telemetry.writer import TelemetryWriter
+from research_core.agent_telemetry.writer import InlineWriter, Writer
 from research_core.store._common import parse_iso
 
 if TYPE_CHECKING:
@@ -34,7 +34,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 COMMAND_WRITER = "research-command"
-COMMAND_EXIT_FLUSH_S = 2.0
 _DISPLAY_ID = re.compile(r"^([A-Z])-(\d+)$")
 _DETAIL_NAME = re.compile(r"[^a-z0-9_.-]")
 
@@ -114,7 +113,7 @@ _ALLOWED: dict[str, _Allowed] = {
 
 @dataclass(frozen=True)
 class _Binding:
-    writer: TelemetryWriter
+    writer: Writer
     # The run and tool call the caller is inside, where the process can tell.
     call_ids: Callable[[], Mapping[str, str | None]]
 
@@ -123,7 +122,7 @@ _binding: _Binding | None = None
 
 
 def bind(
-    writer: TelemetryWriter,
+    writer: Writer,
     call_ids: Callable[[], Mapping[str, str | None]] = dict,
 ) -> None:
     """Make ``writer`` this process's writer, from now until ``unbind``."""
@@ -134,7 +133,7 @@ def bind(
     db.observe_commits(observe_commit)
 
 
-def unbind(writer: TelemetryWriter) -> None:
+def unbind(writer: Writer) -> None:
     """Stop using ``writer``. Does nothing if another writer has been bound since."""
     from research_core.store import db
 
@@ -144,9 +143,9 @@ def unbind(writer: TelemetryWriter) -> None:
         db.observe_commits(None)
 
 
-def bind_command(env: Mapping[str, str] = os.environ) -> TelemetryWriter:
-    """For a short command, which closes it with ``COMMAND_EXIT_FLUSH_S`` on its way out."""
-    writer = TelemetryWriter(stream_path(env), Producer.for_process(COMMAND_WRITER, env))
+def bind_command(env: Mapping[str, str] = os.environ) -> InlineWriter:
+    """For a short command, which writes each record as it happens and so exits with none left."""
+    writer = InlineWriter(stream_path(env), Producer.for_process(COMMAND_WRITER, env))
     bind(
         writer,
         lambda: {"run_id": env.get("IDE_RUN_ID"), "tool_call_id": env.get("IDE_TOOL_CALL_ID")},

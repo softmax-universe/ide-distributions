@@ -48,7 +48,6 @@ import json
 import logging
 import os
 import shutil
-import signal
 import socket
 import subprocess
 import threading
@@ -100,7 +99,6 @@ KEEPALIVE_S = 10.0  # an SSE comment keeps an idle connection open through proxi
 STREAM_BATCH = 500
 DEFAULT_PORT = 8650
 SERVE_WRITER = "research-serve"
-TELEMETRY_STOP_FLUSH_S = 3.0  # ``image/processes.py`` gives this process ten seconds to stop
 WATCHER_INTERVAL_S = 60.0
 RUN_POLL_INTERVAL_S = 1.0
 # How Hermes describes its prompt before a file-tool write to an AGENTS.md (``tools/
@@ -396,12 +394,6 @@ class SeamServer:
         self.stopping.set()
         self._http.shutdown()
         self._http.server_close()
-        self.stop_telemetry()
-
-    def stop_telemetry(self) -> None:
-        """Write out what the queue holds, within a bound. Safe to call more than once."""
-        observed.unbind(self.telemetry)
-        self.telemetry.close(TELEMETRY_STOP_FLUSH_S)
 
     # --- stores ---------------------------------------------------------------------------
 
@@ -1652,7 +1644,6 @@ def run(args: argparse.Namespace) -> int:
             env=dict(env),
         )
     print(f"research serve: {server.url} (profile {args.profile}, Hermes {hermes.base_url})")
-    signal.signal(signal.SIGTERM, _flush_then_die(server))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -1660,17 +1651,6 @@ def run(args: argparse.Namespace) -> int:
     finally:
         server.shutdown()
     return 0
-
-
-def _flush_then_die(server: SeamServer) -> Callable[[int, Any], None]:
-    """SIGTERM has always ended this process at once, and it still does, just after the flush."""
-
-    def stop(signum: int, _frame: Any) -> None:
-        server.stop_telemetry()
-        signal.signal(signum, signal.SIG_DFL)
-        os.kill(os.getpid(), signum)
-
-    return stop
 
 
 def main(argv: list[str] | None = None) -> int:

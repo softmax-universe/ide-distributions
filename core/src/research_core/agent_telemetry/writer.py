@@ -1,15 +1,16 @@
 """The capture API: what a callback or a command calls to record something.
 
-A capture pickles what it was given, which makes it the writer's own copy, puts that on one bounded
-in-memory queue and returns. So no caller ever waits for the stream, or for logging, which can block
-on the same full pipe. One background thread unpickles, redacts, hashes and writes lines to the
-container's stream, and so empties the queue by itself. A process about to exit calls ``close``,
-which waits for the thread within a bound.
+Two writers share it. ``TelemetryWriter`` serves a long-lived process, whose callers must never
+wait: a capture pickles what it was given, which makes it the writer's own copy, puts that on one
+bounded in-memory queue and returns. One background thread unpickles, redacts, hashes and writes
+lines to the container's stream, and so empties the queue by itself. Nothing waits for that thread
+at exit, so an exit loses what the queue still holds. ``InlineWriter`` serves a short command: it
+writes each capture's lines before it returns, so the command exits with nothing left to write.
 
 A capture never raises into its caller. One that cannot be pickled or does not fit in the queue is
 counted, and the thread logs the count each time it changes. Captures take plain data: strings,
 numbers, lists and mappings. A caller holding a provider object turns it into that where it observes
-it. Anything else is dropped, at the latest when the thread cannot encode it.
+it. Anything else is dropped, at the latest when it cannot be encoded.
 """
 
 from __future__ import annotations
@@ -19,12 +20,18 @@ import pickle
 import threading
 import time
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from research_core.agent_telemetry.encoder import ContextPart, PromptSection, RecordEncoder
+from research_core.agent_telemetry.encoder import (
+    ContextPart,
+    PromptFile,
+    PromptSection,
+    RecordEncoder,
+)
 from research_core.agent_telemetry.records import Producer
 from research_core.agent_telemetry.redaction import Redactor
+from research_core.agent_telemetry.stream import LogStream
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +46,10 @@ def _charged_bytes(blob: bytes) -> int:
     return 0 if len(blob) > MAX_QUEUED_BYTES else len(blob)
 
 
-class TelemetryWriter:
-    """One bounded queue and one background writer thread.
-
-    With a ``redactor`` this is the gateway's writer and it takes text too. Without one, text
-    captures are dropped and any other string goes through the Softmax token patterns alone.
-    """
+class Writer:
+    """The capture API. With a ``redactor`` this is the gateway's writer and it takes text too.
+    Without one, text captures are dropped and any other string goes through the Softmax token
+    patterns alone."""
 
     def __init__(
         self,
@@ -52,37 +57,21 @@ class TelemetryWriter:
         producer: Producer,
         *,
         redactor: Redactor | None = None,
+        nonblocking: bool = False,
     ) -> None:
         """Opens nothing here: Hermes gives a plugin's registration only a short time."""
-        self._encoder = RecordEncoder(stream_path, producer, redactor)
-        self._ready = threading.Condition()
-        # An ``Event`` sits in the queue so that the thread reaches it after all captured before it.
-        self._queue: deque[tuple[str, float, bytes] | threading.Event] = deque()
-        self._queued_bytes = 0
-        self._dropped = 0
-        self._closing = threading.Event()
-        self._thread = threading.Thread(target=self._run, name="telemetry-writer", daemon=True)
-        self._thread.start()
+        self._encoder = RecordEncoder(
+            LogStream(stream_path, nonblocking=nonblocking), producer, redactor
+        )
 
     def _capture(self, kind: str, occurred_at: float | None, **payload: Any) -> None:
-        occurred = time.time() if occurred_at is None else occurred_at
+        raise NotImplementedError
+
+    def _write(self, kind: str, occurred_at: float, payload: Mapping[str, Any]) -> None:
         try:
-            blob = pickle.dumps(payload, 5)
-        except Exception:  # A capture must never break the agent's work.
-            blob = None
-        with self._ready:
-            if self._closing.is_set():
-                return
-            if (
-                blob is None
-                or len(self._queue) >= MAX_QUEUED_OBSERVATIONS
-                or (self._queue and self._queued_bytes + len(blob) > MAX_QUEUED_BYTES)
-            ):
-                self._dropped += 1
-            else:
-                self._queue.append((kind, occurred, blob))
-                self._queued_bytes += _charged_bytes(blob)
-            self._ready.notify()
+            self._encoder.write(kind, occurred_at, payload)
+        except Exception as error:
+            logger.warning("telemetry: dropped a %s record (%s)", kind, type(error).__name__)
 
     def capture_operation(
         self,
@@ -127,7 +116,7 @@ class TelemetryWriter:
         session_id: str,
         model_attempt_id: str,
         provider: str,
-        prompt_sections: Sequence[PromptSection] = (),
+        prompt_sections: Sequence[PromptSection | PromptFile] = (),
         history_line: str = "main",
         occurred_at: float | None = None,
         **fields: Any,
@@ -177,36 +166,93 @@ class TelemetryWriter:
             **fields,
         )
 
+
+class InlineWriter(Writer):
+    """A short command's writer: each capture is written to the stream before it returns. A line the
+    stream cannot take at once is dropped with a warning, so a stalled stream never holds up the
+    command."""
+
+    def __init__(self, stream_path: str, producer: Producer) -> None:
+        super().__init__(stream_path, producer, nonblocking=True)
+        self._lock = threading.Lock()
+
+    def _capture(self, kind: str, occurred_at: float | None, **payload: Any) -> None:
+        with self._lock:
+            self._write(kind, time.time() if occurred_at is None else occurred_at, payload)
+
+
+# A queue item: a capture's pickled payload, a job to run on the thread, or a point to reach.
+_Item = tuple[str, float, bytes] | Callable[[], None] | threading.Event
+
+
+class TelemetryWriter(Writer):
+    """A long-lived process's writer: one bounded queue and one background thread."""
+
+    def __init__(
+        self,
+        stream_path: str,
+        producer: Producer,
+        *,
+        redactor: Redactor | None = None,
+    ) -> None:
+        super().__init__(stream_path, producer, redactor=redactor)
+        self._ready = threading.Condition()
+        self._queue: deque[_Item] = deque()
+        self._queued_bytes = 0
+        self._dropped = 0
+        self._thread = threading.Thread(target=self._run, name="telemetry-writer", daemon=True)
+        self._thread.start()
+
+    def _capture(self, kind: str, occurred_at: float | None, **payload: Any) -> None:
+        occurred = time.time() if occurred_at is None else occurred_at
+        if threading.current_thread() is self._thread:
+            # A deferred job's own captures go out in its place, before what was queued after it.
+            self._write(kind, occurred, payload)
+            return
+        try:
+            blob = pickle.dumps(payload, 5)
+        except Exception:  # A capture must never break the agent's work.
+            blob = None
+        with self._ready:
+            if (
+                blob is None
+                or len(self._queue) >= MAX_QUEUED_OBSERVATIONS
+                or (self._queue and self._queued_bytes + len(blob) > MAX_QUEUED_BYTES)
+            ):
+                self._dropped += 1
+            else:
+                self._queue.append((kind, occurred, blob))
+                self._queued_bytes += _charged_bytes(blob)
+            self._ready.notify()
+
+    def defer(self, job: Callable[[], None]) -> None:
+        """Run ``job`` on the writer's thread, after what is captured so far: work a caller must
+        not wait for, such as a read whose result is captured. It counts as a capture."""
+        with self._ready:
+            if len(self._queue) >= MAX_QUEUED_OBSERVATIONS:
+                self._dropped += 1
+            else:
+                self._queue.append(job)
+            self._ready.notify()
+
     def flush(self, timeout_s: float) -> bool:
-        """Wait at most ``timeout_s`` for the thread to process what is captured so far.
+        """Wait at most ``timeout_s`` for the thread to process what is captured so far. For tests:
+        no caller in the agent's path waits for the writer.
 
         True proves that the queue was processed up to here, not that anything arrived: a stream
         that could not be opened, a failed write and a dropped record all still count as processed.
-        This makes no claim about later captures. Only a process's own exit needs this.
         """
         reached = threading.Event()
         with self._ready:
-            if self._closing.is_set():
-                return False
             self._queue.append(reached)
             self._ready.notify()
         return reached.wait(timeout_s)
-
-    def close(self, timeout_s: float) -> bool:
-        """Flush, then stop the thread. Later captures are ignored."""
-        deadline = time.monotonic() + timeout_s
-        reached = self.flush(timeout_s)
-        with self._ready:
-            self._closing.set()
-            self._ready.notify()
-        self._thread.join(max(0.0, deadline - time.monotonic()))
-        return reached
 
     def _run(self) -> None:
         reported = 0
         while True:
             with self._ready:
-                while not (self._queue or self._closing.is_set() or self._dropped != reported):
+                while not (self._queue or self._dropped != reported):
                     self._ready.wait()
                 dropped = self._dropped
                 item = self._queue.popleft() if self._queue else None
@@ -217,14 +263,11 @@ class TelemetryWriter:
                 logger.warning("telemetry: %d records dropped so far", dropped)
             if isinstance(item, threading.Event):
                 item.set()
+            elif isinstance(item, tuple):
+                kind, occurred_at, blob = item
+                self._write(kind, occurred_at, pickle.loads(blob))
             elif item is not None:
-                self._write(*item)
-            elif self._closing.is_set():
-                break
-        self._encoder.close()
-
-    def _write(self, kind: str, occurred_at: float, blob: bytes) -> None:
-        try:
-            self._encoder.write(kind, occurred_at, pickle.loads(blob))
-        except Exception as error:
-            logger.warning("telemetry: dropped a %s record (%s)", kind, type(error).__name__)
+                try:
+                    item()
+                except Exception as error:  # The writer's thread outlives any one job.
+                    logger.warning("telemetry: a deferred job failed (%s)", type(error).__name__)

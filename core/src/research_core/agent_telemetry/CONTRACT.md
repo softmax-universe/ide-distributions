@@ -191,7 +191,7 @@ reader follows `parent_session_id` on the `compaction` records.
 | `tool` / `proposed`                                   | `arguments`                  | One call the model asked for, from the reply Hermes assembled         |
 | `tool` / `completed`, `refused`                       | `arguments`                  | What ran, with `outcome`. The result is on the next one               |
 | `tool` / `result`                                     | `result`                     | The result as the model got it, from the first request that sends it, with its `hermes_message_id` |
-| `message` / `committed`                               | `message`                    | A row of `state.db`, read at the end of each turn (`on_session_end`), with `hermes_message_id`. `occurred_at` is the row's own timestamp. `message` holds the row's `role`, `content`, `tool_calls` and `reasoning_content`, because a turn's last rows reach no later request |
+| `message` / `committed`                               | `message`                    | A row of `state.db`, read on the writer's thread after each turn's end (`on_session_end`), with `hermes_message_id`. `occurred_at` is the row's own timestamp. `message` holds the row's `role`, `content`, `tool_calls` and `reasoning_content`, because a turn's last rows reach no later request |
 | `approval` / `requested`, `decided`                   | `command`, `description`     | A human approval                                                      |
 | `system_prompt` / `built`, `compaction` / `committed` |                              | The prompt was assembled; the history was rewritten                   |
 | `session` / `started`, `turn` / `ended`, `subagent` / `started`, `stopped` | | Lifecycle |

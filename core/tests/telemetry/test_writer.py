@@ -169,7 +169,7 @@ def test_details_hold_no_strings_on_any_writer(writer, stream_file, caplog):
         other.capture_operation("tool", "completed", details={"api_key": USER_TOKEN})
         writer.capture_operation("tool", "completed", details={"held": False, "message_bytes": 4})
         writer.flush(5.0)
-        other.close(5.0)
+        other.flush(5.0)
 
     raw = stream_file.read_bytes()
     assert USER_TOKEN.encode() not in raw and PLAYER_TOKEN.encode() not in raw
@@ -207,7 +207,7 @@ def test_a_writer_without_a_scanner_still_masks_softmax_tokens(stream_file):
     writer.capture_operation(
         "admission", "accepted", reported_actor=f"user:{USER_TOKEN}", initiator=PLAYER_TOKEN
     )
-    writer.close(5.0)
+    writer.flush(5.0)
     assert USER_TOKEN.encode() not in stream_file.read_bytes()
     [operation] = stored_records(stream_file)
     assert operation["reported_actor"] == f"user:{SOFTMAX_TOKEN_MASK}"
@@ -267,7 +267,7 @@ def test_a_writer_without_a_redactor_drops_free_text(stream_file, caplog):
         writer.capture_response({}, session_id="s", model_attempt_id="a")
         writer.capture_context_parts("text", [])
         writer.capture_operation("x", "y")
-    writer.close(5.0)
+    writer.flush(5.0)
     assert len(stored_records(stream_file)) == 1
     assert sum("telemetry: dropped" in message for message in caplog.messages) == 4
 
@@ -287,8 +287,9 @@ class StuckStream:
                 break
 
     def release(self, writer: TelemetryWriter) -> list[dict]:
-        """Read until ``writer`` has closed, however long its thread took to open the stream."""
-        closing = threading.Thread(target=writer.close, args=(30.0,))
+        """Read until ``writer`` has written everything, however long its thread took to open the
+        stream."""
+        closing = threading.Thread(target=writer.flush, args=(30.0,))
         closing.start()
         data = b""
         while closing.is_alive():
@@ -368,7 +369,7 @@ def test_one_capture_over_the_byte_limit_still_goes_out_when_nothing_is_queued(
     monkeypatch.setattr(writer_module, "MAX_QUEUED_BYTES", 600)
     writer = TelemetryWriter(stream_file, producer, redactor=redactor)
     writer.capture_operation("tool", "completed", content={"text": "z" * 3000})
-    assert writer.close(5.0)
+    assert writer.flush(5.0)
     assert "z" * 3000 in [r.get("body") for r in stored_records(stream_file)]
 
 
@@ -431,7 +432,6 @@ def test_a_failing_stream_costs_only_that_record(tmp_path, producer, caplog):
     with caplog.at_level(logging.WARNING):
         writer.capture_operation("a", "lost")
         assert writer.flush(5.0)
-    writer.close(5.0)
     assert sum("dropped a operation record (BrokenPipeError)" in m for m in caplog.messages) == 1
 
 
@@ -440,7 +440,6 @@ def test_a_path_that_does_not_exist_is_quiet_and_writes_nothing(tmp_path, caplog
     with caplog.at_level(logging.WARNING):
         stream.write(b"line\n")
         stream.write(b"line\n")
-    stream.close()
     assert caplog.messages == []
 
 
@@ -459,11 +458,10 @@ _ESCAPED_TEXT = '日本語 quoted " and\n a newline '
 _COMMAND_CHILD = """
 import sys
 sys.path.insert(0, sys.argv[1])
-from research_core.agent_telemetry import Producer, TelemetryWriter
-writer = TelemetryWriter(sys.argv[2], Producer.for_process("research-command", {}))
+from research_core.agent_telemetry import InlineWriter, Producer
+writer = InlineWriter(sys.argv[2], Producer.for_process("research-command", {}))
 for index in range(int(sys.argv[3])):
     writer.capture_operation("command", "completed", size_bytes=index)
-assert writer.close(120.0)
 """
 
 _BACKGROUND_CHILD = """
@@ -483,7 +481,7 @@ for index in range(int(sys.argv[3])):
         writer.capture_operation("admission", "accepted", size_bytes=index)
     if index % 16 == 0:
         writer.flush(60.0)
-assert writer.close(120.0)
+assert writer.flush(120.0)
 """
 
 
@@ -611,7 +609,7 @@ def test_real_prints_beside_telemetry_lines_on_one_pipe_lose_no_line(
         written += 1
         if written % 500 == 0:
             writer.flush(30.0)
-    assert writer.close(60.0)
+    assert writer.flush(60.0)
     assert printer.returncode == 0
     os.close(holder)
     reading.join(30)

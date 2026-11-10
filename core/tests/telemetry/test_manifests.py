@@ -197,7 +197,7 @@ def test_each_request_redacts_only_what_is_new(stream_file, producer):
         assert writer.flush(5.0)
         scanned_per_call.append(sum(redactor.scanned))
         redactor.scanned.clear()
-    writer.close(5.0)
+    writer.flush(5.0)
     assert scanned_per_call[0] > 150_000
     assert all(scanned < 1_000 for scanned in scanned_per_call[1:])
 

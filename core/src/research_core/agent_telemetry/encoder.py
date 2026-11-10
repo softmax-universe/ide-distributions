@@ -21,6 +21,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 from research_core.agent_telemetry import records as rec
@@ -39,6 +40,19 @@ class PromptSection:
 
     name: str
     text: str
+
+
+@dataclass(frozen=True)
+class PromptFile:
+    """A section whose text is a file's, read when the request is written, on the writer's thread.
+    A file that is missing, or whose text is not in the prompt, names no section."""
+
+    name: str
+    path: str
+
+    def section(self) -> PromptSection:
+        file = Path(self.path)
+        return PromptSection(self.name, file.read_text("utf-8").strip() if file.exists() else "")
 
 
 @dataclass(frozen=True)
@@ -175,11 +189,11 @@ class RecordEncoder:
 
     def __init__(
         self,
-        stream_path: str,
+        stream: LogStream,
         producer: Producer,
         redactor: Redactor | None,
     ) -> None:
-        self._stream = LogStream(stream_path)
+        self._stream = stream
         self._producer = producer
         self._redactor = redactor
         self._redaction_version = redactor.version if redactor else rec.NO_REDACTION
@@ -187,9 +201,6 @@ class RecordEncoder:
         self._baselines: dict[tuple[str, ...], _Baseline] = {}
         # What this process has sent.
         self._sent: set[str] = set()
-
-    def close(self) -> None:
-        self._stream.close()
 
     def write(self, kind: str, occurred_at: float, payload: Mapping[str, Any]) -> None:
         """``payload`` is the writer's own copy of what a callback saw."""
@@ -306,7 +317,11 @@ class RecordEncoder:
         # A system message is listed like any other. Its sections point into its text.
         system = messages[0] if messages and messages[0].get("role") == "system" else None
         system_text = message_text(system)
-        sections = payload["prompt_sections"]
+        sections = [
+            section
+            for listed in payload["prompt_sections"]
+            if (section := listed.section() if isinstance(listed, PromptFile) else listed).text
+        ]
         if system_text is not None and sections:
             raw = [system_text, [[s.name, s.text] for s in sections]]
             head["prompt_sections_digest"] = objects.add_value(

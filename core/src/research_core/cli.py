@@ -61,7 +61,6 @@ def main(argv: list[str] | None = None) -> int:
         return int(run(args) or 0)
     finally:
         observed.unbind(writer)
-        writer.close(observed.COMMAND_EXIT_FLUSH_S)
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised through subprocesses

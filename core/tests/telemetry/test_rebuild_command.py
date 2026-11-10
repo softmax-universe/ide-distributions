@@ -296,7 +296,7 @@ def test_a_restart_sends_a_full_manifest_and_everything_it_lists(
             model_attempt_id=f"att_{number}",
             native_event_type="stream",
         )
-        assert writer.close(5.0)
+        assert writer.flush(5.0)
     records = stored_records(stream_file)
     chunks: dict[str, set] = {"gateway-1": set(), "gateway-2": set()}
     for record in records:

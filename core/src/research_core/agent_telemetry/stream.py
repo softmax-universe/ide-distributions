@@ -40,8 +40,12 @@ class LogStream:
     error. Any other failure to open is warned about once.
     """
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, *, nonblocking: bool = False) -> None:
+        """``nonblocking``: a line that does not fit in the pipe now raises ``BlockingIOError``
+        instead of waiting, for a writer on its caller's own thread. A line is at most ``PIPE_BUF``
+        bytes on Linux, so it goes in whole or not at all."""
         self._path = path
+        self._nonblocking = nonblocking
         self._descriptor: int | None = None
         self._unavailable = False
 
@@ -53,7 +57,7 @@ class LogStream:
 
     def _open(self) -> None:
         # The plain form is what a real pod under gVisor was tested with. A file needs the rest.
-        flags = os.O_WRONLY
+        flags = os.O_WRONLY | (os.O_NONBLOCK if self._nonblocking else 0)
         if self._path != CONTAINER_STREAM:
             flags |= os.O_APPEND | os.O_CREAT
         try:
@@ -62,8 +66,3 @@ class LogStream:
             self._unavailable = True
             if not isinstance(error, FileNotFoundError):
                 logger.warning("telemetry: cannot open the stream (%s)", type(error).__name__)
-
-    def close(self) -> None:
-        if self._descriptor is not None:
-            os.close(self._descriptor)
-            self._descriptor = None
