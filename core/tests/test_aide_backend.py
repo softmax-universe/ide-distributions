@@ -44,6 +44,8 @@ sys.modules.setdefault("inference", types.SimpleNamespace(Availability=Availabil
 sys.path.insert(0, str(IMAGE))
 import aide  # noqa: E402
 
+from research_core.plugin.reasoning_relay import Relay  # noqa: E402
+
 WORKSPACE = {"scope": "workspace", "coworld": None, "league": None}
 LEAGUE = {"scope": "coworld", "coworld": COWORLD_ID, "league": "league_1"}
 FRONTEND, OTHER = uuid4(), uuid4()
@@ -89,6 +91,8 @@ class Gateway:
         self.gate = asyncio.Event()
         self.capacity = 1000
         self.reached: dict[str, int] = {}  # run id -> the newest seq the run has produced
+        # How a ``think`` entry reaches the backend: the gateway plugin's relay, set by a test.
+        self.think = None
 
     def restart(self) -> None:
         """The gateway process restarts: its in-memory runs and their buffers are gone."""
@@ -147,7 +151,13 @@ class Gateway:
             self.answers.append((path.rsplit("/", 1)[1], json.loads(request.content)))
             self.controls[run_id] = []
             return httpx.Response(200, json={"run_id": run_id, "status": "resolved"})
-        return httpx.Response(200, json={"pending_controls": self.controls.get(run_id, [])})
+        return httpx.Response(
+            200,
+            json={
+                "pending_controls": self.controls.get(run_id, []),
+                "session_id": self.hermes.runs[run_id].session_id,
+            },
+        )
 
     async def stream(self, run_id: str, last_seq: int):
         if run_id not in self.runs:
@@ -162,6 +172,9 @@ class Gateway:
             self.reached[run_id] = max(self.reached.get(run_id, -1), seq)
             if event.get("gate"):
                 await self.gate.wait()
+                continue
+            if "think" in event:
+                await self.think(self.hermes.runs[run_id].session_id, event)
                 continue
             if self.drop_after is not None and seq > self.drop_after:
                 self.drop_after = None
@@ -434,6 +447,71 @@ def test_chat_round_trip_pushes_what_the_reads_return_to_every_subscriber(system
     run(system, scenario)
     ctx, hermes, _ = system
     assert [name for name, _ in hermes.calls].count("start") == 1
+
+
+def test_relayed_reasoning_streams_into_the_log_before_the_tool_and_late_reasoning_is_dropped(
+    system,
+):
+    """The gateway plugin's relay, the backend's relay server and the request's log, as the image
+    wires them; only the gateway's run stream is scripted."""
+    gateway = Gateway(system[1])
+
+    def script(run_id):
+        events = Gateway.script(gateway, run_id)
+        # Kimi streams its reasoning before any text; one Session id is a compaction's.
+        thinking = [{"think": f"Step {n}. "} for n in range(3)] + [
+            {"think": "Then list.", "rotated": True}
+        ]
+        return events[:1] + thinking + events[2:]
+
+    gateway.script = script
+
+    async def scenario(backend, gateway, ctx, hermes):
+        server = await asyncio.start_server(backend.relay, "127.0.0.1", 0)
+        relay = Relay(f"127.0.0.1:{server.sockets[0].getsockname()[1]}")
+
+        async def think(session_id, event):
+            if event.get("rotated"):
+                relay.post_compaction(session_id="api_rotated", old_session_id=session_id)
+                session_id = "api_rotated"
+            delta = {"delta": event["think"], "kind": "reasoning", "session_id": session_id}
+            await asyncio.to_thread(relay.on_stream_delta, **delta)
+            # The relayed line is placed before the stream's next event, as when the model
+            # thinks before it answers.
+            await until(lambda: backend.relayed == relay.sent)
+            await until(lambda: all(q.empty() for q in backend.thinking.values()))
+            await asyncio.sleep(0.05)
+
+        gateway.think = think
+        session_id = await opened(backend)
+        request_id = str(uuid4())
+        params = {"session_id": session_id, "messages": say("hi"), "scope": WORKSPACE}
+        await call(backend, "chat.send", params, request_id=request_id)
+        socket = backend.socket
+        await until(lambda: socket.notes("chat.finished"))
+        read = (await events_read(backend, session_id, request_id))["result"]
+        assert [e["kind"] for e in read["events"]] == [
+            "reasoning",
+            "text.delta",
+            "tool.started",
+            "tool.completed",
+            "text.delta",
+            "finished",
+        ]
+        # Chunks within REASONING_MERGE_SECONDS share one event; seqs stay contiguous.
+        assert read["events"][0]["text"] == "Step 0. Step 1. Step 2. Then list."
+        assert [cursor(e) for e in read["events"]] == [(0, n) for n in range(1, 7)]
+        assert [n["event"] for n in socket.notes("chat.event")] == read["events"]
+        # Reasoning relayed after its run ended has no place in any log.
+        assert backend.thinking == {}
+        await asyncio.to_thread(
+            relay.on_stream_delta, delta="Late.", kind="reasoning", session_id=session_id
+        )
+        await until(lambda: backend.relayed == relay.sent)
+        assert (await events_read(backend, session_id, request_id))["result"] == read
+        server.close()
+
+    run(system, scenario, gateway=gateway)
 
 
 def test_a_dropped_run_stream_resumes_from_its_last_sequence_without_duplicates(system):
@@ -1734,7 +1812,7 @@ def test_relay_failures_reconnect_without_touching_the_control_connection(monkey
         ) as server:
             url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
             common = {"platform_url": url, "workspace_id": "w", "credential": "proof"}
-            env = {"API_SERVER_KEY": "proof"}
+            env = {"API_SERVER_KEY": "proof", "IDE_REASONING_RELAY": "127.0.0.1:0"}
             connected = asyncio.Event()
             control = asyncio.create_task(control_serve(**common, env=env, connected=connected))
             backend = asyncio.create_task(aide.serve(**common, env=env, inference=Availability()))

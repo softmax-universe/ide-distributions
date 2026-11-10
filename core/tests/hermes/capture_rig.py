@@ -203,7 +203,7 @@ def _write_profile(home: Path, role: str, workspace: Path, prune_tokens: int) ->
                 "model": {"default": STUB_MODEL, "provider": "openrouter"},
                 "agent": {"reasoning_effort": "low"},
                 "provider_routing": {"models": {STUB_MODEL: {"only": ["moonshotai"]}}},
-                "plugins": {"enabled": [role]},
+                "plugins": {"enabled": [role], "stream_reasoning_deltas": True},
                 "platform_toolsets": {"api_server": [f"ide-{role}"]},
                 "known_plugin_toolsets": {"api_server": [f"ide-{role}"]},
                 "tools": {"tool_search": {"enabled": "off"}},
@@ -297,10 +297,12 @@ def start_gateway(
     prune_tokens: int = 0,
     result_chars: int = 0,
     stdout_on_stream: bool = False,
+    extra_env: dict[str, str] | None = None,
 ) -> RealGateway:
     """``prune_tokens`` is the profiles' ``compression.proactive_prune_tokens``. They ship with
     64,000. ``result_chars`` adds that much new text to each ``settings`` result. With
-    ``stdout_on_stream`` the gateway's unbuffered stdout shares the stream, as in the image."""
+    ``stdout_on_stream`` the gateway's unbuffered stdout shares the stream, as in the image.
+    ``extra_env`` joins the gateway's environment, as ``image/runtime.py`` adds to it."""
     home = root / "home"
     workspace = root / "workspace"
     home.mkdir()
@@ -325,6 +327,7 @@ def start_gateway(
         "GATEWAY_MULTIPLEX_PROFILES": "true",
         "STUB_OPENROUTER_URL": stub_url,
         "STUB_RESULT_CHARS": str(result_chars),
+        **(extra_env or {}),
     }
     log = root / "gateway.log"
     stream = root / "telemetry-stream"

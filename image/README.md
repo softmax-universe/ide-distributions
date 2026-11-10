@@ -119,6 +119,16 @@ resume after their log's last row. A restart recycles the gateway too, so what h
 the log and pushes not yet sent are lost. A run the gateway lost ends `interrupted` once the seam
 settles it, and its logged events stay readable for as long as the request record.
 
+An admitted run's stream carries no reasoning, so the gateway plugin relays it
+(`core/src/research_core/plugin/reasoning_relay.py`): Hermes hands it each reasoning delta through
+`on_stream_delta` (`plugins.stream_reasoning_deltas`), and it sends each one as a JSON line to the
+backend at `IDE_REASONING_RELAY` (127.0.0.1:8651). The consumer following the run of that delta's
+native Session logs it where it arrives among the run's events, merging consecutive chunks for one
+second. A delta for no followed run, such as one that arrives after its run ended, is dropped.
+A relay failure never reaches the turn: Hermes isolates the hook. Each follow records a
+payload-free `workspace.aide.reasoning` span with the deltas relayed, the events logged and the
+deltas lost on the way (`reasoning.lost`, a gap in the plugin's running count).
+
 A session the gateway does not have reads as having no messages, so its requests still close. A
 consumer follows its run stream again when the stream drops or a read for a push fails, since
 neither moves its place in the log. Any other failure in a consumer, or a seam error answer to the
