@@ -352,6 +352,13 @@ def test_prepare_requests_refresh_from_the_native_session_store(tmp_path, monkey
         calls.append("close")
 
     monkeypatch.setitem(sys.modules, "hermes_state", SimpleNamespace(SessionDB=session_db))
+    install = tmp_path / "hermes-install"
+    monkeypatch.setitem(sys.modules, "pm.paths", SimpleNamespace(install_root=lambda: install))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.boot_bootstrap",
+        SimpleNamespace(maybe_run_boot_bootstrap=lambda root: calls.append(("bootstrap", root))),
+    )
     fake = FakeHermes()
     env = {
         "HERMES_HOME": str(home),
@@ -364,4 +371,4 @@ def test_prepare_requests_refresh_from_the_native_session_store(tmp_path, monkey
 
     assert "open sessions: refreshed tools and system prompts" in summary["actions"]
     assert pin(home) is None
-    assert calls == ["refresh", "close"]
+    assert calls == [("bootstrap", install), "refresh", "close"]

@@ -741,8 +741,12 @@ def prepare(
             actions.append(retire_watcher_job(profile))
 
     def request_prompt_refresh() -> None:
+        from hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap
         from hermes_state import SessionDB
+        from pm.paths import install_root
 
+        # Preserve the revision-gated home maintenance that the refresh command ran first.
+        maybe_run_boot_bootstrap(install_root())
         with SessionDB(profile / STATE_DB) as state:
             state.request_prompt_refresh()
 
