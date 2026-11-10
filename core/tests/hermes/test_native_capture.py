@@ -131,10 +131,14 @@ def records_of(gateway, session_id: str, *, wait_for: tuple[str, str] | None = N
 
 
 def operations(records: list, action: str, stage: str | None = None) -> list:
+    """The Session's own operations. Its title call can end after the run has, so it is left out."""
     return [
         r
         for r in records
-        if r["family"] == "operation" and r["action"] == action and stage in (None, r["stage"])
+        if r["family"] == "operation"
+        and r["action"] == action
+        and stage in (None, r["stage"])
+        and not str(r.get("model_attempt_id", "")).startswith("aux-")
     ]
 
 
