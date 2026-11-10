@@ -102,6 +102,8 @@ async def run(stack: AsyncExitStack) -> None:
         "IDE_RESEARCHER_PROFILES": "researcher",
         "IDE_LOCAL_STT_MODEL": "/opt/models/whisper-base",
         "IDE_INFERENCE_LEASE_FILE": str(lease_file),
+        # Where the gateway plugin relays reasoning deltas to the AIDE backend (image/aide.py).
+        "IDE_REASONING_RELAY": "127.0.0.1:8651",
         "SOFTMAX_PLAYER_CREDENTIAL": bootstrap.credential.get_secret_value(),
         "COGAMES_API_URL": bootstrap.platform_url.removesuffix("/observatory"),
     }

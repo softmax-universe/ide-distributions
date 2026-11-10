@@ -85,6 +85,9 @@ PROTECTED_KEYS: dict[str, Any] = {
     "auxiliary.vision.model": "anthropic/claude-haiku-5.5",
     "cron.catch_up_missed": True,
     "plugins.enabled": ["<role>"],
+    # The AIDE backend shows reasoning while it streams only through this hook
+    # (plugin/reasoning_relay.py).
+    "plugins.stream_reasoning_deltas": True,
     "platform_toolsets.api_server": ["hermes-api-server", "ide-<role>"],
     "known_plugin_toolsets.cron": ["ide-<role>"],
     # Hermes's loop guard only warns on api_server; a wake that repeated one refused call 185
