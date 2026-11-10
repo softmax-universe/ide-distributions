@@ -253,7 +253,7 @@ def make_pre_llm_call(
         if not session_id:
             return None
         try:
-            from research_core.plugin.executor import profile_env
+            from research_core.plugin.executor import profile_env, run_in_workspace
             from research_core.store import sessions
             from research_core.tools.base import ToolContext
 
@@ -301,6 +301,33 @@ def make_pre_llm_call(
                     ctx, session_id, is_first_turn=is_first_turn, now=datetime.now(UTC)
                 )
             )
+            if session and (session["session_context"] or {}).get("league") and coworld:
+                update = json.loads(
+                    run_in_workspace("platform", {"action": "coworld_update"}, env, timeout_s=3)
+                )
+                if update.get("status") == "update_available":
+                    parts.append(
+                        (
+                            "coworld_update",
+                            "[Coworld update available] " + json.dumps(update) + "\n"
+                            "Tell the player which version changed and offer to review the current "
+                            "participation guide, published patch notes if available, and the old "
+                            "and current Coworld manifests. Look for notes in the linked forum "
+                            "or wiki and the release source. With their agreement, refresh "
+                            "the local game guide and check the policy interface. Use the "
+                            "session's league for practice so it runs the current version. "
+                            "Decide whether a rebuild is needed before updating the mixin's "
+                            "working version. Avoid repeating an offer already in this chat.",
+                        )
+                    )
+                elif not update["ok"]:
+                    parts.append(
+                        (
+                            "coworld_update",
+                            "[Coworld version check unavailable] Use platform coworld_update to "
+                            "retry before making version-sensitive changes.",
+                        )
+                    )
             if on_context is not None:
                 on_context(session_id, user_message, parts)
             return {"context": "\n\n".join(text for _source, text in parts)}

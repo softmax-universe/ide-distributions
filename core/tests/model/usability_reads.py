@@ -1206,6 +1206,7 @@ def _episodes(args: dict) -> dict:
 PLATFORM: dict[str, Callable[[Situation, dict], dict]] = {
     "leagues": lambda s, a: {"leagues": [_league_row()]},
     "league": lambda s, a: {"league": _league_row(str(a["league"]))},
+    "coworld_update": lambda s, a: {"status": "current"},
     "divisions": lambda s, a: {"league": a["league"], "divisions": [_division_row()]},
     "standings": _standings,
     "active_policies": lambda s, a: {

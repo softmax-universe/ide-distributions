@@ -25,11 +25,11 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from research_core import refs
+from research_core import mixin, refs
 from research_core.platform.errors import IdentityUnavailable
 from research_core.platform.protocol import Identity, Membership, Platform, PolicyVersion
 from research_core.platform.wait import call_platform, identity_for
-from research_core.store import pins
+from research_core.store import pins, sessions
 from research_core.tools import _args as a
 from research_core.tools.base import (
     INLINE_CHARS,
@@ -71,6 +71,63 @@ def league(call: ToolCall, platform: Platform) -> dict:
     league_id = _id(call.get("league"))
     row = _call(call, f"GET /v2/leagues/{league_id}", lambda: platform.league(league_id))
     return {"league": asdict(row)}
+
+
+def coworld_update(call: ToolCall, platform: Platform) -> dict:
+    ctx = call.ctx
+    session = sessions.read(ctx.wstore, ctx.hermes_session_id())
+    if (
+        session is None
+        or session["coworld_id"] is None
+        or not (session["session_context"] or {}).get("league")
+    ):
+        raise ToolError("a Coworld update check requires a league-scoped session")
+
+    working_id = session["coworld_id"]
+    league_id = session["session_context"]["league"]
+    league = call_platform(
+        ctx, f"GET /v2/leagues/{league_id}", lambda: platform.league(league_id), retries=False
+    )
+    current_id = league.coworld_id
+    if current_id is None:
+        raise ToolError("the session's league has no published Coworld version")
+
+    mixin_dir = ctx.coworld().mixin
+    installed = mixin.load(mixin_dir) if (mixin_dir / mixin.FRONT_MATTER_FILE).is_file() else None
+    if current_id == working_id and (installed is None or installed.coworld_version is None):
+        return {"status": "current"}
+
+    current = call_platform(
+        ctx,
+        f"GET /v2/coworlds/{current_id}",
+        lambda: platform.coworld_manifest(current_id),
+        retries=False,
+    )
+    working = current
+    if current_id != working_id:
+        working = call_platform(
+            ctx,
+            f"GET /v2/coworlds/{working_id}",
+            lambda: platform.coworld_manifest(working_id),
+            retries=False,
+        )
+        if working["name"] != current["name"]:
+            raise ToolError("the session's league now points to a different Coworld")
+
+    local_version = installed.coworld_version if installed else None
+    if local_version == current["version"]:
+        return {"status": "current"}
+
+    return {
+        "status": "update_available",
+        "working_version": local_version or working["version"],
+        "session_coworld_id": working_id,
+        "current_version": current["version"],
+        "current_coworld_id": current_id,
+        "participation_url": league.participation_url,
+        "forum_markdown_url": league.forum_markdown_url,
+        "wiki_markdown_url": league.wiki_markdown_url,
+    }
 
 
 def divisions(call: ToolCall, platform: Platform) -> dict:
@@ -540,6 +597,7 @@ def _membership(row: Membership) -> dict:
 ACTIONS = {
     "leagues": leagues,
     "league": league,
+    "coworld_update": coworld_update,
     "divisions": divisions,
     "standings": standings,
     "active_policies": active_policies,
@@ -579,6 +637,11 @@ SPEC = tool(
                 {"game": a.string("A game id (game_<uuid>, not its name) to filter by.")},
             ),
             ActionSpec("league", "One league.", {"league": LEAGUE}, ("league",)),
+            ActionSpec(
+                "coworld_update",
+                "Compare the session's working Coworld version with the version its league runs.",
+                {},
+            ),
             ActionSpec("divisions", "A league's divisions.", {"league": LEAGUE}, ("league",)),
             ActionSpec(
                 "standings",
