@@ -106,6 +106,7 @@ def test_run_tool_success_and_errors(demo_tool, tmp_path, spans):
     refused = json.loads(base.run_tool("demo", {"action": "boom"}, ctx))
     assert refused == {
         "ok": False,
+        "kind": "tool_rejected",
         "error": "it broke; and more",
         "problems": ["it broke", "and more"],
         "context": {"tool": "demo", "hint": "try again"},

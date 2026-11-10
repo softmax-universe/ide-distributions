@@ -1,5 +1,7 @@
 """Guard distribution privacy and Hermes callback correlation owned by this adapter."""
 
+import json
+
 import pytest
 from opentelemetry.trace import StatusCode
 
@@ -18,10 +20,10 @@ def test_exception_status_never_records_sensitive_exception_text(spans):
 
 def test_native_callbacks_keep_concurrent_turns_and_retry_attempts_separate(monkeypatch, spans):
     active = {"t1", "t2"}
-    hooks, session_span = tracing.make_instrumentation("researcher")
+    hooks, session_turn = tracing.make_instrumentation("researcher")
     for turn_id in active:
         hooks["pre_llm_call"](session_id=turn_id, task_id=turn_id, turn_id=turn_id)
-    bound = {turn_id: session_span(turn_id).get_span_context().span_id for turn_id in active}
+    bound = {turn_id: session_turn(turn_id).span.get_span_context().span_id for turn_id in active}
     for turn_id in active:
         hooks["pre_api_request"](turn_id=turn_id, api_request_id="same", retry_count=0)
     hooks["api_request_error"](
@@ -30,7 +32,8 @@ def test_native_callbacks_keep_concurrent_turns_and_retry_attempts_separate(monk
         model="m",
         provider="p",
         status_code=429,
-        error="secret-error",
+        reason="rate_limit",
+        error={"type": "RateLimitError", "message": "secret-error"},
     )
     hooks["pre_api_request"](turn_id="t1", api_request_id="same", retry_count=1)
     for turn_id in active:
@@ -45,12 +48,16 @@ def test_native_callbacks_keep_concurrent_turns_and_retry_attempts_separate(monk
     retries = [s for s in models if roots[s.parent.span_id].attributes["turn.id"] == "t1"]
     assert [s.attributes["retry.count"] for s in retries] == [0, 1]
     assert retries[0].status.status_code == StatusCode.ERROR
+    assert (retries[0].attributes["error.type"], retries[0].attributes["exception.type"]) == (
+        "rate_limit",
+        "RateLimitError",
+    )
     assert all("secret-error" not in s.to_json() for s in records)
 
 
 def test_orphan_observation_ends_incomplete_without_reclaiming_active_tool(monkeypatch, spans):
     active = {"failed", "long-tool"}
-    hooks, session_span = tracing.make_instrumentation("orchestrator")
+    hooks, _ = tracing.make_instrumentation("orchestrator")
     for turn_id in active:
         hooks["pre_llm_call"](session_id=turn_id, task_id=turn_id, turn_id=turn_id)
     hooks["pre_tool_call"](turn_id="long-tool", tool_call_id="tool")
@@ -63,3 +70,79 @@ def test_orphan_observation_ends_incomplete_without_reclaiming_active_tool(monke
     )
     hooks["on_session_end"](turn_id="long-tool", completed=True, failed=False, interrupted=False)
     assert spans.get_finished_spans()[-1].attributes["observation.complete"] is True
+
+
+def test_both_tool_boundaries_name_the_same_call_and_only_a_short_error_class(
+    spans, caplog, tmp_path
+):
+    """A native and a distribution span of one failed call carry the same identity, an
+    ``error.type`` read from structured fields, and log one payload-free line each."""
+    from research_core.tools.base import ToolContext, run_tool
+
+    hooks, session_turn = tracing.make_instrumentation("researcher")
+    hooks["pre_llm_call"](session_id="ses_1", task_id="task", turn_id="turn_1")
+    hooks["pre_api_request"](turn_id="turn_1", api_request_id="a1", retry_count=0)
+    hooks["post_api_request"](turn_id="turn_1", api_request_id="a1", model="m", provider="p")
+    calls = {
+        "c1": ("terminal", '{"output": "secret-output", "exit_code": 1, "error": null}'),
+        "c2": ("read_file", '{"content": "", "error": "File not found: /secret/path"}'),
+        "c3": ("read_file", '{"content": "fine"}'),
+    }
+    env = {"IDE_WORKSPACE": str(tmp_path), "IDE_SESSION_ID": "ses_1", "IDE_TURN_ID": "turn_1"}
+    ctx = ToolContext.from_env("researcher", {**env, "IDE_TOOL_CALL_ID": "c4"})
+    caplog.set_level("INFO", logger="research_core.tool_call")
+    for call_id, (name, result) in calls.items():
+        hooks["pre_tool_call"](turn_id="turn_1", tool_call_id=call_id)
+        status = "ok" if call_id == "c3" else "error"
+        hooks["post_tool_call"](
+            turn_id="turn_1",
+            tool_call_id=call_id,
+            tool_name=name,
+            session_id="ses_1",
+            status=status,
+            error_type=None if status == "ok" else "tool_error",
+            result=result,
+            duration_ms=250,
+        )
+    hooks["pre_tool_call"](turn_id="turn_1", tool_call_id="c4")
+    refused = run_tool("claim_write", {"body": "x"}, ctx)
+    hooks["post_tool_call"](
+        turn_id="turn_1",
+        tool_call_id="c4",
+        tool_name="claim_write",
+        session_id="ses_1",
+        status="error",
+        error_type="tool_error",
+        result=refused,
+        duration_ms=40,
+    )
+    hooks["on_session_end"](turn_id="turn_1", completed=True, failed=False, interrupted=False)
+
+    tools = [s for s in spans.get_finished_spans() if s.name == "execute_tool"]
+    by_call = {
+        (s.attributes["tool.boundary"], s.attributes["gen_ai.tool.call.id"]): s for s in tools
+    }
+    assert {key: by_call[key].attributes.get("error.type") for key in by_call} == {
+        ("native", "c1"): "exit_code_nonzero",
+        ("native", "c2"): "tool_error",
+        ("native", "c3"): None,
+        ("distribution", "c4"): "validation_rejected",
+        ("native", "c4"): "validation_rejected",
+    }
+    for current in tools:
+        assert current.attributes["session.id"] == "ses_1"
+        assert current.attributes["turn.id"] == "turn_1"
+        assert current.attributes["gen_ai.agent.name"] == "researcher"
+    (turn,) = [s for s in spans.get_finished_spans() if s.name == "invoke_agent"]
+    assert (
+        turn.attributes["gen_ai.turn.model_calls"],
+        turn.attributes["gen_ai.turn.tool_calls"],
+        turn.attributes["gen_ai.turn.tool_failures"],
+    ) == (1, 4, 3)
+
+    lines = [telemetry.JsonLines(str).format(r) for r in caplog.records]
+    assert len(lines) == 5
+    assert all("secret" not in line for line in lines)
+    assert all("\n" not in line for line in lines)
+    statuses = [json.loads(line)["status"] for line in lines]
+    assert statuses == ["warning", "warning", "info", "warning", "warning"]

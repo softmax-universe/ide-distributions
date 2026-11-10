@@ -128,10 +128,14 @@ class FakeDatadog:
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        # Avoid a half-second shutdown poll in each function-scoped fixture.
+        threading.Thread(
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+        ).start()
 
     def close(self) -> None:
         self.server.shutdown()
+        self.server.server_close()
 
     def take_lines(self, lines: Iterable[bytes]) -> None:
         """What the Agent collected from a container's stream."""

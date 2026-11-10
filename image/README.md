@@ -251,7 +251,11 @@ grouped tool/action, such as `claim_write` as `claim` / `write`.
 
 Application logs and SDK self-diagnostics use Python's standard bounded `QueueHandler` and
 `QueueListener`. Existing root handlers run on the listener thread, except agent telemetry's,
-which only enqueues. Production logging
+which only enqueues. Console handlers write one JSON object per record (`telemetry.JsonLines`):
+`status` is the level, which Datadog takes as the log's status instead of reading every stderr
+line as an error, and a traceback stays inside its record's `message`. The gateway's own stderr
+handler switches when the plugin registers and runs its text through Hermes's scanner; other
+processes mask Softmax tokens. Production logging
 failure handling (`logging.raiseExceptions=false`) drops records if that queue is full.
 The image sets `PYTHONUNBUFFERED=1` for both interpreters, so a blocked background write
 cannot hold the standard stream's buffered-writer lock during interpreter exit.
@@ -319,6 +323,21 @@ Distribution outcomes preserve `validation_rejected`, `tool_rejected`, `store_re
 `internal_error`, `failed`, `succeeded` and `unknown_tool`. Unknown tool/action inputs are
 not logged. Native semantic tool errors and failed model attempts set error status. No
 arguments, results, messages, prompts, credential values or exception text are captured.
+
+Both tool boundaries end through `telemetry.finish_tool_call`, so every `execute_tool` span carries
+`gen_ai.agent.name`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `session.id`, `turn.id`, `outcome`
+and, on a distribution call with one, `tool.action`. A failed call also has `error.type`, a short
+class and never text from the call: the distribution's outcome, a refusal's `kind` such as
+`transition_refused`, or an exception's class; natively Hermes's own class (`tool_timeout`,
+`invalid_tool_arguments`), else one read from the result's structured fields (a distribution
+result's `kind`, `timeout` or `degraded` status, `exit_code_nonzero`), else `tool_error`. The same
+call logs one line on `research_core.tool_call` with those fields and its duration, INFO when it
+succeeded and WARNING when it failed; it replaces Hermes's `Tool X returned error` line, which held
+the output (`hermes-patches/0007`). A failed `chat` span has `error.type`, Hermes's classification
+(`rate_limit`, `server_error`, `unknown`...), and `exception.type`. A stream that fails after an HTTP
+200, such as OpenRouter's "Provider returned error" event, has no status code. At session end
+`invoke_agent` counts its model attempts, native tool calls and failed ones in
+`gen_ai.turn.model_calls`, `gen_ai.turn.tool_calls` and `gen_ai.turn.tool_failures`.
 Token usage uses `gen_ai.usage.*`; positive native cache buckets are evidence of reported
 usage, while absent/zero buckets do not prove a cache miss. The first-chunk event does not
 claim first visible text or first-token latency.

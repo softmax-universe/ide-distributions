@@ -1,7 +1,11 @@
 name: Workspace startup comparison
 on:
-  pull_request:
-    paths: ['image/Dockerfile', 'image/runtime.py', 'core/src/research_core/prepare.py', '.github/workflows/startup-benchmark.yml']
+  workflow_dispatch:
+    inputs:
+      baseline_sha:
+        description: Full commit SHA for the baseline. The selected workflow ref is the candidate.
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
@@ -14,8 +18,9 @@ jobs:
           fetch-depth: 0
       - name: Build baseline and candidate from their own source and lockfile
         env:
-          BASE_REF: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ inputs.baseline_sha }}
         run: |
+          [[ "$BASE_REF" =~ ^[0-9a-f]{40}$ ]]
           git worktree add --detach "$RUNNER_TEMP/baseline-source" "$BASE_REF"
           docker build --platform linux/amd64 -f "$RUNNER_TEMP/baseline-source/image/Dockerfile" -t startup-baseline "$RUNNER_TEMP/baseline-source"
           docker build --platform linux/amd64 -f image/Dockerfile -t startup-candidate .

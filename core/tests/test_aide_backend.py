@@ -214,7 +214,16 @@ def run(system, scenario, inference=None, seam_transport=None, gateway=None):
             backends, watchers = [], []
 
             def tasks():
-                return watchers + [task for old in backends for task in old.consumers.values()]
+                return (
+                    watchers
+                    + [task for old in backends for task in old.consumers.values()]
+                    + [
+                        feed.watcher
+                        for old in backends
+                        for feed in old.boards.values()
+                        if feed.watcher is not None
+                    ]
+                )
 
             async def stop():
                 # A cancel can be lost while a task reads the seam stream. Keep cancelling
@@ -1591,6 +1600,38 @@ def test_tasks_goals_cancellation_and_pending_input(system):
         )
         assert code(stale) == "conflict"
         gateway.gate.set()
+
+    run(system, scenario)
+
+
+def test_scoped_board_changes_reach_only_subscribed_frontends(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        goal = goals.create(ctx.store, HARNESS, title="Win", end_state="Top", reason="asked")
+        task = tasks.create(ctx.store, HARNESS, type="maintenance", title="Fix", description="Do")
+        task_params = {"resource": "tasks", "scope_id": COWORLD_ID}
+        goal_params = {"resource": "goals", "scope_id": COWORLD_ID}
+        task_snapshot = (await call(backend, "state.list", task_params))["result"]
+        goal_snapshot = (await call(backend, "state.list", goal_params))["result"]
+        await call(backend, "state.list", task_params, frontend=OTHER)
+
+        tasks.update(ctx.store, HARNESS, task["id"], title="Fix the new failure")
+        goals.update(ctx.store, HARNESS, int(goal["id"][2:]), title="Win the next round")
+        await until(lambda: len(backend.socket.notes("state.changed")) == 2)
+        changed_task, changed_goal = backend.socket.notes("state.changed")
+        assert changed_task["item"]["title"] == "Fix the new failure"
+        assert changed_task["previous_revision"] == task_snapshot["revision"]
+        assert changed_goal["item"]["title"] == "Win the next round"
+        assert changed_goal["previous_revision"] == goal_snapshot["revision"]
+        assert backend.socket.notes("state.changed", OTHER) == [changed_task]
+
+        backend.closed(OTHER)
+        tasks.update(ctx.store, HARNESS, task["id"], title="Fix the remaining failure")
+        await until(lambda: len(backend.socket.notes("state.changed")) == 3)
+        assert (
+            backend.socket.notes("state.changed")[-1]["item"]["title"]
+            == "Fix the remaining failure"
+        )
+        assert backend.socket.notes("state.changed", OTHER) == [changed_task]
 
     run(system, scenario)
 

@@ -62,6 +62,7 @@ def test_workspace_process_env_drops_hermes_interpreter_variables(tmp_path):
 
 def test_workspace_tools_inherit_logs_and_propagate_standard_context(tmp_path, monkeypatch):
     from research_core import layout, telemetry
+    from research_core.plugin import tracing
 
     env = {"IDE_WORKSPACE": str(tmp_path / "ws")}
     monkeypatch.setenv("IDE_WORKSPACE", env["IDE_WORKSPACE"])
@@ -78,9 +79,11 @@ def test_workspace_tools_inherit_logs_and_propagate_standard_context(tmp_path, m
     # Match Hermes's isolated handler worker: the parent exists but is not current.
     with telemetry.tracer().start_span("native.tool") as parent:
         tool = types.SimpleNamespace(name="demo", executor="workspace", timeout_s=1)
-        handler = executor.make_handler(tool, "researcher", lambda session: parent)
+        turn = tracing.Turn(parent, "s1", "turn-1")
+        handler = executor.make_handler(tool, "researcher", lambda session: turn)
         assert handler({}, session_id="s1") == '{"ok":false}'
     assert "stderr" not in calls[0] and "capture_output" not in calls[0]
+    assert calls[0]["env"]["IDE_TURN_ID"] == "turn-1"
     context = telemetry.process_context(calls[0]["env"])
     from opentelemetry import trace
 
