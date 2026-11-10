@@ -16,8 +16,9 @@ uses the unpatched image.
 | `0004-run-binding.patch` | Tell a callback which run it belongs to, so that it never has to look up the session's latest run. |
 | `0005-gateway-exit-flush.patch` | Give plugins one call before the gateway's `os._exit`, which skips every `atexit` step. |
 | `0006-api-listener-ready.patch` | Notify the hosted supervisor when the API listener has bound and registered its routes, replacing readiness polling. |
+| `0007-payload-free-tool-error-log.patch` | Drop the `Tool X returned error` warning, which logged the tool's output. The plugin's `post_tool_call` logs each failure without it (`research_core.telemetry.finish_tool_call`). |
 
-`core/src/research_core/plugin/capture.py` is what uses them.
+`core/src/research_core/plugin/capture.py` is what uses the hooks.
 
 ## How the hooks behave
 

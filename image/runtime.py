@@ -282,7 +282,7 @@ async def run(stack: AsyncExitStack) -> None:
 
 
 async def main() -> None:
-    logging.basicConfig()
+    telemetry.configure_logging()
     logging.getLogger("aide").setLevel(logging.INFO)
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
