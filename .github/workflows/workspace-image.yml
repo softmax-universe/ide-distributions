@@ -16,7 +16,6 @@ jobs:
         run: docker run --rm --entrypoint /usr/local/bin/buildctl distribution-smoke --version
       - name: Start, sleep, and restart with retained state
         env:
-          STARTUP_CYCLES: "4"
           STARTUP_ARTIFACTS: ${{ runner.temp }}/startup-proof
         run: bash image/system_tests/start-stop.sh distribution-smoke
       - name: Retain startup evidence

@@ -210,10 +210,19 @@ class Workspace:
             "model.api_key": "not-used",
             "model.context_length": "200000",
         }
-        for key, value in settings.items():
-            argv = [self.hermes_bin, "config", "set", key, value]
-            result = run(argv, self.host.profile_env(role))
-            assert result.returncode == 0, result.stdout + result.stderr
+        script = """
+import json
+import sys
+from hermes_cli.config import set_config_value
+
+for key, value in json.loads(sys.argv[1]).items():
+    set_config_value(key, value)
+"""
+        result = run(
+            [hermes_python(self.hermes_bin), "-c", script, json.dumps(settings)],
+            self.host.profile_env(role),
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
 
     def turn(self, role: str, session_id: str) -> dict:
         """One run on the session; returns the agent's request (a title request has no tools)."""

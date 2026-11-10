@@ -12,13 +12,37 @@ from pathlib import Path
 import pytest
 
 HERE = Path(__file__).resolve().parent
+SHARDS_BY_FILE = {
+    "test_prepare_real.py": "prepare",
+    "test_rebuild_real.py": "rebuild",
+    "test_frozen_sessions_real.py": "lifecycle",
+    "test_message_reaches_researcher_real.py": "lifecycle",
+}
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--hermes-shard",
+        choices=("prepare", "rebuild", "lifecycle", "gateway"),
+    )
 
 
 @pytest.hookimpl(tryfirst=True)
-def pytest_collection_modifyitems(items):
+def pytest_collection_modifyitems(config, items):
+    shard = config.getoption("--hermes-shard")
+    deselected = []
     for item in items:
-        if HERE in item.path.resolve().parents:
-            item.add_marker(pytest.mark.hermes)
+        if HERE not in item.path.parents:
+            continue
+        item.add_marker(pytest.mark.hermes)
+        if shard is None:
+            continue
+
+        if SHARDS_BY_FILE.get(item.path.name, "gateway") != shard:
+            deselected.append(item)
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = [item for item in items if item not in deselected]
 
 
 @pytest.fixture(scope="session")
