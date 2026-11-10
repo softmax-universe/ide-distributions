@@ -12,12 +12,18 @@ from pathlib import Path
 import pytest
 
 HERE = Path(__file__).resolve().parent
+SHARDS_BY_FILE = {
+    "test_prepare_real.py": "prepare",
+    "test_rebuild_real.py": "rebuild",
+    "test_frozen_sessions_real.py": "lifecycle",
+    "test_message_reaches_researcher_real.py": "lifecycle",
+}
 
 
 def pytest_addoption(parser):
     parser.addoption(
         "--hermes-shard",
-        choices=("prepare", "rebuild-orchestrator", "rebuild-researcher", "gateway"),
+        choices=("prepare", "rebuild", "lifecycle", "gateway"),
     )
 
 
@@ -32,15 +38,7 @@ def pytest_collection_modifyitems(config, items):
         if shard is None:
             continue
 
-        item_shard = "gateway"
-        if item.path.name == "test_prepare_real.py":
-            item_shard = "prepare"
-        elif item.path.name == "test_rebuild_real.py" and hasattr(item, "callspec"):
-            # Keep every assertion on a shared proof in the same job.
-            role = item.callspec.params.get("proof", item.callspec.params.get("profile"))
-            if role in ("orchestrator", "researcher"):
-                item_shard = f"rebuild-{role}"
-        if item_shard != shard:
+        if SHARDS_BY_FILE.get(item.path.name, "gateway") != shard:
             deselected.append(item)
     if deselected:
         config.hook.pytest_deselected(items=deselected)

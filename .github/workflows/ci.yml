@@ -61,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [prepare, rebuild-orchestrator, rebuild-researcher, gateway]
+        shard: [prepare, rebuild, lifecycle, gateway]
     container:
       # Match the pinned interpreter and patches used by the hosted image.
       image: nousresearch/hermes-agent@sha256:d27689bc6e8581ec884a7227c9101fdaebf6c853cff8859020dac14f21452b4d
