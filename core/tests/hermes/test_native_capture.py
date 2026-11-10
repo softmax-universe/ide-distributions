@@ -217,6 +217,8 @@ def test_a_stream_dropped_after_visible_text_keeps_that_text(gateway):
     assert len(requests) >= 2
     objects = objects_of(stored_records(gateway.stream))
     assert any(VISIBLE_TEXT.encode() in body for body in objects.values())
+    # The continuation's request binds the user's row, not Hermes's uncommitted nudge.
+    assert "record_native_message" not in gateway.log.read_text()
 
 
 def test_a_rebuilt_prompt_attributes_the_new_soul(gateway, hermes_bin):

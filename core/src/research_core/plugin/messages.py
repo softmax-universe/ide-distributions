@@ -19,17 +19,23 @@ def record_native_message(
     run_id: str | None = None,
     **_,
 ) -> None:
-    """Bind application metadata to the native row ID supplied by the pinned observer hook."""
+    """Bind application metadata to the native row ID supplied by the pinned observer hook.
+
+    The turn's user message is the last one Hermes committed, which has a row ID. A later user
+    message is one Hermes added inside the turn and never commits, such as the nudge that
+    continues a truncated stream.
+    """
     from research_core import layout
     from research_core.agent_telemetry import observed
     from research_core.plugin.executor import profile_env
     from research_core.store.actors import Actor
     from research_core.store.db import Store
 
-    current = next(
-        message for message in reversed(conversation_history) if message["role"] == "user"
+    native_id = next(
+        message["_row_id"]
+        for message in reversed(conversation_history)
+        if message["role"] == "user" and "_row_id" in message
     )
-    native_id = current["_row_id"]
     workspace = layout.from_env(profile_env())
     store = Store.open(workspace.store_path, kind="workspace")
     try:
