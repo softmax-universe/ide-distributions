@@ -122,9 +122,7 @@ def records_of(gateway, session_id: str, *, wait_for: tuple[str, str] | None = N
         records = [
             r for r in stored_records(gateway.stream) if r.get("hermes_session_id") == session_id
         ]
-        found = wait_for is None or any(
-            (r.get("action"), r.get("stage")) == wait_for for r in records
-        )
+        found = wait_for is None or operations(records, *wait_for)
         if found or time.monotonic() > deadline:
             return records
         time.sleep(0.1)
