@@ -1,15 +1,17 @@
-"""The plugin's callbacks, called as Hermes calls them, with the real writer and a stand-in scanner.
+"""The plugin's callbacks, called as Hermes's native hooks call them, with the real writer and a
+stand-in scanner.
 
-``core/tests/hermes/test_rebuild_real.py`` runs the same code on a real gateway. These cover what a
-stub model there does not produce: failed streams, retries, compaction, approvals and odd values.
+``core/tests/hermes/test_native_capture.py`` runs the same code on a real, unpatched gateway. These
+cover what a stub model there does not produce: failures, compaction, approvals and odd values.
 """
 
 import json
 import logging
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
@@ -18,11 +20,11 @@ from research_core.plugin.capture import (
     NO_SESSION,
     DiagnosticsHandler,
     GatewayCapture,
+    remember_section,
     row_keys,
     wire_request,
     with_row_ids,
 )
-from research_core.plugin.hermes_prompt import without_mandatory_tool_use
 from tests.telemetry.conftest import (
     HERMES_STYLE_SECRET,
     objects_of,
@@ -31,56 +33,66 @@ from tests.telemetry.conftest import (
     stored_records,
 )
 
-CORE_SRC = Path(__file__).resolve().parents[2] / "src"
 REQUEST = {
     "model": "moonshot/kimi-k3.1-pro",
     "messages": [
-        {"role": "system", "content": "SOUL TEXT\n\nPLUGIN TEXT"},
+        {"role": "system", "content": "SOUL TEXT\n\nPLUGIN TEXT\n\nHermes guidance"},
         {"role": "user", "content": "hello\n\n[session Coworld] none"},
     ],
     "tools": [{"type": "function", "function": {"name": "goal", "parameters": {}}}],
-    "stream": True,
-    "stream_options": {"include_usage": True},
     "extra_body": {"provider": {"only": ["moonshotai"]}, "reasoning": {"effort": "low"}},
     "extra_headers": {"X-OpenRouter-Cache": "false"},
 }
-HISTORY = [
-    {"role": "user", "content": "hello", "_row_id": 11},
-]
+HISTORY = [{"role": "user", "content": "hello", "_row_id": 11}]
 STARTED = 1793817074.0
+CALL = "turn-1:api:1"
 
 
 @pytest.fixture
-def capture(writer) -> GatewayCapture:
+def capture(writer, home) -> GatewayCapture:
     return GatewayCapture(writer, "orchestrator")
 
 
-def _attempt(capture: GatewayCapture, **overrides) -> None:
-    capture.on_model_attempt(
+def _start_run(home: Path, session_id: str, run_id: str) -> None:
+    payload = {"api_turn_v1": {"run_owner_scope": "x"}}
+    with sqlite3.connect(home / "state.db") as db:
+        db.execute(
+            "INSERT INTO session_admissions (request_id, target_session_id, payload_json, status) "
+            "VALUES (?, ?, ?, 'started')",
+            (run_id, session_id, json.dumps(payload)),
+        )
+
+
+def _request(capture: GatewayCapture, request=REQUEST, history=HISTORY, **overrides) -> None:
+    """The middleware, then ``pre_api_request``, as Hermes calls them for one attempt."""
+    assert capture.keep_request(request=request, session_id="ses_1", api_request_id=CALL) is None
+    capture.pre_api_request(
         **{
             "session_id": "ses_1",
-            "request": REQUEST,
-            "response": SimpleNamespace(
-                id="gen-1",
-                model="moonshot/kimi-k3.1-pro",
-                choices=[
-                    SimpleNamespace(
-                        finish_reason="stop",
-                        message=SimpleNamespace(role="assistant", content="hi", reasoning="think"),
-                    )
-                ],
-                usage=SimpleNamespace(prompt_tokens=5, completion_tokens=2, cost=0.5),
+            "conversation_history": history,
+            "api_request_id": CALL,
+            "turn_id": "turn-1",
+            "provider": "openrouter",
+            "started_at": STARTED,
+            **overrides,
+        }
+    )
+
+
+def _reply(capture: GatewayCapture, **overrides) -> None:
+    capture.post_api_request(
+        **{
+            "session_id": "ses_1",
+            "api_request_id": CALL,
+            "assistant_message": SimpleNamespace(
+                role="assistant", content="hi", reasoning_content="think", tool_calls=None
             ),
-            "outcome": "completed",
-            "kind": "stream",
-            "attempt": 1,
+            "finish_reason": "stop",
+            "response_model": "moonshot/kimi-k3.1-pro",
+            "usage": {"prompt_tokens": 5, "output_tokens": 2, "cache_read_tokens": 3},
             "started_at": STARTED,
             "ended_at": STARTED + 2,
             "first_chunk_at": STARTED + 0.5,
-            "provider": "openrouter",
-            "api_request_id": "turn-1:api:1",
-            "call_role": "primary",
-            "run_id": "run_1",
             **overrides,
         }
     )
@@ -110,7 +122,6 @@ def test_wire_request_is_the_json_body_the_sdk_sends():
     assert "extra_body" not in wire and "extra_headers" not in wire
     assert wire["provider"] == {"only": ["moonshotai"]}
     assert wire["reasoning"] == {"effort": "low"}
-    assert wire["stream"] is True
 
 
 def test_row_ids_match_through_a_dropped_row_and_tool_ids():
@@ -133,192 +144,170 @@ def test_row_ids_match_through_a_dropped_row_and_tool_ids():
     assert "_row_id" not in wire[1]
 
 
-def test_a_retried_stream_is_one_record_per_attempt_and_keeps_its_partial_text(
-    capture, writer, stream_file
+def test_a_request_is_what_the_middleware_saw_with_its_row_ids_and_run(
+    capture, home, writer, stream_file
 ):
-    parts = {
-        "content": "partial answer",
-        "reasoning": "thinking before the drop",
-        "refusal": None,
-        "reasoning_details": None,
-        "tool_calls": [{"id": "call_cut", "name": "goal", "arguments": '{"cut": "he'}],
+    _start_run(home, "ses_1", "run_1")
+    _request(capture)
+    _reply(capture)
+    records = _flushed(writer, stream_file)
+    started = _operations(records, "model_request", "started")[0]
+    request = _operations(records, "model_attempt", "request")[0]
+    response = _operations(records, "model_attempt", "response")[0]
+    assert started["run_id"] == request["run_id"] == response["run_id"] == "run_1"
+    assert request["model_attempt_id"] == response["model_attempt_id"] == f"{CALL}#1"
+    rebuilt = rebuild_request(_digest(request, "request_manifest"), objects_of(records))
+    assert rebuilt == wire_request(REQUEST)
+    manifest = json.loads(objects_of(records)[_digest(request, "request_manifest")])
+    assert manifest["hermes_message_ids"] == {"1": "11"}
+    assert response["usage"] == {
+        "input_tokens": 5,
+        "output_tokens": 2,
+        "cache_read_input_tokens": 3,
     }
-    _attempt(
-        capture,
-        response=None,
-        outcome="failed",
-        stream_parts=parts,
-        error="connection dropped",
-        error_type="APIConnectionError",
-        status_code=None,
-    )
-    _attempt(capture, attempt=2)
-    records = _flushed(writer, stream_file)
-    objects = objects_of(records)
-    requests = _operations(records, "model_attempt", "request")
-    assert len(requests) == 2
-    assert requests[0]["model_attempt_id"] != requests[1]["model_attempt_id"]
-
-    responses = _operations(records, "model_attempt", "response")
-    assert responses[0]["partial"] is True
-    partial = json.loads(objects[_digest(responses[0], "message")])
-    assert partial["content"] == "partial answer"
-    assert partial["reasoning_content"] == "thinking before the drop"
-    assert partial["tool_calls"][0]["function"]["arguments"] == '{"cut": "he'
-    assert responses[0]["outcome"] == "failed"
-    assert responses[0]["reason"] == "apiconnectionerror"
-
-    failed = _operations(records, "model_attempt", "failed")[0]
-    assert objects[_digest(failed, "error")] == b"connection dropped"
-    # A stream that failed proposed nothing Hermes will run.
-    assert not _operations(records, "tool", "proposed")
+    assert response["finish_reason"] == "stop" and response["duration_ms"] == 2000.0
+    assert response["time_to_first_token_ms"] == 500.0
+    assert json.loads(objects_of(records)[_digest(response, "message")]) == {
+        "role": "assistant",
+        "content": "hi",
+        "reasoning_content": "think",
+    }
 
 
-def test_a_failed_attempt_with_no_text_keeps_its_outcome(capture, writer, stream_file):
-    _attempt(capture, response=None, outcome="failed", error="", error_type="TimeoutError")
-    [failed] = _operations(_flushed(writer, stream_file), "model_attempt", "failed")
-    assert (failed["outcome"], failed["reason"]) == ("failed", "timeouterror")
-    assert "content_refs" not in failed
-
-
-def test_a_failed_attempt_with_nothing_delivered_still_has_its_request_and_error(
-    capture, writer, stream_file
-):
-    _attempt(
-        capture,
-        response=None,
-        outcome="failed",
-        stream_parts=None,
-        error="429 too many",
-        error_type="RateLimitError",
+def test_each_outer_attempt_of_a_call_is_its_own_record(capture, writer, stream_file):
+    _request(capture)
+    capture.api_request_error(
+        session_id="ses_1",
+        api_request_id=CALL,
+        reason="rate_limit",
         status_code=429,
+        error={"type": "RateLimitError", "message": "slow down"},
+        started_at=STARTED,
+        ended_at=STARTED + 1,
     )
+    _request(capture, retry_count=1)
+    _reply(capture)
     records = _flushed(writer, stream_file)
-    assert _operations(records, "model_attempt", "request")
-    assert not _operations(records, "model_attempt", "response")
+    attempts = [r["model_attempt_id"] for r in _operations(records, "model_attempt", "request")]
+    assert attempts == [f"{CALL}#1", f"{CALL}#2"]
     failed = _operations(records, "model_attempt", "failed")[0]
-    assert failed["details"]["status_code"] == 429
+    assert failed["model_attempt_id"] == f"{CALL}#1" and failed["reason"] == "rate_limit"
+    assert failed["details"] == {"status_code": 429}
+    assert objects_of(records)[_digest(failed, "error")] == b"slow down"
 
 
-def test_proposals_use_a_streams_raw_arguments(capture, writer, stream_file):
-    parts = {"tool_calls": [{"id": "call_1", "name": "goal", "arguments": '{"a": 1'}]}
-    _attempt(capture, stream_parts=parts)
+def test_a_broken_stream_keeps_its_text_and_streamed_reasoning(capture, writer, stream_file):
+    _request(capture)
+    capture.on_stream_start(session_id="ses_1")
+    capture.on_stream_delta(session_id="ses_1", delta="thinking ", kind="reasoning")
+    capture.on_stream_delta(session_id="ses_1", delta="hard", kind="reasoning")
+    capture.on_stream_delta(session_id="ses_1", delta="ignored", kind="text")
+    capture.on_stream_end(session_id="ses_1", final_text="partial", finished=False, error="reset")
     records = _flushed(writer, stream_file)
-    proposal = _operations(records, "tool", "proposed")[0]
-    assert proposal["tool_call_id"] == "call_1"
-    assert objects_of(records)[_digest(proposal, "arguments")] == b'{"a": 1'
+    response = _operations(records, "model_attempt", "response")[0]
+    assert response["partial"] is True and response["outcome"] == "failed"
+    assert json.loads(objects_of(records)[_digest(response, "message")]) == {
+        "role": "assistant",
+        "content": "partial",
+        "reasoning_content": "thinking hard",
+    }
 
 
-def test_proposals_from_a_whole_response(capture, writer, stream_file):
-    message = SimpleNamespace(
-        role="assistant",
-        content=None,
-        tool_calls=[
-            SimpleNamespace(
-                id="call_2",
-                type="function",
-                function=SimpleNamespace(name="task", arguments="{}"),
-            )
-        ],
+def test_a_finished_stream_leaves_the_reply_to_post_api_request(capture, writer, stream_file):
+    _request(capture)
+    capture.on_stream_delta(session_id="ses_1", delta="r", kind="reasoning")
+    capture.on_stream_end(session_id="ses_1", final_text="hi", finished=True, error=None)
+    records = _flushed(writer, stream_file)
+    assert _operations(records, "model_attempt", "response") == []
+
+
+def test_proposals_from_the_reply(capture, writer, stream_file):
+    # Hermes's own flat shape, as its assembled message holds it.
+    call = SimpleNamespace(id="call_1", name="goal", arguments='{"a": 1}', provider_data=None)
+    _request(capture)
+    _reply(
+        capture,
+        assistant_message=SimpleNamespace(role="assistant", content=None, tool_calls=[call]),
+        finish_reason="tool_calls",
     )
-    response = SimpleNamespace(
-        model="m",
-        usage=None,
-        choices=[SimpleNamespace(finish_reason="tool_calls", message=message)],
-    )
-    _attempt(capture, kind="request", response=response)
-    proposal = _operations(_flushed(writer, stream_file), "tool", "proposed")[0]
-    assert proposal["tool_call_id"] == "call_2" and proposal["tool_name"] == "task"
+    records = _flushed(writer, stream_file)
+    proposed = _operations(records, "tool", "proposed")[0]
+    assert proposed["tool_call_id"] == "call_1" and proposed["tool_name"] == "goal"
+    assert proposed["api_request_id"] == CALL
+    assert objects_of(records)[_digest(proposed, "arguments")] == b'{"a": 1}'
 
 
-def test_a_tool_result_is_what_the_model_got_and_not_the_original(capture, writer, stream_file):
-    original = "x" * 1000
-    capture.post_tool_call(
-        tool_name="terminal",
-        args={"command": "ls"},
-        result=original,
-        session_id="ses_1",
-        tool_call_id="call_1",
-        duration_ms=12,
-        status="ok",
-        run_id="run_1",
-    )
-    capture.on_tool_results_final(
-        session_id="ses_1",
-        task_id="task-1",
-        results=[
+def test_a_tool_result_is_what_the_next_request_sent_once(capture, writer, stream_file):
+    """The form the model got, after spill and budget, and only the first time it is sent."""
+    tool_row = {"role": "tool", "tool_call_id": "c1", "content": "spilled: see file", "_row_id": 13}
+    history = [*HISTORY, {"role": "assistant", "_row_id": 12, "tool_calls": [{"id": "c1"}]}]
+    history.append(tool_row)
+    wire = {
+        **REQUEST,
+        "messages": [
+            *REQUEST["messages"],
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
             {
-                "tool_call_id": "call_1",
-                "tool_name": "terminal",
-                "content": "[saved to a file]",
-                "row_id": 7,
-            }
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": [{"type": "text", "text": "spilled: see file"}],
+            },
         ],
-        run_id="run_1",
-    )
+    }
+    _request(capture, request=wire, history=history)
+    _request(capture, request=wire, history=history)
     records = _flushed(writer, stream_file)
-    assert original not in json.dumps(records)
-    completed = _operations(records, "tool", "completed")[0]
-    assert completed["duration_ms"] == 12 and completed["outcome"] == "ok"
-    objects = objects_of(records)
-    assert json.loads(objects[_digest(completed, "arguments")]) == {"command": "ls"}
-    final = _operations(records, "tool", "result")[0]
-    assert objects[_digest(final, "result")] == b"[saved to a file]"
-    assert final["hermes_message_id"] == "7"
-
-
-def test_a_multimodal_tool_result_stays_a_list(capture, writer, stream_file):
-    content = [{"type": "text", "text": "look"}]
-    capture.on_tool_results_final(
-        session_id="ses_1",
-        results=[{"tool_call_id": "c", "tool_name": "v", "content": content, "row_id": None}],
-    )
-    records = _flushed(writer, stream_file)
-    final = _operations(records, "tool", "result")[0]
-    assert json.loads(objects_of(records)[_digest(final, "result")]) == content
-    assert "hermes_message_id" not in final
+    (result,) = _operations(records, "tool", "result")
+    assert result["tool_call_id"] == "c1" and result["hermes_message_id"] == "13"
+    assert objects_of(records)[_digest(result, "result")] == b"spilled: see file"
 
 
 @pytest.mark.parametrize(
     ("status", "result", "stage"),
     [
-        ("error", json.dumps({"ok": False, "error": "no", "problems": ["no"]}), "refused"),
+        ("error", '{"ok": false, "error": "no", "problems": ["no"]}', "refused"),
         ("blocked", "blocked by a hook", "refused"),
-        ("error", json.dumps({"error": "the disk is full"}), "completed"),
-        ("ok", json.dumps({"ok": False, "problems": ["not a failure Hermes saw"]}), "completed"),
+        ("error", '{"error": "the disk is full"}', "completed"),
+        ("ok", '{"ok": false, "problems": ["not a failure Hermes saw"]}', "completed"),
     ],
 )
 def test_a_refusal_is_told_from_a_failure(capture, writer, stream_file, status, result, stage):
-    capture.post_tool_call(tool_name="goal", args={}, result=result, session_id="s", status=status)
-    assert _operations(_flushed(writer, stream_file), "tool", stage)
+    capture.post_tool_call(tool_name="goal", args={}, result=result, status=status)
+    assert _operations(_flushed(writer, stream_file), "tool")[0]["stage"] == stage
 
 
-def test_commits_name_native_ids_and_times(capture, writer, stream_file):
+def test_commits_are_read_from_state_db_at_the_end_of_a_turn(capture, home, writer, stream_file):
     call = {"id": "c", "type": "function", "function": {"name": "goal", "arguments": "{}"}}
-    capture.on_messages_committed(
-        session_id="ses_1",
-        rows=[
-            {
-                "_row_id": 3,
-                "role": "assistant",
-                "content": f"text {HERMES_STYLE_SECRET}",
-                "finish_reason": "stop",
-                "reasoning_content": "because",
-                "tool_calls": [call],
-                "timestamp": 1.0,
-            },
-            {"_row_id": 4, "role": "tool", "content": "result", "tool_call_id": "c"},
-            {"_row_id": 5, "role": "user", "content": "user text"},
-        ],
-        committed_at=STARTED,
-        run_id="run_1",
-    )
+    with sqlite3.connect(home / "state.db") as db:
+        db.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+            ("ses_1", "user", "before this process", STARTED - 1e9),
+        )
+        rows = [
+            (
+                "ses_1",
+                "assistant",
+                f"text {HERMES_STYLE_SECRET}",
+                None,
+                json.dumps([call]),
+                "stop",
+                "because",
+            ),
+            ("ses_1", "tool", "result", "c", None, None, None),
+            ("ses_other", "user", "another session", None, None, None, None),
+        ]
+        db.executemany(
+            "INSERT INTO messages (session_id, role, content, tool_call_id, tool_calls, "
+            "finish_reason, reasoning_content, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [(*row, capture._started + 1) for row in rows],
+        )
+    capture.on_session_end(session_id="ses_1", turn_id="t", completed=True)
+    capture.on_session_end(session_id="ses_1", turn_id="t2", completed=True)
     records = _flushed(writer, stream_file)
-    first, second, third = _operations(records, "message", "committed")
-    assert first["hermes_message_id"] == "3" and first["kind"] == "assistant"
-    assert first["occurred_at"] == "2026-11-04T18:31:14.000Z"
+    first, second = _operations(records, "message", "committed")
+    assert first["hermes_message_id"] == "2" and first["kind"] == "assistant"
     assert second["tool_call_id"] == "c"
-    # A row carries its own text, scanned. A tool row's is on its result.
+    assert json.loads(objects_of(records)[_digest(second, "message")])["content"] == "result"
     assert HERMES_STYLE_SECRET not in json.dumps(records)
     assert json.loads(objects_of(records)[_digest(first, "message")]) == {
         "role": "assistant",
@@ -326,175 +315,63 @@ def test_commits_name_native_ids_and_times(capture, writer, stream_file):
         "reasoning_content": "because",
         "tool_calls": [call],
     }
-    assert "content_refs" not in second and '"result"' not in json.dumps(records)
-    assert json.loads(objects_of(records)[_digest(third, "message")]) == {
-        "role": "user",
-        "content": "user text",
-    }
 
 
-def test_prompt_sections_are_byte_ranges_of_the_redacted_prompt(capture, writer, stream_file):
-    prompt = f"SOUL {HERMES_STYLE_SECRET} é\n\nPLUGIN TEXT"
-    boundary = prompt.index("\n\n")
-    capture.on_system_prompt_built(
-        session_id="ses_1",
-        system_prompt=prompt,
-        sections=[
-            {"source": "soul", "start": 0, "end": boundary},
-            {
-                "source": "plugin_sections",
-                "start": boundary + 2,
-                "end": len(prompt),
-            },
-        ],
-        run_id="run_1",
-    )
-    request = {"model": "m", "messages": [{"role": "system", "content": prompt}]}
-    _attempt(capture, request=request)
+def test_prompt_sections_name_soul_and_plugin_sections_as_sent(capture, writer, stream_file):
+    rendered = remember_section("ide-briefing", lambda info, **_: "PLUGIN TEXT")
+    assert rendered(MappingProxyType({"session_id": "ses_1"})) == "PLUGIN TEXT"
+    _request(capture)
     records = _flushed(writer, stream_file)
-    assert HERMES_STYLE_SECRET not in json.dumps(records)
-    objects = objects_of(records)
-    manifest = json.loads(
-        objects[_digest(_operations(records, "model_attempt", "request")[0], "request_manifest")]
-    )
-    sections = json.loads(objects[manifest["prompt_sections_digest"]])["sections"]
-    system = json.loads(objects[manifest["messages"][0]])["content"].encode()
-    named = {section["name"]: section for section in sections}
-    plugin = named["plugin_sections"]
-    start = plugin["byte_offset"]
-    assert system[start : start + plugin["byte_length"]] == b"PLUGIN TEXT"
-    built = _operations(records, "system_prompt", "built")[0]
-    assert built["details"] == {"sections": 2}
-
-
-def test_a_system_prompt_cut_in_two_for_cache_markers_keeps_every_source(
-    capture, writer, stream_file
-):
-    prompt = "STABLE TEXT\n\nPLUGIN TEXT"
-    capture.on_system_prompt_built(
-        session_id="ses_1",
-        system_prompt=prompt,
-        sections=[
-            {"source": "soul", "start": 0, "end": 11},
-            {"source": "plugin_sections", "start": 13, "end": len(prompt)},
-        ],
-    )
-    # As ``agent/prompt_caching.py`` cuts it: the second part starts right after the first.
-    cut = {
-        "role": "system",
-        "content": [
-            {"type": "text", "text": prompt[:11], "cache_control": {"type": "ephemeral"}},
-            {"type": "text", "text": prompt[11:]},
-        ],
-    }
-    request = {"model": "m", "messages": [cut]}
-    _attempt(capture, request=request)
-    records = _flushed(writer, stream_file)
-    objects = objects_of(records)
-    digest = _digest(_operations(records, "model_attempt", "request")[0], "request_manifest")
-    assert rebuild_request(digest, objects) == request
-    assert prompt.encode() not in objects.values()
-    body = json.loads(objects[json.loads(objects[digest])["prompt_sections_digest"]])
-    assert set(body) == {"sections"}
-    assert [section["name"] for section in body["sections"]] == ["soul", "plugin_sections"]
-
-
-def test_a_block_the_middleware_drops_leaves_every_source_attributed(capture, writer, stream_file):
-    """``hermes_prompt`` drops a block from the middle of a section of the request, not the stored
-    prompt. That section keeps what was sent, and the dropped text is credited to no source."""
-    block = "<mandatory_tool_use>\nUSE A TOOL\n</mandatory_tool_use>\n\n"
-    guidance = f"GUIDANCE BEFORE\n{block}GUIDANCE AFTER"
-    prompt = f"SOUL TEXT\n\n{guidance}\n\nPLUGIN TEXT"
-    start = prompt.index(guidance)
-    capture.on_system_prompt_built(
-        session_id="ses_1",
-        system_prompt=prompt,
-        sections=[
-            {"source": "soul", "start": 0, "end": 9},
-            {"source": "tool_guidance", "start": start, "end": start + len(guidance)},
-            {"source": "plugin_sections", "start": len(prompt) - 11, "end": len(prompt)},
-        ],
-    )
-    request = {"model": "m", "messages": [{"role": "system", "content": prompt}]}
-    sent = without_mandatory_tool_use(request=request)["request"]
-    _attempt(capture, request=sent)
-    records = _flushed(writer, stream_file)
-    objects = objects_of(records)
-    manifest = json.loads(
-        objects[_digest(_operations(records, "model_attempt", "request")[0], "request_manifest")]
-    )
-    sections = json.loads(objects[manifest["prompt_sections_digest"]])["sections"]
-    system = json.loads(objects[manifest["messages"][0]])["content"].encode()
-    placed = {
-        section["name"]: system[
-            section["byte_offset"] : section["byte_offset"] + section["byte_length"]
-        ]
-        for section in sections
-    }
-    assert placed == {
-        "soul": b"SOUL TEXT",
-        "tool_guidance": b"GUIDANCE BEFORE\nGUIDANCE AFTER",
-        "plugin_sections": b"PLUGIN TEXT",
-    }
+    request = _operations(records, "model_attempt", "request")[0]
+    manifest = json.loads(objects_of(records)[_digest(request, "request_manifest")])
+    sections = json.loads(objects_of(records)[manifest["prompt_sections_digest"]])["sections"]
+    assert sections == [
+        {"name": "soul", "byte_offset": 0, "byte_length": 9},
+        {"name": "plugin_sections", "byte_offset": 11, "byte_length": 11},
+    ]
 
 
 def test_turn_context_is_placed_in_the_next_request_only(capture, writer, stream_file):
-    capture.turn_context("ses_1", "hello", [("session_coworld", "[session Coworld] none")])
-    _attempt(capture)
-    _attempt(capture)
+    capture.turn_context("ses_1", "hello", [("coworld", "[session Coworld] none")])
+    _request(capture)
+    _request(capture)
     records = _flushed(writer, stream_file)
-    contexts = [record for record in records if record["family"] == "context"]
-    assert sorted(record["source_type"] for record in contexts) == ["session_coworld", "user_text"]
-    placed = next(record for record in contexts if record["source_type"] == "session_coworld")
-    text = REQUEST["messages"][1]["content"].encode()
-    start = placed["byte_offset"]
-    assert text[start : start + placed["byte_length"]] == b"[session Coworld] none"
+    contexts = [r for r in records if r["family"] == "context"]
+    assert {r["source_type"] for r in contexts} == {"user_text", "coworld"}
 
 
 def test_records_after_compaction_keep_the_first_session(capture, writer, stream_file):
-    capture.post_compaction(
-        session_id="ses_2",
-        old_session_id="ses_1",
-        kind="provider",
-        reason="Context Pressure",
-        before_tokens=100,
-        after_tokens=10,
-        messages_removed=None,
-    )
-    capture.post_compaction(session_id="ses_3", old_session_id="ses_2", kind="provider")
-    _attempt(capture, session_id="ses_3")
+    capture.post_compaction(session_id="ses_2", old_session_id="ses_1", kind="manual")
+    capture.post_compaction(session_id="ses_3", old_session_id="ses_2", kind="auto")
+    capture.post_tool_call(tool_name="goal", args={}, result="{}", session_id="ses_3")
     records = _flushed(writer, stream_file)
-    request = _operations(records, "model_attempt", "request")[0]
-    assert request["session_id"] == "ses_1" and request["hermes_session_id"] == "ses_3"
-    first = _operations(records, "compaction", "committed")[0]
-    assert first["parent_session_id"] == "ses_1"
-    assert first["reason"] == "context_pressure"
-    assert first["details"] == {"before_tokens": 100, "after_tokens": 10}
+    tool = _operations(records, "tool", "completed")[0]
+    assert tool["session_id"] == "ses_1" and tool["hermes_session_id"] == "ses_3"
 
 
-def test_prompt_sources_follow_a_session_to_its_new_id_after_compaction(
-    capture, writer, stream_file
-):
-    prompt = "SOUL TEXT"
-    capture.on_system_prompt_built(
-        session_id="ses_1",
-        system_prompt=prompt,
-        sections=[{"source": "soul", "start": 0, "end": 9}],
-    )
-    capture.post_compaction(session_id="ses_2", old_session_id="ses_1", kind="provider")
-    request = {"model": "m", "messages": [{"role": "system", "content": prompt}]}
-    _attempt(capture, session_id="ses_2", request=request)
+def test_a_delegated_child_names_its_parents_run(capture, home, writer, stream_file):
+    _start_run(home, "ses_1", "run_1")
+    capture.subagent_start(parent_session_id="ses_1", child_session_id="ses_child")
+    capture.post_tool_call(tool_name="goal", args={}, result="{}", session_id="ses_child")
+    capture.subagent_stop(parent_session_id="ses_1", child_session_id="ses_child")
+    capture.post_tool_call(tool_name="goal", args={}, result="{}", session_id="ses_child")
     records = _flushed(writer, stream_file)
-    objects = objects_of(records)
-    digest = _digest(_operations(records, "model_attempt", "request")[0], "request_manifest")
-    manifest = json.loads(objects[digest])
-    sections = json.loads(objects[manifest["prompt_sections_digest"]])["sections"]
-    assert [section["name"] for section in sections] == ["soul"]
+    first, second = _operations(records, "tool", "completed")
+    assert first["run_id"] == "run_1" and "run_id" not in second
 
 
 def test_auxiliary_calls_outside_a_turn_and_those_without_a_reply(capture, writer, stream_file):
     body = {"model": "m", "messages": [{"role": "user", "content": "x"}]}
-    capture.pre_auxiliary_call(aux_task="vision", request_body=body, started_at=STARTED)
+    capture.pre_auxiliary_call(
+        aux_task="title", request={"method": "POST", "body": body}, started_at=STARTED
+    )
+    capture.post_auxiliary_call(
+        aux_task="title",
+        started_at=STARTED,
+        ended_at=STARTED + 1,
+        response={"assistant_message": {"role": "assistant", "content": "A title"}},
+        usage={"prompt_tokens": 4, "output_tokens": 2},
+    )
     capture.post_auxiliary_call(
         aux_task="vision", started_at=STARTED, error="ValueError: bad", error_type="ValueError"
     )
@@ -502,6 +379,8 @@ def test_auxiliary_calls_outside_a_turn_and_those_without_a_reply(capture, write
     records = _flushed(writer, stream_file)
     request = _operations(records, "model_attempt", "request")[0]
     assert request["session_id"] == NO_SESSION
+    response = _operations(records, "model_attempt", "response")[0]
+    assert response["model_attempt_id"] == request["model_attempt_id"]
     failed = _operations(records, "model_attempt", "failed")[0]
     assert objects_of(records)[_digest(failed, "error")] == b"ValueError: bad"
     assert _operations(records, "model_attempt", "unread")[0]["outcome"] == "streamed"
@@ -525,21 +404,17 @@ def test_approvals_are_recorded_with_their_text_redacted(capture, writer, stream
 
 def test_lifecycle_hooks_leave_records(capture, writer, stream_file):
     capture.on_session_start(session_id="ses_1", model="m")
-    capture.on_session_end(
-        session_id="ses_1", turn_id="t", turn_exit_reason="Stop", completed=True, run_id="r"
-    )
+    capture.on_session_end(session_id="ses_1", turn_id="t", turn_exit_reason="Stop", completed=True)
     capture.subagent_start(parent_session_id="ses_1", child_session_id="ses_c")
     capture.subagent_stop(
         parent_session_id="ses_1", child_session_id="ses_c", child_status="done", duration_ms=5
     )
-    capture.api_request_error(session_id="ses_1", reason="rate_limit", status_code=429)
     records = _flushed(writer, stream_file)
     assert _operations(records, "session", "started")
     ended = _operations(records, "turn", "ended")[0]
     assert ended["details"] == {"completed": True} and ended["reason"] == "stop"
     assert _operations(records, "subagent", "stopped")[0]["outcome"] == "done"
     assert _operations(records, "subagent", "started")[0]["parent_session_id"] == "ses_1"
-    assert _operations(records, "model_request", "error")[0]["details"] == {"status_code": 429}
 
 
 def _log_record(message: str, *args, name: str = "gateway.run", thread: str = "MainThread"):

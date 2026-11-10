@@ -57,15 +57,20 @@ def _profile_scope() -> dict[str, str]:
 def hermes_call_ids() -> dict[str, str]:
     """The run and native tool call being executed here, as Hermes bound them; empty outside it.
 
-    Hermes hands a handler no tool-call ID. It binds one in a context variable for approvals, which
-    has no public reader. ``core/tests/hermes`` holds this to the pinned image.
+    Hermes hands a handler no tool-call ID. It binds the call and its Session in context
+    variables for approvals, which have no public reader. ``core/tests/hermes`` holds this to the
+    pinned image. The run is the one that Session executes (``plugin/runs.py``).
     """
     try:
-        from hermes_cli.middleware import current_run_id
-        from tools.approval_context import _approval_tool_call_id
+        from tools.approval_context import _approval_session_id, _approval_tool_call_id
     except ImportError:  # outside Hermes: tests and the CLI
         return {}
-    known = {"run_id": current_run_id.get(), "tool_call_id": _approval_tool_call_id.get()}
+    from research_core.plugin.runs import run_of
+
+    known = {
+        "run_id": run_of(_approval_session_id.get()),
+        "tool_call_id": _approval_tool_call_id.get(),
+    }
     return {name: value for name, value in known.items() if value}
 
 

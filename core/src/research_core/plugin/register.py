@@ -68,11 +68,13 @@ def make_register(role: Role) -> Callable[[Any], None]:
         ctx.register_hook("api_request_error", make_api_request_error())
         ctx.register_middleware("llm_request", bound_output_request)
         from research_core.plugin.briefing import make_section as make_briefing_section
+        from research_core.plugin.capture import register_capture, remember_section
 
         ctx.register_system_prompt_section(
-            "ide-briefing", make_briefing_section(role), max_chars=SECTION_MAX_CHARS
+            "ide-briefing",
+            remember_section("ide-briefing", make_briefing_section(role)),
+            max_chars=SECTION_MAX_CHARS,
         )
-        from research_core.plugin.capture import register_capture
         from research_core.plugin.turn import make_pre_llm_call
 
         on_context = register_capture(ctx)
@@ -80,7 +82,9 @@ def make_register(role: Role) -> Callable[[Any], None]:
         from research_core.plugin.session_context import make_section
 
         ctx.register_system_prompt_section(
-            "ide-session-context", make_section(role), max_chars=SECTION_MAX_CHARS
+            "ide-session-context",
+            remember_section("ide-session-context", make_section(role)),
+            max_chars=SECTION_MAX_CHARS,
         )
         from research_core.plugin.native_tools import read_file_nearest_directory, skill_by_category
 

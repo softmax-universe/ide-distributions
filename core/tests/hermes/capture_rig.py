@@ -203,7 +203,7 @@ def _write_profile(home: Path, role: str, workspace: Path, prune_tokens: int) ->
                 "model": {"default": STUB_MODEL, "provider": "openrouter"},
                 "agent": {"reasoning_effort": "low"},
                 "provider_routing": {"models": {STUB_MODEL: {"only": ["moonshotai"]}}},
-                "plugins": {"enabled": [role]},
+                "plugins": {"enabled": [role], "stream_reasoning_deltas": True},
                 "platform_toolsets": {"api_server": [f"ide-{role}"]},
                 "known_plugin_toolsets": {"api_server": [f"ide-{role}"]},
                 "tools": {"tool_search": {"enabled": "off"}},

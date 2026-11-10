@@ -63,12 +63,12 @@ HERMES_BIN=/path/to/hermes uv run pytest -q -m hermes core/tests/hermes   # agai
 ```
 
 `core/tests/hermes/test_telemetry_redaction.py` also needs `HERMES_PYTHON` or `IDE_HERMES_SRC`, to
-reach Hermes's secret scanner. `core/tests/hermes/test_rebuild_real.py` needs the patched Hermes, and it
-holds the comparison the telemetry rests on: a Session rebuilt from a fake Datadog against the bytes a
+reach Hermes's secret scanner. `core/tests/hermes/test_rebuild_real.py` holds the comparison the telemetry rests on: a Session rebuilt from a fake Datadog against the bytes a
 stub model received and `state.db`.
 
-CI runs the same inside the hosted Hermes image with `image/hermes-patches/` applied.
-`core/tests/hermes/test_hermes_patches.py` fails on an unpatched Hermes. A daily workflow
+CI runs the same inside the unpatched hosted Hermes image. `core/tests/hermes/test_native_capture.py`
+holds capture to Hermes's own hooks. A
+daily workflow
 refreshes the `coworld` and `softmax-cli` pins in `uv.lock`.
 
 The model tool-call tests in `core/tests/model` call models through OpenRouter and spend real

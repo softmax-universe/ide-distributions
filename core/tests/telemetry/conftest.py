@@ -2,8 +2,11 @@
 
 import json
 import re
+import sqlite3
+import sys
 from collections.abc import Iterator
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -93,3 +96,37 @@ def writer(stream_file, producer, redactor) -> Iterator[TelemetryWriter]:
     instance = TelemetryWriter(stream_file, producer, redactor=redactor)
     yield instance
     instance.close(5.0)
+
+
+MESSAGES_TABLE = (
+    "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, "
+    "content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL, "
+    "finish_reason TEXT, reasoning_content TEXT, compacted INTEGER NOT NULL DEFAULT 0)"
+)
+ADMISSIONS_TABLE = (
+    "CREATE TABLE session_admissions (seq INTEGER PRIMARY KEY, request_id TEXT, "
+    "target_session_id TEXT, payload_json TEXT, status TEXT)"
+)
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch) -> Path:
+    """A profile home with Hermes's ``state.db`` tables this plugin reads, as Hermes's
+    ``hermes_constants`` names it."""
+    with sqlite3.connect(tmp_path / "state.db") as db:
+        db.execute(MESSAGES_TABLE)
+        db.execute(ADMISSIONS_TABLE)
+    (tmp_path / "SOUL.md").write_text("SOUL TEXT\n")
+    module = ModuleType("hermes_constants")
+    module.get_hermes_home = lambda: tmp_path
+    monkeypatch.setitem(sys.modules, "hermes_constants", module)
+    return tmp_path
+
+
+def insert_rows(home: Path, rows: list[dict[str, Any]]) -> None:
+    """Rows as Hermes commits them to ``state.db``."""
+    with sqlite3.connect(home / "state.db") as db:
+        for row in rows:
+            names = ", ".join(row)
+            marks = ", ".join("?" for _ in row)
+            db.execute(f"INSERT INTO messages ({names}) VALUES ({marks})", tuple(row.values()))

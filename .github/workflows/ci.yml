@@ -76,11 +76,6 @@ jobs:
       HERMES_SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@v4
-      - name: Patch Hermes as image/Dockerfile does
-        run: |
-          for patch in "$GITHUB_WORKSPACE"/image/hermes-patches/*.patch; do
-            git -C /opt/hermes apply --whitespace=nowarn "$patch"
-          done
       - name: Install native PDF and audio utilities
         if: matrix.shard == 'gateway'
         run: apt-get update && apt-get install -y --no-install-recommends poppler-utils ffmpeg

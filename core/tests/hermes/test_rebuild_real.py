@@ -44,6 +44,8 @@ from tests.telemetry.fake_datadog import FakeDatadog
 USER_TOKEN = "usr_" + base64.urlsafe_b64encode(bytes(range(32))).decode()
 FIRST_TEXT = f"Turn 0: read the settings. My token is {USER_TOKEN}, café 日本語 😀."
 MAIN = ("stream", "request")
+# Captured where request middleware sees a request: Hermes adds the stream options after it.
+WIRE_ONLY = ("stream", "stream_options")
 
 
 @pytest.fixture(scope="module", params=["orchestrator", "researcher"])
@@ -128,7 +130,6 @@ def test_every_line_on_the_stream_is_one_whole_record_within_the_limit(proof, re
     assert {record["image"] for record in gateway} == {"image-under-test"}
     assert {record["runtime_id"] for record in gateway} == {"runtime-under-test"}
     assert all(record["redaction_version"].startswith("hermes-") for record in gateway)
-    assert [record for record in gateway if record.get("action") == "gateway"]
     logged = [record for record in gateway if record.get("action") == "diagnostic"]
     assert logged
 
@@ -147,6 +148,7 @@ def test_each_request_equals_what_the_stub_received_in_wire_order(hermes_bin, pr
     got_auxiliary = [r["request"] for r in report["requests"] if r["native_event_type"] not in MAIN]
     assert len(got_main) == len(main)
     for position, (got, want) in enumerate(zip(got_main, main, strict=True)):
+        want = {k: v for k, v in want.items() if k not in WIRE_ONLY}
         assert canonical_bytes(got) == canonical_bytes(want), f"main request {position}"
     # An auxiliary call runs beside the turn: only its text is held to the wire, not its place.
     assert sorted(map(canonical_bytes, got_auxiliary)) == sorted(map(canonical_bytes, auxiliary))
@@ -262,8 +264,8 @@ def test_the_operation_chain_joins_admission_run_and_requests(proof, report):
     assert {row["run_id"] for row in report["rows"]} == set(proof.run_ids)
 
 
-def test_after_a_restart_prompt_sections_are_lost(report):
-    """A known hole: Hermes reuses a stored prompt, so nothing reports its sections again."""
+def test_after_a_restart_prompt_sections_are_kept(report):
+    """Sections are found in each request's system prompt, so a stored prompt keeps them."""
     main = main_requests(report)
     before, after = main[0], main[-1]
     assert before["source_instance"] != after["source_instance"]
@@ -271,8 +273,7 @@ def test_after_a_restart_prompt_sections_are_lost(report):
     def sources(request: dict) -> set[str]:
         return {row["source"] for row in request["tokens_by_source"]}
 
-    assert "soul" in sources(before) and "system_unattributed" in sources(after)
-    assert "soul" not in sources(after)
+    assert "soul" in sources(before) and "soul" in sources(after)
     assert before["request"]["messages"][0] == after["request"]["messages"][0]
 
 
@@ -283,7 +284,8 @@ def test_token_estimates_add_up_to_the_providers_count(report):
         assert abs(sum(estimates) - prompt_tokens) <= len(estimates)
 
 
-def test_replies_keep_their_reasoning_usage_and_cost(report):
+def test_replies_keep_their_reasoning_and_usage(report):
+    """Hermes's ``post_api_request`` passes no provider-billed cost, so there is none."""
     first, second = main_requests(report)[:2]
     message = first["response"]["message"]
     assert message["reasoning_content"] == STUB_REASONING
@@ -295,7 +297,7 @@ def test_replies_keep_their_reasoning_usage_and_cost(report):
     assert response["duration_ms"] >= response["time_to_first_token_ms"] >= 0
     details = STUB_USAGE["completion_tokens_details"]
     assert response["usage"]["reasoning_tokens"] == details["reasoning_tokens"]
-    assert response["cost"] == {"usd": STUB_USAGE["cost"], "source": "provider_billed"}
+    assert "cost" not in response
 
 
 def test_a_reused_tool_call_id_joins_through_the_model_request(report):
@@ -325,10 +327,11 @@ def test_prompt_sources_and_context_parts_are_attributed(proof, report):
     system = message_text(first["request"]["messages"][0]).encode()
     plugin = next(section for section in sections if section["name"] == "plugin_sections")
     start = plugin["byte_offset"]
-    assert b"Plugin Context: ide-briefing" in system[start : start + plugin["byte_length"]]
-    # Nothing of the prompt but the blank lines between its sources goes unattributed.
+    # The plugin's own text, after the heading Hermes gives it.
+    assert b"Plugin Context: ide-briefing" in system[:start] and plugin["byte_length"] > 0
+    assert {section["name"] for section in sections} >= {"soul", "plugin_sections"}
+    # Hermes's own text (guidance, project rules, the skill index) is in no section.
     chars = {row["source"]: row["chars"] for row in first["tokens_by_source"]}
-    assert chars["system_unattributed"] <= 2 * len(sections)
 
     # Only the Orchestrator's turn hook adds to a user message, so only it reports the parts.
     if proof.profile != "orchestrator":
@@ -429,7 +432,10 @@ def test_a_guard_halt_rebuilds_as_committed_beside_real_stdout(hermes_bin, tmp_p
         else:
             assert have == expected, row["id"]
     # Requests are what the stub received, and the halt added none.
-    received = redacted_by_hermes(hermes_bin, stub.main_requests())
+    received = [
+        {k: v for k, v in body.items() if k not in WIRE_ONLY}
+        for body in redacted_by_hermes(hermes_bin, stub.main_requests())
+    ]
     sent = [r["request"] for r in main_requests(report)]
     assert list(map(canonical_bytes, sent)) == list(map(canonical_bytes, received))
 
@@ -472,14 +478,14 @@ def test_direct_gateway_calls_have_access_lines_and_a_run_poll_has_none(hermes_b
     assert len(polls) == 1 and "python-httpx" in polls[0], polls
 
 
-def test_a_kill_during_a_call_leaves_only_the_started_record(hermes_bin, tmp_path):
-    """A known hole: the request's content is written when the attempt ends. SIGKILL also loses
-    what the writer still had queued, so the test waits for ``started`` to reach the stream."""
+def test_a_kill_during_a_call_keeps_its_request(hermes_bin, tmp_path):
+    """The request is written before the call, so a gateway killed during it keeps the request.
+    SIGKILL loses what the writer still had queued, so the test waits for it on the stream."""
     stub = StubModel([tool_call(0, "call_read", "settings", '{"action": "read"}')])
     stub.hang_tool_followups = threading.Event()
     gateway = start_gateway(tmp_path, hermes_python(hermes_bin), stub.url, free_port())
     session_id = mint_session_id()
-    started = b'"action":"model_request","stage":"started"'
+    request = b'"action":"model_attempt","stage":"request"'
     try:
         gateway.request("POST", "researcher", "/api/sessions", {"id": session_id})
         gateway.request(
@@ -487,7 +493,7 @@ def test_a_kill_during_a_call_leaves_only_the_started_record(hermes_bin, tmp_pat
         )
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
-            calls = sum(started in line for line in raw_lines(gateway.stream))
+            calls = sum(request in line for line in raw_lines(gateway.stream))
             if calls == 2 and stub.tool_followups_at:
                 break
             time.sleep(0.05)
@@ -501,24 +507,19 @@ def test_a_kill_during_a_call_leaves_only_the_started_record(hermes_bin, tmp_pat
 
     report = rebuild_session(LogsSearch(datadog.url, "a", "b"), session_id)
     datadog.close()
-    with stub.lock:
-        received = [json.loads(body) for body in stub.bodies]
-    # The stub got the second request, and Datadog has no content for it.
-    assert len([body for body in received if body.get("tools")]) == 2
-    assert len(main_requests(report)) == 1
-    [gap] = [problem for problem in report["missing"] if problem["kind"] == "call_with_no_attempt"]
-    assert gap["api_request_id"].endswith(":api:2")
+    first, second = main_requests(report)
+    assert first["response"] and not second.get("response")
+    assert second["request"]["messages"][-1]["role"] == "tool"
+    assert not [p for p in report["missing"] if p["kind"] == "call_with_no_attempt"]
 
 
 def test_a_kill_during_the_first_call_keeps_the_users_message(hermes_bin, tmp_path):
-    """Hermes commits the user's row before it calls the model, and only that commit has the text
-    until the attempt ends."""
+    """The first request holds the user's message before the model answers."""
     stub = StubModel([])
     stub.hang_user_requests = threading.Event()
     gateway = start_gateway(tmp_path, hermes_python(hermes_bin), stub.url, free_port())
     session_id = mint_session_id()
-    started = b'"action":"model_request","stage":"started"'
-    committed = b'"action":"message","stage":"committed"'
+    request = b'"action":"model_attempt","stage":"request"'
     try:
         gateway.request("POST", "researcher", "/api/sessions", {"id": session_id})
         gateway.request(
@@ -526,8 +527,7 @@ def test_a_kill_during_the_first_call_keeps_the_users_message(hermes_bin, tmp_pa
         )
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
-            lines = raw_lines(gateway.stream)
-            if any(started in line for line in lines) and any(committed in line for line in lines):
+            if any(request in line for line in raw_lines(gateway.stream)):
                 break
             time.sleep(0.05)
         gateway.process.send_signal(signal.SIGKILL)
@@ -540,7 +540,5 @@ def test_a_kill_during_the_first_call_keeps_the_users_message(hermes_bin, tmp_pa
 
     report = rebuild_session(LogsSearch(datadog.url, "a", "b"), session_id)
     datadog.close()
-    assert not main_requests(report)
-    [row] = report["rows"]
-    assert row["kind"] == "user" and "keep this" in row["message"]["content"]
-    assert [problem["kind"] for problem in report["missing"]] == ["call_with_no_attempt"]
+    [first] = main_requests(report)
+    assert "keep this" in message_text(first["request"]["messages"][-1])

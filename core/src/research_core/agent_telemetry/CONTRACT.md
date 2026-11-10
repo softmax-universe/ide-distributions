@@ -184,18 +184,17 @@ reader follows `parent_session_id` on the `compaction` records.
 
 | `action` / `stage`                                    | Content refs                 | Says                                                                  |
 | ----------------------------------------------------- | ---------------------------- | --------------------------------------------------------------------- |
-| `model_request` / `started`                           |                              | A call is on its way. Without its attempt, the process died during it |
-| `model_request` / `error`                             |                              | Hermes's classification of a failed call, in `reason`                 |
-| `model_attempt` / `request`, `response`               | `request_manifest`, `message` | One physical call. `native_event_type` is `stream`, `request` or the auxiliary task |
-| `model_attempt` / `failed`                            | `error`, if it has text      | A failed call, with `outcome`, `reason`, `duration_ms` and any status |
+| `model_request` / `started`                           |                              | A call is on its way (`pre_api_request`)                              |
+| `model_attempt` / `request`, `response`               | `request_manifest`, `message` | One outer attempt, written before the call. `model_attempt_id` is `<api_request_id>#<n>`. A stream Hermes retries inside one attempt is one attempt. `native_event_type` is `request` or the auxiliary task. The request is the middleware's view: `stream` and `stream_options` are added after it. A broken stream's `response` is `partial`, with its shown text and any streamed reasoning (`on_stream_end`) |
+| `model_attempt` / `failed`                            | `error`, if it has text      | Hermes's verdict on a failed attempt (`api_request_error`): `reason`, `duration_ms` and any status |
 | `model_attempt` / `unread`                            |                              | A streamed auxiliary call, whose reply Hermes hands back unread       |
-| `tool` / `proposed`                                   | `arguments`                  | One call the model asked for, with arguments as it sent them          |
+| `tool` / `proposed`                                   | `arguments`                  | One call the model asked for, from the reply Hermes assembled         |
 | `tool` / `completed`, `refused`                       | `arguments`                  | What ran, with `outcome`. The result is on the next one               |
-| `tool` / `result`                                     | `result`                     | The result as the model got it, with its `hermes_message_id`          |
-| `message` / `committed`                               | `message`, except on a tool row | A row became durable, with `hermes_message_id`. `occurred_at` is when. `message` holds the row's `role`, `content`, `tool_calls` and `reasoning_content`, because a turn's last rows, and a user's message when the process dies during that turn's first call, reach no finished request. A tool row's text is on its `tool` / `result` |
+| `tool` / `result`                                     | `result`                     | The result as the model got it, from the first request that sends it, with its `hermes_message_id` |
+| `message` / `committed`                               | `message`                    | A row of `state.db`, read at the end of each turn (`on_session_end`), with `hermes_message_id`. `occurred_at` is the row's own timestamp. `message` holds the row's `role`, `content`, `tool_calls` and `reasoning_content`, because a turn's last rows reach no later request |
 | `approval` / `requested`, `decided`                   | `command`, `description`     | A human approval                                                      |
 | `system_prompt` / `built`, `compaction` / `committed` |                              | The prompt was assembled; the history was rewritten                   |
-| `session` / `started`, `turn` / `ended`, `subagent` / `started`, `stopped`, `gateway` / `exit` | | Lifecycle |
+| `session` / `started`, `turn` / `ended`, `subagent` / `started`, `stopped` | | Lifecycle |
 | `diagnostic` / `<log level>`                          | `message`                    | One log record, other than the access line of a successful seam poll (a 200 for `GET /p/<profile>/v1/runs/<id>` from its urllib client). `native_event_type` is the logger |
 
 `tool_call_id` is the provider's on `proposed`. When a provider reuses an ID, as Kimi does across turns, Hermes renames the
@@ -242,8 +241,9 @@ records nothing.
 - **An admission to its runs:** the `store_event` `client.started`, by `admission_id`. There can be several: a held chat has
   `client.waiting` naming the run that failed (`run_id`, `reason`, `details.resume_after_s`), then `client.resumed`, then
   `client.started` with the new run, all under one admission. `details.steered` means the input joined a run already going.
-- **A run to its gateway records:** `run_id`. Hermes binds it where the run executes, so a gateway record can come before the
-  seam's `client.started`. Order across processes only by these links, never by `sequence`, which compares only within one
+- **A run to its gateway records:** `run_id`, the `request_id` of the Session's started admission in Hermes's `state.db`
+  (`plugin/runs.py`), or its parent Session's for delegated work. A gateway record can come before the seam's
+  `client.started`. Order across processes only by these links, never by `sequence`, which compares only within one
   `source_instance`. Never take "the Session's latest run": one Session can hold several runs.
 - **Delegated work:** a subagent's records hold the `run_id` of the run that delegated it. `subagent` / `started` names the
   child Session and its `parent_session_id`.

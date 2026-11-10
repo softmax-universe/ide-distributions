@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -18,7 +19,7 @@ from research_core.agent_telemetry.rebuild import AmbiguousSession, LogsSearch, 
 from research_core.agent_telemetry.records import canonical_bytes
 from research_core.plugin.capture import GatewayCapture
 
-from .conftest import HERMES_STYLE_SECRET, raw_lines, scrub, stored_records
+from .conftest import HERMES_STYLE_SECRET, insert_rows, raw_lines, scrub, stored_records
 from .fake_datadog import FakeDatadog
 
 SYSTEM = "You are a researcher. Be careful."
@@ -738,66 +739,49 @@ def test_what_was_recorded_stays_in_the_report(writer, stream_file, datadog):
     assert report["requests"][0]["session_id"] == "ses_1"
 
 
-@pytest.mark.parametrize("reply", ["upstream unavailable", "123", "", 123])
-def test_a_reply_that_is_no_message_stays_json_and_keeps_its_text(
-    writer, stream_file, datadog, reply
+def test_hermes_classification_of_a_failed_attempt_stays_in_the_report(
+    writer, stream_file, datadog, home
 ):
-    """A provider answering 200 with plain text makes the OpenAI SDK return a string."""
     capture = GatewayCapture(writer, "researcher")
     request = request_body([{"role": "user", "content": "Go"}])
-    capture.on_model_attempt(
-        session_id="ses_1", request=request, response=reply, outcome="completed", started_at=100.0
-    )
-    capture.pre_auxiliary_call(
-        aux_task="title", session_id="ses_1", request_body=request, started_at=101.0
-    )
-    capture.post_auxiliary_call(
-        aux_task="title", session_id="ses_1", raw_response=reply, started_at=101.0
+    capture.keep_request(request=request, session_id="ses_1")
+    capture.pre_api_request(session_id="ses_1", api_request_id="t:api:1")
+    capture.api_request_error(
+        session_id="ses_1",
+        reason="rate_limit",
+        status_code=429,
+        api_request_id="t:api:1",
+        error={"type": "RateLimitError", "message": "slow down"},
     )
     sent(writer, stream_file, datadog)
     report = rebuild_session(search_of(datadog), "ses_1")
-    replies = [request["response"]["message"] for request in report["requests"]]
-    assert replies == [{"unparsed_reply": reply}] * 2
+    [attempt] = report["requests"]
+    assert attempt["failed"]["reason"] == "rate_limit"
+    assert attempt["failed"]["details"] == {"status_code": 429}
     assert report["missing"] == []
 
 
-def test_hermes_classification_of_a_failed_call_stays_in_the_report(writer, stream_file, datadog):
-    capture = GatewayCapture(writer, "researcher")
-    capture.pre_api_request(session_id="ses_1", api_request_id="t:api:1", run_id="run_1")
-    capture.api_request_error(
-        session_id="ses_1", reason="rate_limit", status_code=429, api_request_id="t:api:1"
-    )
-    sent(writer, stream_file, datadog)
-    report = rebuild_session(search_of(datadog), "ses_1")
-    stages = {e["stage"]: e for e in report["events"] if e["action"] == "model_request"}
-    assert set(stages) == {"started", "error"}
-    assert stages["error"]["reason"] == "rate_limit"
-    assert stages["error"]["details"] == {"status_code": 429}
-
-
-def test_a_users_message_survives_a_kill_during_its_first_call(writer, stream_file, datadog):
-    """Request content is written when the attempt ends, so only the commit holds this text."""
+def test_a_users_message_survives_a_kill_during_its_first_call(writer, stream_file, datadog, home):
+    """The request is written before the call, so a process killed during it keeps the text."""
     capture = GatewayCapture(writer, "researcher")
     text = f"My key is {HERMES_STYLE_SECRET}"
-    capture.pre_api_request(session_id="ses_1", api_request_id="t:api:1", run_id="run_1")
-    capture.on_messages_committed(
-        session_id="ses_1", rows=[{"_row_id": 10, "role": "user", "content": text}], run_id="run_1"
-    )
+    capture.keep_request(request=request_body([{"role": "user", "content": text}]), session_id="s")
+    capture.pre_api_request(session_id="s", api_request_id="t:api:1")
     sent(writer, stream_file, datadog)
 
     assert HERMES_STYLE_SECRET.encode() not in stream_file.read_bytes()
-    report = rebuild_session(search_of(datadog), "ses_1")
-    assert report["rows"][0]["message"] == {"role": "user", "content": scrub(text)}
-    assert [problem["kind"] for problem in report["missing"]] == ["call_with_no_attempt"]
+    report = rebuild_session(search_of(datadog), "s")
+    [attempt] = report["requests"]
+    assert attempt["request"]["messages"][-1] == {"role": "user", "content": scrub(text)}
 
 
 @pytest.mark.parametrize(
     ("listed_row", "expected"),
-    [(10, "What the model got"), (None, "The row")],
+    [(1, "What the model got"), (None, "The row")],
     ids=["a listing with its row ID wins", "a listing with none, as after a restart"],
 )
 def test_a_user_row_joins_its_listing_by_row_id_or_keeps_its_commit(
-    writer, stream_file, datadog, listed_row, expected
+    writer, stream_file, datadog, home, listed_row, expected
 ):
     capture = GatewayCapture(writer, "researcher")
     listing = {"role": "user", "content": "What the model got"}
@@ -806,11 +790,11 @@ def test_a_user_row_joins_its_listing_by_row_id_or_keeps_its_commit(
     writer.capture_request(
         request_body([listing]), session_id="ses_1", provider="moonshot", model_attempt_id="att_1"
     )
-    capture.on_messages_committed(
-        session_id="ses_1",
-        rows=[{"_row_id": 10, "role": "user", "content": "The row"}],
-        run_id="run_1",
+    insert_rows(
+        home,
+        [{"session_id": "ses_1", "role": "user", "content": "The row", "timestamp": time.time()}],
     )
+    capture.on_session_end(session_id="ses_1")
     sent(writer, stream_file, datadog)
 
     report = rebuild_session(search_of(datadog), "ses_1")
