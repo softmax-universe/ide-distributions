@@ -31,7 +31,15 @@ from research_core.platform.protocol import Identity, Membership, Platform, Poli
 from research_core.platform.wait import call_platform, identity_for
 from research_core.store import pins
 from research_core.tools import _args as a
-from research_core.tools.base import ActionSpec, ToolCall, ToolContext, ToolError, ToolSpec, tool
+from research_core.tools.base import (
+    INLINE_CHARS,
+    ActionSpec,
+    ToolCall,
+    ToolContext,
+    ToolError,
+    ToolSpec,
+    tool,
+)
 
 BOTH = frozenset({"orchestrator", "researcher"})
 # ``policy_file`` falls back to the User identity when the Player gets one of these.
@@ -692,5 +700,7 @@ SPEC = tool(
                 ("coworld",),
             ),
         ),
+        inline_chars=INLINE_CHARS,
+        spill_hint="A smaller limit or a narrower filter returns a result that fits inline.",
     )
 )

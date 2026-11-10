@@ -13,6 +13,10 @@ That refusal says what the call sent and carries ``usage`` (the action's require
 fields and an example call), so a model can fix the call in one try instead of repeating it.
 Empty placeholders for fields the action does not take are dropped, not refused.
 
+A tool with ``inline_chars`` hands a longer successful result to the model as a file in Hermes's
+spillover folder: the result names the file, its largest list and an outline (:func:`spill`), so
+one platform response does not ride along in every later request of the Session.
+
 An action marked ``own_tool`` is also a flat tool, ``<tool>_<action>``, running the same handler as
 the same grouped call (:func:`own_tool`). A flat tool has no ``action`` field and refuses one.
 
@@ -29,6 +33,7 @@ import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import cached_property
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from research_core import layout
@@ -103,6 +108,10 @@ class ToolSpec:
     split_from: tuple[str, str] | None = None
     hidden_params: dict[str, dict] = field(default_factory=dict)
     orchestrator_fields: tuple[str, ...] = ()  # see ActionSpec.orchestrator_fields
+    # A result longer than this many characters goes to a file; the model gets its path and
+    # outline instead (:func:`spill`). ``spill_hint`` says how to ask for a smaller result.
+    inline_chars: int | None = None
+    spill_hint: str = ""
 
     def actions_for(self, role: Role) -> list[ActionSpec]:
         """Every action a call may name for this role, offered here or as a tool of its own."""
@@ -224,6 +233,8 @@ def own_tool(grouped: ToolSpec, action: ActionSpec) -> ToolSpec:
         split_from=(grouped.name, action.name),
         hidden_params=action.hidden_params,
         orchestrator_fields=(*action.orchestrator_fields, *grouped.orchestrator_fields),
+        inline_chars=grouped.inline_chars,
+        spill_hint=grouped.spill_hint,
     )
 
 
@@ -598,6 +609,85 @@ def error_payload(
     }
 
 
+# Where platform tools hand a result to a file (``ToolSpec.inline_chars``). Uncapped, one
+# Orchestrator Session carried 25 ``softmax_api`` responses averaging 21,500 characters: 62% of its
+# 217k-token request.
+INLINE_CHARS = 8000
+# An outline keeps strings up to this length (ids, cursors, statuses) and objects up to this many
+# keys; longer ones are described by their size.
+OUTLINE_TEXT_CHARS = 200
+OUTLINE_KEYS = 40
+# The outline loses a level of depth until it fits in this many characters.
+OUTLINE_CHARS = 3000
+
+
+def _outline(value: Any, depth: int = 3) -> Any:
+    """``value``'s shape: short scalars as they are, lists as their length and item keys."""
+    if isinstance(value, dict):
+        if depth == 0 or len(value) > OUTLINE_KEYS:
+            return f"<object with {len(value)} keys: {', '.join(list(value)[:OUTLINE_KEYS])}>"
+        return {key: _outline(item, depth - 1) for key, item in value.items()}
+    if isinstance(value, list):
+        first = value[0] if value else None
+        keys = f", each with keys {', '.join(first)}" if isinstance(first, dict) else ""
+        return f"<list of {len(value)}{keys}>"
+    if isinstance(value, str) and len(value) > OUTLINE_TEXT_CHARS:
+        return f"<text of {len(value)} characters>"
+    return value
+
+
+def _largest_list(value: Any, path: str = "") -> tuple[str, int, int]:
+    """The jq path, item count and JSON size of the biggest list in ``value``."""
+    best = ("", 0, 0)
+    if isinstance(value, list):
+        best = (path, len(value), len(json.dumps(value, default=str)))
+    children = value.items() if isinstance(value, dict) else ()
+    for key, item in children:
+        step = f".{key}" if re.fullmatch(r"[A-Za-z_]\w*", str(key)) else f"[{json.dumps(key)}]"
+        found = _largest_list(item, path + step)
+        if found[2] > best[2]:
+            best = found
+    return best
+
+
+def spill(spec: ToolSpec, ctx: ToolContext, result: dict, chars: int) -> dict:
+    """Write a long result to the profile's Hermes spillover folder; return its path and outline.
+
+    Kept inline, a 20k-65k character platform response stays in every later request of the
+    Session. The file is indented JSON, so ``read_file`` pages it by line and ``jq`` filters it.
+    It lives where Hermes keeps its own persisted tool results, ``$HERMES_HOME/cache/spillover``,
+    and its path is in the transcript, so Hermes's retention removes it with the Session that
+    references it (or after ``sessions.retention_days`` once nothing does).
+    """
+    call_id = ctx.env.get("IDE_TOOL_CALL_ID") or str(time.time_ns())
+    folder = Path(ctx.env["HERMES_HOME"]) / "cache" / "spillover"
+    path = folder / f"ide-{spec.name}-{re.sub(r'[^A-Za-z0-9_.-]', '_', call_id)}.json"
+    folder.mkdir(parents=True, exist_ok=True)
+    text = ctx.scrub(json.dumps(result, indent=1, default=str))
+    path.write_text(text + "\n")
+    where, count, _ = _largest_list(result)
+    example = f"jq '{where}[:5]' {path}" if where else f"jq 'keys' {path}"
+    largest = f" The largest list is {where} with {count} items." if where else ""
+    for depth in (3, 2, 1, 0):
+        outline = _outline(result, depth)
+        if len(json.dumps(outline, default=str)) <= OUTLINE_CHARS:
+            break
+    return {
+        "ok": True,
+        "spilled": {
+            "path": str(path),
+            "characters": chars,
+            "lines": text.count("\n") + 1,
+            "read": (
+                f"The full result ({chars} characters) is in this file, not here.{largest} "
+                f"Read parts of it with read_file (offset and limit, in lines) or filter it with "
+                f"jq in terminal, such as {example}. {spec.spill_hint}"
+            ).strip(),
+        },
+        "outline": outline,
+    }
+
+
 def run_tool(name: str, args: Mapping[str, Any], ctx: ToolContext) -> str:
     """Validate, run and render a tool call as JSON text. Raises only if the catalog cannot load."""
     from opentelemetry import trace
@@ -649,6 +739,10 @@ def run_tool(name: str, args: Mapping[str, Any], ctx: ToolContext) -> str:
                     kind = result.setdefault("kind", outcome)
                     error_type = kind if telemetry.is_error_type(kind) else outcome
                 text = json.dumps(result, default=str)
+                # Outside Hermes (the CLI) there is no context to protect and no spillover folder.
+                spills = spec.inline_chars is not None and "HERMES_HOME" in ctx.env
+                if spills and len(text) > spec.inline_chars:
+                    text = json.dumps(spill(spec, ctx, result, len(text)), default=str)
             except ToolError as error:
                 outcome = error_type = "tool_rejected"
                 text = json.dumps(

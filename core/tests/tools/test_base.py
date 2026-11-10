@@ -200,6 +200,67 @@ def test_run_tool_scrubs_workspace_paths(demo_tool, tmp_path):
     assert str(tmp_path / ".state") not in text and "<state>" in text
 
 
+def test_a_long_result_goes_to_a_file_with_its_outline(tmp_path):
+    entries = [{"id": f"ereq_{n}", "status": "completed", "log": "x" * 300} for n in range(40)]
+    result = {"path": "/v2/episodes", "response": {"entries": entries, "next_cursor": "c2"}}
+    spec = ToolSpec(
+        name="big",
+        description="x",
+        handler=lambda call: result,
+        inline_chars=8000,
+        spill_hint="Pass params.cursor for the next page.",
+    )
+    catalog.register(spec)
+    ctx = ToolContext.from_env(
+        "orchestrator",
+        {
+            "IDE_WORKSPACE": str(tmp_path),
+            "IDE_SESSION_ID": "s1",
+            "IDE_TOOL_CALL_ID": "call/7",
+            "HERMES_HOME": str(tmp_path / "home"),
+        },
+    )
+    try:
+        out = json.loads(base.run_tool("big", {}, ctx))
+    finally:
+        catalog.TOOLS.pop("big")
+    path = tmp_path / "home" / "cache" / "spillover" / "ide-big-call_7.json"
+    assert out["ok"] is True and out["spilled"]["path"] == str(path)
+    assert json.loads(path.read_text()) == {**result, "ok": True}
+    assert out["outline"]["response"] == {
+        "entries": "<list of 40, each with keys id, status, log>",
+        "next_cursor": "c2",
+    }
+    read = out["spilled"]["read"]
+    assert "jq '.response.entries[:5]'" in read and "40 items" in read and "params.cursor" in read
+    assert len(json.dumps(out)) < 2000
+    # Indented JSON: read_file pages it by line.
+    assert len(path.read_text().splitlines()) > 40 * 4
+
+
+def test_outside_hermes_a_long_result_stays_inline(tmp_path):
+    spec = ToolSpec(
+        name="big", description="x", handler=lambda call: {"a": "x" * 99}, inline_chars=50
+    )
+    catalog.register(spec)
+    try:
+        out = json.loads(base.run_tool("big", {}, make_ctx(tmp_path)))
+    finally:
+        catalog.TOOLS.pop("big")
+    assert out == {"a": "x" * 99, "ok": True}
+
+
+def test_a_result_under_the_limit_stays_inline(tmp_path):
+    spec = ToolSpec(name="small", description="x", handler=lambda call: {"a": 1}, inline_chars=50)
+    catalog.register(spec)
+    env = {"IDE_WORKSPACE": str(tmp_path), "HERMES_HOME": str(tmp_path / "home")}
+    try:
+        out = json.loads(base.run_tool("small", {}, ToolContext.from_env("orchestrator", env)))
+    finally:
+        catalog.TOOLS.pop("small")
+    assert out == {"a": 1, "ok": True} and not (tmp_path / "home").exists()
+
+
 def test_context_from_env(tmp_path):
     ctx = make_ctx(tmp_path, "researcher")
     assert ctx.actor == Actor("session", "s1")

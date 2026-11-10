@@ -108,7 +108,6 @@ def test_environment_guide_names_the_workspace_and_player_but_no_secret(workspac
     assert "No capability check is recorded yet" in text
     assert "in no git repository" in text and "`skill_manage` `patch`" in text
 
-
     result = json.loads(run_tool("workspace", {"action": "environment_guide"}, ctx))
     assert result["ok"] is True and str(ctx.workspace.root) in result["guide"]
     assert ".state" not in result["guide"] and "<state>" not in result["guide"]
@@ -130,8 +129,12 @@ def test_capabilities_lists_and_check_marks_due(call, ctx_factory):
     assert due["checks_due"] == ctx.store.get_meta("checks_due")
     assert "watcher runs them on its next tick" in due["note"]
     capabilities.mark(ctx.store, Actor.harness(), "build", status="broken", output="boom")
+    capabilities.mark(ctx.store, Actor.harness(), "cli:coworld", status="ok", output="help " * 999)
     again = call("workspace", {"action": "capabilities"})
-    assert [c["name"] for c in again["capabilities"]] == ["build"] and again["broken"] == ["build"]
+    rows = {c["name"]: c for c in again["capabilities"]}
+    assert list(rows) == ["build", "cli:coworld"] and again["broken"] == ["build"]
+    assert rows["build"]["output_tail"] == "boom" and "output" not in rows["build"]
+    assert "output" not in rows["cli:coworld"] and "output_tail" not in rows["cli:coworld"]
     assert "checks_due" not in again
 
 

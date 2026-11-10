@@ -132,3 +132,18 @@ def test_method_and_required_fields_are_validated(call):
     assert result["ok"] is False and "must be one of" in result["error"]
     result = call("softmax_api", {"path": "/v2/leagues"})
     assert result["ok"] is False and "method is required" in result["error"]
+
+
+def test_a_read_without_a_limit_asks_for_twenty(call, monkeypatch):
+    sent = []
+    real = fake.FakePlatform.request
+
+    def recording(self, method, path, *, params=None, **kwargs):
+        sent.append((method, params))
+        return real(self, method, path, params=params, **kwargs)
+
+    monkeypatch.setattr(fake.FakePlatform, "request", recording)
+    call("softmax_api", {"method": "GET", "path": "/v2/leagues"})
+    call("softmax_api", {"method": "GET", "path": "/v2/leagues", "params": {"limit": 5}})
+    call("softmax_api", {"method": "POST", "path": "/v2/nope", "json": {"a": 1}})
+    assert sent == [("GET", {"limit": 20}), ("GET", {"limit": 5}), ("POST", None)]
