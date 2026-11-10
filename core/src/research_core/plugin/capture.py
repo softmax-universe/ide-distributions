@@ -16,11 +16,12 @@ no agent; Hermes logs it.
 - The run: ``plugin/runs.py``, from the Session's started admission.
   An auxiliary call keeps the run its Session's turn was in when the call began.
 
-The writer's thread is a daemon, and Hermes ends the gateway with ``os._exit``, so what it still had
-queued at exit is lost unless flushed first. Each turn's end (``on_session_end``) and each Session
-Hermes finalizes on shutdown (``on_session_finalize``) waits up to ``FLUSH_S`` for the writer: a
-graceful stop drains each running turn to its end, so it keeps that turn's records. A hard exit
-loses what the writer still had queued. One writer serves the whole gateway process,
+Telemetry never waits on the agent's path: a hook only enqueues. The writer's thread is a daemon,
+and Hermes ends the gateway with ``os._exit``, so what it still has queued at exit is lost unless
+flushed first. Only while the gateway stops does a turn's end (``on_session_end``) or a Session's
+finalization (``on_session_finalize``) wait, up to ``FLUSH_S``, for the writer: a graceful stop
+interrupts each running turn and the turn's end keeps its records. A hard exit loses what the
+writer still had queued. One writer serves the whole gateway process,
 because a multiplexed gateway registers this plugin once per profile. Each profile has its own
 ``GatewayCapture``, for its name and per-session state.
 
@@ -58,8 +59,8 @@ from research_core.plugin.repeats import refusal_of
 from research_core.plugin.runs import parents, run_of
 
 GATEWAY_WRITER = "gateway"
-# How long a turn's end or a Session's finalization waits for the writer. Hermes abandons an
-# ``on_session_end`` callback after 30 seconds and a shutdown's finalization after 10.
+# How long a turn's end or a Session's finalization waits for the writer while the gateway stops.
+# Hermes abandons an ``on_session_end`` callback after 30 seconds and a finalization after 10.
 FLUSH_S = 5.0
 # Auxiliary calls outside a turn belong to no Session, and a manifest must name one.
 NO_SESSION = "no-session"
@@ -221,9 +222,11 @@ def _milliseconds(start: Any, end: Any) -> float | None:
 class GatewayCapture:
     """The hooks of one profile, writing through the gateway's one writer."""
 
-    def __init__(self, writer: TelemetryWriter, profile: str) -> None:
+    def __init__(self, writer: TelemetryWriter, profile: str, stopping: Callable[[], bool]) -> None:
+        """``stopping`` says, without waiting, whether the gateway is shutting down."""
         self._writer = writer
         self._profile = profile
+        self._stopping = stopping
         self._started = time.time()
         # All by live Hermes Session. One dict operation at a time needs no lock here.
         self._requests: dict[str, Mapping[str, Any]] = {}
@@ -232,6 +235,8 @@ class GatewayCapture:
         # Each call's attempt in flight, by ``api_request_id``, until Hermes reports it failed.
         # Hermes also reports a call whose request could not be built, before it has an attempt.
         self._open_attempt: dict[str, str] = {}
+        # The calls of each Session's current turn, whose state its end clears.
+        self._turn_calls: dict[str, list[str]] = defaultdict(list)
         self._results_seen: dict[str, set[str]] = defaultdict(set)
         self._turn_parts: dict[str, list[ContextPart]] = {}
         self._reasoning: dict[str, list[str]] = defaultdict(list)
@@ -357,6 +362,7 @@ class GatewayCapture:
             return
         call = api_request_id or str(uuid.uuid4())
         self._attempts[call] += 1
+        self._turn_calls[session_id].append(call)
         attempt_id = f"{call}#{self._attempts[call]}"
         self._attempt[session_id] = attempt_id
         self._open_attempt[call] = attempt_id
@@ -711,6 +717,7 @@ class GatewayCapture:
             )
             if old_session_id in _plugin_sections:
                 _plugin_sections[session_id] = _plugin_sections.pop(old_session_id)
+            self._turn_calls[session_id] += self._turn_calls.pop(old_session_id, [])
         self._writer.capture_operation(
             "compaction",
             "committed",
@@ -737,6 +744,9 @@ class GatewayCapture:
     ) -> None:
         """In Hermes this ends a turn, not a Session."""
         self._turn_parts.pop(session_id, None)
+        for call in self._turn_calls.pop(session_id, ()):
+            self._attempts.pop(call, None)
+            self._open_attempt.pop(call, None)
         self._capture_commits(session_id, self._turn_run.pop(session_id, None))
         self._writer.capture_operation(
             "turn",
@@ -745,11 +755,13 @@ class GatewayCapture:
             details={"completed": completed} if isinstance(completed, bool) else None,
             **self._ids(session_id, turn_id=turn_id, hermes_task_id=task_id),
         )
-        self._writer.flush(FLUSH_S)
+        if self._stopping():
+            self._writer.flush(FLUSH_S)
 
     def on_session_finalize(self, **_: Any) -> None:
-        """A Session ends, as on a gateway's shutdown: what is queued must not wait for the exit."""
-        self._writer.flush(FLUSH_S)
+        """A Session ends. Hermes also finalizes one on ``/new``, which must not wait."""
+        if self._stopping():
+            self._writer.flush(FLUSH_S)
 
     def _capture_commits(self, session_id: str, run_id: str | None) -> None:
         """Each row of the Session that Hermes committed since the last turn's end, or since this
@@ -879,6 +891,9 @@ def _gateway_writer() -> TelemetryWriter:
 
             telemetry.json_console(logging.getLogger().handlers, redactor.text)
             logging.getLogger().addHandler(DiagnosticsHandler(_writer))
+            # Hermes's stderr handler writes on the logging thread, which can be the agent's: from
+            # here on it sits behind a queue that drops instead of waiting for a stalled pipe.
+            telemetry.configure_logging()
             # Hermes logs a failed tool's output with its `Tool X returned error` warning, and the
             # output can hold file contents and tracebacks. ``telemetry.finish_tool_call`` logs
             # each failure without it. A logger filter drops the record before any handler.
@@ -886,6 +901,15 @@ def _gateway_writer() -> TelemetryWriter:
                 lambda record: not str(record.msg).startswith("Tool %s returned error")
             )
         return _writer
+
+
+def gateway_stopping() -> bool:
+    """Whether Hermes's gateway has begun to stop: ``GatewayRunner.stop`` clears ``_running`` before
+    it drains and interrupts running turns. Outside a gateway there is no runner."""
+    from gateway.run import _gateway_runner_ref
+
+    runner = _gateway_runner_ref()
+    return runner is not None and not runner._running
 
 
 def register_capture(ctx: Any) -> Callable[[str, Any, Sequence[tuple[str, str]]], None] | None:
@@ -899,7 +923,7 @@ def register_capture(ctx: Any) -> Callable[[str, Any, Sequence[tuple[str, str]]]
         writer = _gateway_writer()
     except ImportError:
         return None
-    capture = GatewayCapture(writer, ctx.profile_name)
+    capture = GatewayCapture(writer, ctx.profile_name, gateway_stopping)
     for hook_name, callback in capture.hooks().items():
         ctx.register_hook(hook_name, callback)
     # Last of the plugin's llm_request middleware (``register.py`` calls this after the others), so

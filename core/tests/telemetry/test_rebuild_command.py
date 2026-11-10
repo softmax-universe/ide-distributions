@@ -743,7 +743,7 @@ def test_what_was_recorded_stays_in_the_report(writer, stream_file, datadog):
 def test_hermes_classification_of_a_failed_attempt_stays_in_the_report(
     writer, stream_file, datadog, home
 ):
-    capture = GatewayCapture(writer, "researcher")
+    capture = GatewayCapture(writer, "researcher", lambda: False)
     request = request_body([{"role": "user", "content": "Go"}])
     capture.keep_request(request=request, session_id="ses_1")
     capture.pre_api_request(session_id="ses_1", api_request_id="t:api:1")
@@ -768,7 +768,7 @@ def test_a_failure_before_any_attempt_of_its_call_is_kept_and_the_rest_rebuilds(
     """Hermes reports a call whose request could not be built, so ``pre_api_request`` never
     recorded an attempt of it. Such a failure binds to no other call's attempt, and the rebuild
     keeps it as an event beside the rest of the Session."""
-    capture = GatewayCapture(writer, "researcher")
+    capture = GatewayCapture(writer, "researcher", lambda: False)
 
     def unbuilt(call: str) -> None:
         capture.api_request_error(
@@ -812,7 +812,7 @@ def test_a_stream_retried_inside_its_attempt_keeps_the_partial_and_the_final_rep
 ):
     """Hermes retries a broken stream inside one attempt: what the broken one showed and the
     retry's reply share the attempt and the ``response`` stage, and both come back."""
-    capture = GatewayCapture(writer, "researcher")
+    capture = GatewayCapture(writer, "researcher", lambda: False)
     capture.keep_request(
         request=request_body([{"role": "user", "content": "Go"}]), session_id="ses_1"
     )
@@ -842,7 +842,7 @@ def test_a_stream_retried_inside_its_attempt_keeps_the_partial_and_the_final_rep
 
 def test_a_users_message_survives_a_kill_during_its_first_call(writer, stream_file, datadog, home):
     """The request is written before the call, so a process killed during it keeps the text."""
-    capture = GatewayCapture(writer, "researcher")
+    capture = GatewayCapture(writer, "researcher", lambda: False)
     text = f"My key is {HERMES_STYLE_SECRET}"
     capture.keep_request(request=request_body([{"role": "user", "content": text}]), session_id="s")
     capture.pre_api_request(session_id="s", api_request_id="t:api:1")
@@ -862,7 +862,7 @@ def test_a_users_message_survives_a_kill_during_its_first_call(writer, stream_fi
 def test_a_user_row_joins_its_listing_by_row_id_or_keeps_its_commit(
     writer, stream_file, datadog, home, listed_row, expected
 ):
-    capture = GatewayCapture(writer, "researcher")
+    capture = GatewayCapture(writer, "researcher", lambda: False)
     listing = {"role": "user", "content": "What the model got"}
     if listed_row:
         listing["_row_id"] = listed_row
