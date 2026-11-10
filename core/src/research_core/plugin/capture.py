@@ -222,6 +222,9 @@ class GatewayCapture:
         self._requests: dict[str, Mapping[str, Any]] = {}
         self._attempts: dict[str, int] = defaultdict(int)
         self._attempt: dict[str, str] = {}
+        # Each call's attempt in flight, by ``api_request_id``, until Hermes reports it failed.
+        # Hermes also reports a call whose request could not be built, before it has an attempt.
+        self._open_attempt: dict[str, str] = {}
         self._results_seen: dict[str, set[str]] = defaultdict(set)
         self._turn_parts: dict[str, list[ContextPart]] = {}
         self._reasoning: dict[str, list[str]] = defaultdict(list)
@@ -348,6 +351,7 @@ class GatewayCapture:
         self._attempts[call] += 1
         attempt_id = f"{call}#{self._attempts[call]}"
         self._attempt[session_id] = attempt_id
+        self._open_attempt[call] = attempt_id
         wire = wire_request(request)
         wire["messages"] = with_row_ids(wire.get("messages", ()), row_keys(conversation_history))
         identity = {key: value for key, value in ids.items() if key != "session_id"}
@@ -462,7 +466,9 @@ class GatewayCapture:
         ended_at: float | None = None,
         **_: Any,
     ) -> None:
-        """Hermes's verdict on a failed attempt, with its error text."""
+        """Hermes's verdict on a failed attempt, with its error text. A call that failed before its
+        request was recorded, such as one whose request could not be built, has no attempt: its
+        record has no ``model_attempt_id``."""
         ids = self._ids(session_id, api_request_id=api_request_id)
         error = error or {}
         self._writer.capture_operation(
@@ -470,7 +476,7 @@ class GatewayCapture:
             "failed",
             occurred_at=ended_at,
             content={"error": error.get("message")} if error.get("message") else None,
-            model_attempt_id=self._attempt.get(session_id),
+            model_attempt_id=self._open_attempt.pop(api_request_id or "", None),
             reason=_name(reason) or _name(error.get("type")),
             duration_ms=_milliseconds(started_at, ended_at),
             details=_numbers(status_code=status_code),

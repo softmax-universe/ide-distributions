@@ -337,10 +337,20 @@ def _with_text(finder: _Finder, record: dict[str, Any]) -> dict[str, Any]:
     return {**record, **{ref["name"]: finder.text(ref["digest"]) for ref in refs}}
 
 
+def _of_attempt(record: dict[str, Any]) -> bool:
+    """A record of one model attempt. A call that failed before any attempt of it was recorded has
+    a ``model_attempt`` / ``failed`` record with no attempt, which stays among the events."""
+    return record["action"] == "model_attempt" and "model_attempt_id" in record
+
+
 def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> list[dict]:
     replies: dict[str, dict] = defaultdict(dict)
-    for record in operations:
-        if record["action"] == "model_attempt":
+    # What a broken stream had shown, which Hermes can retry inside the same attempt.
+    partials: dict[str, list] = defaultdict(list)
+    for record in filter(_of_attempt, operations):
+        if record.get("partial"):
+            partials[record["model_attempt_id"]].append(record)
+        else:
             replies[record["model_attempt_id"]][record["stage"]] = record
     requests = []
     attempts = [r for r in operations if r["action"] == "model_attempt" and r["stage"] == "request"]
@@ -353,6 +363,11 @@ def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> li
         reply = stages.get("response", {})
         if reply:
             entry["response"] = {**reply, "message": finder.json(_ref(reply, "message"))}
+        if partials[attempt["model_attempt_id"]]:
+            entry["partial_responses"] = [
+                {**partial, "message": finder.json(_ref(partial, "message"))}
+                for partial in partials[attempt["model_attempt_id"]]
+            ]
         for stage in ("failed", "unread"):
             if stage in stages:
                 entry[stage] = _with_text(finder, stages[stage])
@@ -490,7 +505,7 @@ def rebuild_session(search: LogsSearch, session_id: str, workspace: str | None =
     events = [
         _with_text(finder, record)
         for record in operations
-        if record["action"] not in ("model_attempt", "tool", "message")
+        if record["action"] not in ("tool", "message") and not _of_attempt(record)
     ]
     return {
         "session_id": session_id,

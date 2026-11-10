@@ -73,13 +73,14 @@ It prints one JSON object. Each entry is the record as written, with the text of
 each reference's name:
 
 - `requests`: each model request in wire order, whole, with `response`, `failed` or `unread` (the record
-  of how the attempt ended), `tools` (its tool activity, including each `result`), and `tokens_by_source`.
+  of how the attempt ended), `partial_responses` (what each broken stream of the attempt had shown),
+  `tools` (its tool activity, including each `result`), and `tokens_by_source`.
 - `rows`: each committed native row, with `message` as it was first sent and `rewritten_to` if a prune
   later changed it. `message` means "first sent" only when `missing` is empty: if a row's original was
   lost, it shows the first form that survived. A row no request lists never reached a model, such as a
   turn's last reply or the text Hermes's tool guard ends a turn with. It shows the text its commit
   recorded, and a tool row the result recorded for it.
-- `events`: admissions, model calls started and Hermes's classification of failed ones, store events, approvals, lifecycle, compaction, log lines and everything else. Each
+- `events`: admissions, model calls started, a call that failed before any attempt of it was recorded, store events, approvals, lifecycle, compaction, log lines and everything else. Each
   holds its own IDs, and `CONTRACT.md`, "How to join them", says how they join.
 - `context`: where each piece of a user message came from.
 - `missing`: see below.
