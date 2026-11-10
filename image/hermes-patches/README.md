@@ -1,6 +1,6 @@
 # Hermes patches
 
-Our own small changes to Hermes for telemetry hooks, hosted listener readiness and three tool behaviours. They apply to the Hermes in the image that `image/Dockerfile` pins (v0.22.6, upstream commit
+Our own small changes to Hermes for telemetry hooks, hosted listener readiness and four tool behaviours. They apply to the Hermes in the image that `image/Dockerfile` pins (v0.22.6, upstream commit
 `f0d94882e89ab8d4098b5bb2f166adfb9ee0a0ab`). We do not propose them upstream. A Hermes update means
 reapplying them, rebuilding the image and rerunning `core/tests/hermes/test_hermes_patches.py`.
 
@@ -19,6 +19,7 @@ uses the unpatched image.
 | `0009-skill-category-names.patch` | `skill_view` also takes `<category>.<name>` (`method.experiment`), the form the skill index suggests. A name that reads as more than one skill is refused with the candidates. |
 | `0010-child-toolsets.patch` | `delegation.disabled_toolsets`: toolsets a `delegate_task` child never gets. The profiles name their own, whose tools need the parent's Session. |
 | `0011-read-missing-directory.patch` | When `read_file` is given a path whose directory is missing, the not-found result names the deepest directory that exists and lists it. |
+| `0014-approval-audience.patch` | A plugin hook, `approval_audience(session_id)`, may answer `"none"`: nobody watches that session. Every `/v1/runs` run registers an approval notifier, so Hermes cannot tell a person's chat from background work. A write to a protected instruction file (`AGENTS.md`) in such a session then follows `security.protected_instruction_unattended` (`deny`, the default, or `allow`) at once, instead of waiting 300 s for a prompt nobody answers. |
 
 `core/src/research_core/plugin/capture.py` is what uses them.
 

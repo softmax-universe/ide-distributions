@@ -31,6 +31,7 @@ provides_tools:
   - xp
 provides_hooks:
   - api_request_error
+  - approval_audience
   - on_session_delete
   - on_session_end
   - on_session_finalize

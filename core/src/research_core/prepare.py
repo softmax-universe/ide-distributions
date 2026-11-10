@@ -68,11 +68,11 @@ PROTECTED_KEYS: dict[str, Any] = {
     "approvals.cron_mode": "approve",
     "approvals.single_query_mode": "approve",
     "approvals.unattended_mode": "approve",
-    # Hermes asks a human before every write_file or patch to an AGENTS.md, even with approvals
-    # off, and nobody can answer through the api_server: each such write waited 300 s and failed
-    # (7 times, 2026-11-06 to 11-09). Setup and mixin-from-scratch write the lab AGENTS.md, and the
-    # terminal can write it with approvals off anyway, so the gate only blocked the file tools.
-    "security.protected_instruction_files": False,
+    # Hermes asks a person before a file-tool write to an AGENTS.md, even with approvals off. In a
+    # chat the user answers through AIDE. A Task, wake or delegated session has nobody to answer, so
+    # the prompt waited 300 s and failed; the setup wake writes the lab AGENTS.md, so allow it there
+    # (patch 0014, decided per session by plugin/session_context.py).
+    "security.protected_instruction_unattended": "allow",
     "memory.memory_enabled": False,
     "memory.user_profile_enabled": False,
     "tools.tool_search.enabled": "off",

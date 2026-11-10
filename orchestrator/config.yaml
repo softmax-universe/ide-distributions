@@ -13,11 +13,10 @@ approvals:
   cron_mode: approve
   single_query_mode: approve
   unattended_mode: approve
-# Hermes asks a human before each file-tool write to an AGENTS.md even with approvals off, and
-# nobody can answer through the api_server, so the write waits 300 s and fails. prepare.py keeps
-# this key (PROTECTED_KEYS).
+# A file-tool write to an AGENTS.md asks the user in a chat; in a Task, wake or delegated session
+# nobody can answer, so it goes ahead (Hermes patch 0014). prepare.py keeps this key (PROTECTED_KEYS).
 security:
-  protected_instruction_files: false
+  protected_instruction_unattended: allow
 # Orchestrator chats are long: protect more of the head and tail and compact less aggressively,
 # so the user's instructions stay word for word (design F.5).
 compression:

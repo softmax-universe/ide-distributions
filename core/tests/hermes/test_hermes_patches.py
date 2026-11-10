@@ -372,3 +372,57 @@ print(json.dumps({"run": env["IDE_RUN_ID"], "call": env["IDE_TOOL_CALL_ID"]}))
         check=True,
     )
     assert json.loads(done.stdout.splitlines()[-1]) == {"run": "run_1", "call": "call_1"}
+
+
+def test_an_agents_md_write_asks_in_a_chat_and_never_waits_in_a_wake(hermes_bin, tmp_path):
+    """Patch 0014 with our ``approval_audience`` hook: a chat run still raises the prompt the user
+    answers through AIDE; a wake run, which nobody watches, writes without one."""
+    script = """
+import json
+import hermes_cli.lifecycle as lifecycle
+import tools.approval as approval
+import tools.approval_gateway_wait as wait
+from research_core.plugin.session_context import make_approval_audience
+from research_core.store import sessions
+from research_core.store.actors import Actor
+from research_core.tools.base import ToolContext
+from tools.approval_context import set_current_session_key
+from tools.file_tools_write_guards import _request_protected_instruction_approval
+
+ctx = ToolContext.from_env("orchestrator")
+ctx.workspace.ensure_dirs()
+for session_id, kind in (("chat1", "chat"), ("wake1", "wake")):
+    sessions.register(
+        ctx.wstore, Actor.harness(), session_id=session_id, profile="orchestrator", kind=kind
+    )
+hook = make_approval_audience("orchestrator")
+lifecycle.has_hook = lambda name: name == "approval_audience"
+lifecycle.invoke_hook = lambda name, **kw: [hook(**kw)] if name == "approval_audience" else []
+asked = []
+def decide(key, cb, data, surface):
+    asked.append(key)
+    return {"choice": "deny", "resolved": True}
+wait._await_gateway_decision = decide
+out = {}
+for session_id in ("chat1", "wake1"):
+    set_current_session_key(session_id)
+    approval._gateway_notify_cbs[session_id] = lambda data: None
+    out[session_id] = _request_protected_instruction_approval(["AGENTS.md"], session_id)
+print(json.dumps({"asked": asked, "chat_refused": out["chat1"] is not None, "wake": out["wake1"]}))
+"""
+    (tmp_path / "config.yaml").write_text("security:\n  protected_instruction_unattended: allow\n")
+    source = Path(__file__).resolve().parents[2] / "src"
+    done = subprocess.run(
+        [str(hermes_python(hermes_bin)), "-c", script],
+        env={
+            **os.environ,
+            "HERMES_HOME": str(tmp_path),
+            "IDE_WORKSPACE": str(tmp_path / "workspace"),
+            "PYTHONPATH": str(source),
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = json.loads(done.stdout.splitlines()[-1])
+    assert result == {"asked": ["chat1"], "chat_refused": True, "wake": None}
