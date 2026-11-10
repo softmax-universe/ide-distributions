@@ -18,13 +18,21 @@ until ready; do (( SECONDS < deadline )); sleep 1; done
 # Both upgrade cases must reconcile release content while preserving owner data.
 docker exec -i "$name" /opt/hermes/.venv/bin/python - <<'PYTHON'
 from pathlib import Path
+
+from hermes_state import SessionDB
+
 source = Path("/opt/distribution")
 for role in ("orchestrator", "researcher"):
     home = Path("/workspace/host/profiles") / role
     assert (home / "SOUL.md").read_bytes() == (source / role / "SOUL.md").read_bytes()
     assert (home / ".softmax-distribution-image").read_bytes() == (source / "image-id").read_bytes()
     assert (home / "memories/reuse-proof.txt").read_text() == "owner memory\n"
-print("PASS profile reconciliation: missing/different image markers, owner memory preserved")
+with SessionDB(Path("/workspace/host/profiles/orchestrator/state.db")) as db:
+    proof = Path("/workspace/.prompt-refresh-proof")
+    epoch = db.prompt_refresh_epoch("startup-proof")
+    assert epoch > int(proof.read_text())
+    proof.write_text(str(epoch))
+print("PASS profile reconciliation: missing/different image markers, owner memory preserved, prompt refresh requested")
 PYTHON
 # Fault injection models a durable admission whose native acceptance reply was lost.
 recovery_started=$SECONDS
@@ -52,6 +60,14 @@ test "$restarts" = 1
 printf '{"container_restarts":%s,"recovery_elapsed_seconds":%s}\n' \
   "$restarts" "$((SECONDS - recovery_started))" > "$scratch/recovery-observation.json"
 cat "$scratch/recovery-observation.json"
+docker exec -i "$name" /opt/hermes/.venv/bin/python - <<'PY'
+from pathlib import Path
+
+from hermes_state import SessionDB
+
+with SessionDB(Path("/workspace/host/profiles/orchestrator/state.db")) as db:
+    assert db.prompt_refresh_epoch("startup-proof") == int(Path("/workspace/.prompt-refresh-proof").read_text())
+PY
 docker exec -i "$name" /opt/workspace-env/bin/python - <<'PY'
 from research_core import layout
 from research_core.store.db import Store

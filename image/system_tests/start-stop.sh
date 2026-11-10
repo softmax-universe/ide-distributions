@@ -51,12 +51,15 @@ for cycle in $(seq 1 "$cycles"); do
   docker exec "$name" /opt/hermes/.venv/bin/python /opt/distribution/image/system_tests/check-terminal.py
   docker exec "$name" /opt/hermes/.venv/bin/python /opt/distribution/image/system_tests/check-session-coworld.py
   if [[ "$cycle" == 1 ]]; then
+    docker exec "$name" bash /opt/distribution/image/system_tests/check-bytecode.sh
     docker exec "$name" sh -c 'printf %s "$1" > /workspace/.state-proof' sh "$sentinel"
     docker exec "$name" cat /workspace/host/profiles/orchestrator/distribution.yaml > "$scratch/installed-profile.yaml"
+    docker exec "$name" stat -c '%i %y' /workspace/host/config.yaml > "$scratch/host-config.stat"
   else
     test "$(docker exec "$name" cat /workspace/.state-proof)" = "$sentinel"
     # Same image: preserve the installed manifest, including installed_at, instead of recopying.
     docker exec "$name" cat /workspace/host/profiles/orchestrator/distribution.yaml | cmp "$scratch/installed-profile.yaml" -
+    docker exec "$name" stat -c '%i %y' /workspace/host/config.yaml | cmp "$scratch/host-config.stat" -
   fi
   docker exec "$name" /opt/hermes/.venv/bin/python -c \
     'import json, urllib.request; s=json.load(urllib.request.urlopen("http://127.0.0.1:8650/status")); assert not s["sleep_started"] and not s["paused"], s'
@@ -64,8 +67,24 @@ for cycle in $(seq 1 "$cycles"); do
     # The later recovery boot also proves migration from a missing marker and a different image.
     # Corrupt only release-owned content; owner memory must survive reconciliation.
     docker exec -i "$name" /opt/hermes/.venv/bin/python - <<'PYTHON'
+import sqlite3
+from contextlib import closing
 from pathlib import Path
+
+from hermes_cli.config import set_config_value
+from hermes_state import SessionDB
+
+set_config_value("gateway.systemd_watchdog_seconds", "0")
 root = Path("/workspace/host/profiles")
+state_db = root / "orchestrator/state.db"
+with SessionDB(state_db) as db:
+    epoch = db.prompt_refresh_epoch("startup-proof")
+Path("/workspace/.prompt-refresh-proof").write_text(str(epoch))
+with closing(sqlite3.connect(state_db)) as conn, conn:
+    conn.execute(
+        "INSERT OR REPLACE INTO state_meta(key, value) VALUES (?, ?)",
+        ("ide_distribution.agent_surface", "previous-image"),
+    )
 (root / "orchestrator/.softmax-distribution-image").write_text("previous-image\n")
 (root / "researcher/.softmax-distribution-image").unlink()
 for role in ("orchestrator", "researcher"):

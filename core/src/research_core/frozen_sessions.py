@@ -21,9 +21,9 @@ What this depends on in Hermes (checked by ``core/tests/hermes/test_frozen_sessi
   pin": the turn sends the current tools and stores them as the new pin. A tool whose toolset the
   config no longer allows, and a new tool, need nothing from here: the restore already drops or
   adds them, so only the definitions of tools that stay are frozen.
-- ``hermes sessions refresh-prompts`` makes each session rebuild its system prompt on its next
-  turn and leaves its messages alone. It is a supported command, so only the ``tool_names`` column
-  is touched directly.
+- Hermes's ``SessionDB.request_prompt_refresh`` records the same profile-wide epoch as
+  ``hermes sessions refresh-prompts``. Each session rebuilds its prompt on its next turn and keeps
+  its messages. Preparation updates only the tool pin and surface hash directly.
 - The prompt's skill index reads only a ``SKILL.md``'s path and frontmatter
   (``agent.prompt_builder``), so an edit to a skill's body costs no chat a cache miss.
 - ``state_meta(key, value)`` keeps keys Hermes does not know. Losing the row costs one more
@@ -32,7 +32,7 @@ What this depends on in Hermes (checked by ``core/tests/hermes/test_frozen_sessi
 
 A failed refresh must not stop a workspace from starting. No conversation is touched and the next
 boot tries again, because the hash is recorded only in the transaction that clears the pins. The
-pins stay as they were, though a prompt rebuild may already be requested: the Hermes command
+pins stay as they were, though a prompt rebuild may already be requested: the Hermes API
 commits on its own, before that transaction.
 """
 

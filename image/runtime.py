@@ -47,6 +47,7 @@ RESEARCH = "/opt/workspace-env/bin/research"
 SOURCE = Path("/opt/distribution")
 HOME = Path("/workspace/host")
 PROFILES = ("orchestrator", "researcher")
+WATCHDOG_SECONDS = 3600
 
 
 async def command(*args: str, env: dict[str, str]) -> None:
@@ -208,17 +209,21 @@ async def run(stack: AsyncExitStack) -> None:
             base_url="http://127.0.0.1:8642", headers={"Authorization": f"Bearer {key}"}
         ) as client:
             with telemetry.span("workspace.gateway_ready", context=startup_context):
-                # Hermes notifies NOTIFY_SOCKET only with its systemd watchdog on, which needs
-                # both the config key and WATCHDOG_USEC. An hour apart, its pings are inert.
-                await command(
-                    HERMES, "config", "set", "gateway.systemd_watchdog_seconds", "3600", env=common
-                )
+                from hermes_cli.config import require_readable_config_before_write, set_config_value
+
+                # Hermes needs both the host config value and WATCHDOG_USEC to send READY=1.
+                gateway_config = require_readable_config_before_write().get("gateway")
+                if (
+                    not isinstance(gateway_config, dict)
+                    or gateway_config.get("systemd_watchdog_seconds") != WATCHDOG_SECONDS
+                ):
+                    set_config_value("gateway.systemd_watchdog_seconds", str(WATCHDOG_SECONDS))
                 gateway = await stack.enter_async_context(
                     ready_process(
                         PYTHON,
                         "-m",
                         "gateway.run",
-                        env={**common, "WATCHDOG_USEC": "3600000000"},
+                        env={**common, "WATCHDOG_USEC": str(WATCHDOG_SECONDS * 1_000_000)},
                         timeout=180,
                     )
                 )
