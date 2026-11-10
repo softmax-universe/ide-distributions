@@ -30,8 +30,9 @@ In the gateway and `research serve` a caller only copies what it was given and p
 counts what does not fit. A background thread redacts, hashes and writes, so a stuck stream holds up no callback and no
 commit through this path. That thread also does the reads whose result it records: the `state.db` rows a turn committed,
 read after the turn's end, and `SOUL.md`, read when the request that sends it is written. A short command, such as a
-workspace tool's process, writes each record before the capture returns, with a non-blocking write: a line the stream
-cannot take at once is dropped with a warning, so the command never waits and exits with nothing left to write. No
+workspace tool's process, writes each record to the stream before the capture returns, as any process logs to stdout, and
+exits with nothing left to write. The container runtime drains the stream into the pod's log file whether or not the
+Datadog Agent reads it, so such a write waits only while the runtime itself stops draining; a tool call then waits too. No
 process waits for telemetry at exit, as for spans and logs in [`image/README.md`](../image/README.md).
 [`CONTRACT.md`](../core/src/research_core/agent_telemetry/CONTRACT.md), "Lines", says how each line is written.
 
@@ -55,7 +56,7 @@ each lost nothing with no wait, one run each. A line is searchable 12 to 27 seco
 | Loss | Why it is accepted |
 |---|---|
 | Nothing confirms delivery. A line that never arrives is not noticed, and a stream that cannot be opened stays closed for the life of that process | There is no sender to tell. Rebuild reports what a surviving record refers to |
-| Any exit of the gateway or `research serve`, graceful or not, loses what the memory queue still holds: across 20 turns of a real gateway with tool results of 40,000 characters, 629 captures found at most 4 records queued (median 1), at most 945 KB. A short command has no queue; a stalled stream costs it the lines it could not write. A process killed during a call leaves `model_request` / `started` and what it had committed, because request content is written when the attempt ends. So a user's message survives through its commit, and rebuild names the call `call_with_no_attempt` (`test_a_kill_during_a_call_leaves_only_the_started_record`, `test_a_kill_during_the_first_call_keeps_the_users_message`) | The queue empties as records arrive, and nothing on the agent's path may wait for it |
+| Any exit of the gateway or `research serve`, graceful or not, loses what the memory queue still holds: across 20 turns of a real gateway with tool results of 40,000 characters, 629 captures found at most 4 records queued (median 1), at most 945 KB. A short command has no queue. A process killed during a call leaves `model_request` / `started` and what it had committed, because request content is written when the attempt ends. So a user's message survives through its commit, and rebuild names the call `call_with_no_attempt` (`test_a_kill_during_a_call_leaves_only_the_started_record`, `test_a_kill_during_the_first_call_keeps_the_users_message`) | The queue empties as records arrive, and nothing on the agent's path may wait for it |
 | The Agent falling behind by more than the retained log files would lose lines. Untested | 240 MB over about 15 rotations lost nothing with the Agent keeping up |
 | A full queue drops records, which a stream that has stopped soon causes. The writer's thread logs the count each time it changes. A capture over the 64 MiB byte limit goes in only when nothing is queued, so a request that large captured just after another record, such as its own context parts, is dropped, and rebuild shows `call_with_no_attempt` | A caller must never wait |
 | Any process in the workspace can write a line that looks like ours | James: restriction work matters very little here |

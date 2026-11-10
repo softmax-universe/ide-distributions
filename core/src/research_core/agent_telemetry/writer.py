@@ -57,12 +57,9 @@ class Writer:
         producer: Producer,
         *,
         redactor: Redactor | None = None,
-        nonblocking: bool = False,
     ) -> None:
         """Opens nothing here: Hermes gives a plugin's registration only a short time."""
-        self._encoder = RecordEncoder(
-            LogStream(stream_path, nonblocking=nonblocking), producer, redactor
-        )
+        self._encoder = RecordEncoder(LogStream(stream_path), producer, redactor)
 
     def _capture(self, kind: str, occurred_at: float | None, **payload: Any) -> None:
         raise NotImplementedError
@@ -168,12 +165,12 @@ class Writer:
 
 
 class InlineWriter(Writer):
-    """A short command's writer: each capture is written to the stream before it returns. A line the
-    stream cannot take at once is dropped with a warning, so a stalled stream never holds up the
-    command."""
+    """A short command's writer: each capture is written to the stream before it returns, as a
+    process logs to stdout. The container runtime drains that stream into the pod's log file
+    whether or not the Datadog Agent is reading it, so a write waits only if that runtime stops."""
 
     def __init__(self, stream_path: str, producer: Producer) -> None:
-        super().__init__(stream_path, producer, nonblocking=True)
+        super().__init__(stream_path, producer)
         self._lock = threading.Lock()
 
     def _capture(self, kind: str, occurred_at: float | None, **payload: Any) -> None:
