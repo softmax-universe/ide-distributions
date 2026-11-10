@@ -79,8 +79,9 @@ def test_workspace_tools_inherit_logs_and_propagate_standard_context(tmp_path, m
     # Match Hermes's isolated handler worker: the parent exists but is not current.
     with telemetry.tracer().start_span("native.tool") as parent:
         tool = types.SimpleNamespace(name="demo", executor="workspace", timeout_s=1)
-        turn = tracing.Turn(parent, "s1", "turn-1")
-        handler = executor.make_handler(tool, "researcher", lambda session: turn)
+        turn = tracing.Turn("s1", "turn-1", {}, 0, span=parent)
+        traces = types.SimpleNamespace(session_turn=lambda _: turn, tool_call=lambda *_: None)
+        handler = executor.make_handler(tool, "researcher", traces)
         assert handler({}, session_id="s1") == '{"ok":false}'
     assert "stderr" not in calls[0] and "capture_output" not in calls[0]
     assert calls[0]["env"]["IDE_TURN_ID"] == "turn-1"

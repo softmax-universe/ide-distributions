@@ -829,7 +829,7 @@ def test_metadata_uses_native_identity_for_identical_messages(seam, monkeypatch)
     seam.client.open(session_context={"contract_version": 1, "coworld": COWORLD_ID})
     first = seam.say("yes", context={"contract_version": 1, "view": {"id": "first"}})
     message_plugin.record_native_message(
-        span_for_session=lambda _: 1 / 0,  # Failed tracing must not roll back the binding.
+        bind_origin=lambda *_: None,  # No turn is traced here.
         session_id=seam.client.session_id,
         conversation_history=[{"role": "user", "_row_id": 1}],
     )
@@ -840,7 +840,7 @@ def test_metadata_uses_native_identity_for_identical_messages(seam, monkeypatch)
     with telemetry.span("invoke_agent") as current:
         for _ in range(2):
             message_plugin.record_native_message(
-                span_for_session=lambda _: current,
+                bind_origin=lambda *_: current,
                 session_id=seam.client.session_id,
                 conversation_history=[{"role": "user", "_row_id": 3}],
             )
@@ -870,7 +870,7 @@ def test_a_truncated_stream_continuation_binds_the_users_row_not_the_nudge(seam,
     seam.client.open(session_context={"contract_version": 1, "coworld": COWORLD_ID})
     sent = seam.say("go on", context={"contract_version": 1})
     message_plugin.record_native_message(
-        span_for_session=lambda _: 1 / 0,  # Tracing is not under test.
+        bind_origin=lambda *_: None,  # Tracing is not under test.
         session_id=seam.client.session_id,
         conversation_history=[
             {"role": "user", "content": "go on", "_row_id": 7},

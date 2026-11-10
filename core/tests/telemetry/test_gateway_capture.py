@@ -29,6 +29,7 @@ from research_core.plugin.capture import (
     wire_request,
     with_row_ids,
 )
+from research_core.plugin.tracing import make_instrumentation
 from tests.telemetry.conftest import (
     HERMES_STYLE_SECRET,
     objects_of,
@@ -54,17 +55,7 @@ CALL = "turn-1:api:1"
 
 @pytest.fixture
 def capture(writer, home) -> GatewayCapture:
-    return GatewayCapture(writer, "orchestrator")
-
-
-def _start_run(home: Path, session_id: str, run_id: str) -> None:
-    payload = {"api_turn_v1": {"run_owner_scope": "x"}}
-    with sqlite3.connect(home / "state.db") as db:
-        db.execute(
-            "INSERT INTO session_admissions (request_id, target_session_id, payload_json, status) "
-            "VALUES (?, ?, ?, 'started')",
-            (run_id, session_id, json.dumps(payload)),
-        )
+    return GatewayCapture(writer, "orchestrator", lambda *_: {})
 
 
 def _request(capture: GatewayCapture, request=REQUEST, history=HISTORY, **overrides) -> None:
@@ -148,17 +139,14 @@ def test_row_ids_match_through_a_dropped_row_and_tool_ids():
     assert "_row_id" not in wire[1]
 
 
-def test_a_request_is_what_the_middleware_saw_with_its_row_ids_and_run(
-    capture, home, writer, stream_file
-):
-    _start_run(home, "ses_1", "run_1")
+def test_a_request_is_what_the_middleware_saw_with_its_row_ids(capture, home, writer, stream_file):
     _request(capture)
     _reply(capture)
     records = _flushed(writer, stream_file)
     started = _operations(records, "model_request", "started")[0]
     request = _operations(records, "model_attempt", "request")[0]
     response = _operations(records, "model_attempt", "response")[0]
-    assert started["run_id"] == request["run_id"] == response["run_id"] == "run_1"
+    assert "trace_id" not in started  # This stand-in names no span.
     assert request["model_attempt_id"] == response["model_attempt_id"] == f"{CALL}#1"
     rebuilt = rebuild_request(_digest(request, "request_manifest"), objects_of(records))
     assert rebuilt == wire_request(REQUEST)
@@ -353,15 +341,51 @@ def test_records_after_compaction_keep_the_first_session(capture, writer, stream
     assert tool["session_id"] == "ses_1" and tool["hermes_session_id"] == "ses_3"
 
 
-def test_a_delegated_child_names_its_parents_run(capture, home, writer, stream_file):
-    _start_run(home, "ses_1", "run_1")
+def _traced(writer) -> tuple[dict, GatewayCapture]:
+    """Hermes's order: the tracing hooks are registered before capture's."""
+    hooks, traces = make_instrumentation("orchestrator")
+    return hooks, GatewayCapture(writer, "orchestrator", traces.correlation)
+
+
+def test_each_record_names_the_span_it_belongs_to(spans, home, writer, stream_file):
+    """``trace_id`` and ``span_id`` as Datadog joins a log to its trace: an attempt's records
+    name its ``chat`` span, a tool's its ``execute_tool`` span, the rest the turn's."""
+    hooks, capture = _traced(writer)
+    hooks["pre_llm_call"](session_id="ses_1", task_id="task", turn_id="turn-1")
+    hooks["pre_api_request"](turn_id="turn-1", api_request_id=CALL, retry_count=0)
+    _request(capture)
+    hooks["post_api_request"](turn_id="turn-1", api_request_id=CALL, model="m", provider="p")
+    _reply(capture)
+    hooks["pre_tool_call"](turn_id="turn-1", tool_call_id="call_1", tool_name="goal")
+    hooks["post_tool_call"](turn_id="turn-1", tool_call_id="call_1", tool_name="goal", status="ok")
+    capture.post_tool_call(tool_name="goal", session_id="ses_1", tool_call_id="call_1", status="ok")
+    hooks["on_session_end"](turn_id="turn-1", completed=True, failed=False, interrupted=False)
+    capture.on_session_end(session_id="ses_1", turn_id="turn-1", completed=True)
+    by_name = {span.name: span.context for span in spans.get_finished_spans()}
+    trace_id = f"{by_name['invoke_agent'].trace_id:032x}"
+    records = [r for r in _flushed(writer, stream_file) if r["family"] == "operation"]
+    assert {r["trace_id"] for r in records} == {trace_id}
+    named = {(r["action"], r["stage"]): r["span_id"] for r in records}
+    span_of = {name: f"{context.span_id:016x}" for name, context in by_name.items()}
+    assert named[("model_attempt", "request")] == named[("model_attempt", "response")]
+    assert named[("model_attempt", "response")] == span_of["chat"]
+    assert named[("tool", "completed")] == span_of["execute_tool"]
+    assert named[("turn", "ended")] == span_of["invoke_agent"]
+
+
+def test_a_delegated_childs_records_are_in_its_parents_trace(spans, home, writer, stream_file):
+    hooks, capture = _traced(writer)
+    hooks["pre_llm_call"](session_id="ses_1", task_id="task", turn_id="turn-1")
+    hooks["pre_api_request"](turn_id="turn-1", api_request_id=CALL, retry_count=0)
+    hooks["pre_llm_call"](
+        session_id="ses_child", task_id="child", turn_id="turn-c", parent_session_id="ses_1"
+    )
     capture.subagent_start(parent_session_id="ses_1", child_session_id="ses_child")
     capture.post_tool_call(tool_name="goal", args={}, result="{}", session_id="ses_child")
-    capture.subagent_stop(parent_session_id="ses_1", child_session_id="ses_child")
-    capture.post_tool_call(tool_name="goal", args={}, result="{}", session_id="ses_child")
-    records = _flushed(writer, stream_file)
-    first, second = _operations(records, "tool", "completed")
-    assert first["run_id"] == "run_1" and "run_id" not in second
+    capture.post_tool_call(tool_name="goal", args={}, result="{}", session_id="ses_1")
+    first, second = _operations(_flushed(writer, stream_file), "tool", "completed")
+    assert first["trace_id"] == second["trace_id"]
+    assert first["span_id"] != second["span_id"]
 
 
 def test_auxiliary_calls_outside_a_turn_and_those_without_a_reply(capture, writer, stream_file):
@@ -540,26 +564,52 @@ def stalled_writer(tmp_path, producer, redactor):
     os.close(reader)
 
 
-def test_no_hook_waits_for_a_stalled_stream(stalled_writer, home):
+def test_no_hook_waits_for_a_stalled_stream_or_reads_a_file(
+    spans, stalled_writer, home, monkeypatch
+):
     """Telemetry never delays the agent: with the pipe full and the writer's thread stuck on it,
-    each hook only enqueues."""
-    capture = GatewayCapture(stalled_writer, "orchestrator")
+    each hook only enqueues. No hook reads a file: ``state.db`` and ``SOUL.md`` are read on the
+    writer's thread, and no record needs Hermes's database to name its turn."""
+    hooks, capture = _traced(stalled_writer)
+    read_on = []
+    connect, read_text = sqlite3.connect, Path.read_text
+
+    def connecting(*args, **kwargs):
+        read_on.append(threading.current_thread().name)
+        return connect(*args, **kwargs)
+
+    def reading(path, *args, **kwargs):
+        read_on.append(threading.current_thread().name)
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", connecting)
+    monkeypatch.setattr(Path, "read_text", reading)
     big = {**REQUEST, "messages": [*REQUEST["messages"], {"role": "user", "content": "x" * 2**20}]}
+    ended = {"completed": True, "failed": False, "interrupted": False}
+    tool = {"tool_name": "goal", "tool_call_id": "c", "session_id": "ses_1", "status": "ok"}
+    calls = [
+        lambda: hooks["pre_llm_call"](session_id="ses_1", task_id="t", turn_id="turn-1"),
+        lambda: hooks["pre_api_request"](turn_id="turn-1", api_request_id=CALL, retry_count=0),
+        lambda: _request(capture, request=big),
+        lambda: hooks["post_api_request"](
+            turn_id="turn-1", api_request_id=CALL, model="m", provider="p"
+        ),
+        lambda: _reply(capture),
+        lambda: hooks["pre_tool_call"](turn_id="turn-1", tool_call_id="c", tool_name="goal"),
+        lambda: hooks["post_tool_call"](turn_id="turn-1", **tool),
+        lambda: capture.post_tool_call(**tool),
+        lambda: hooks["on_session_end"](turn_id="turn-1", **ended),
+        lambda: capture.on_session_end(session_id="ses_1", turn_id="turn-1", completed=True),
+    ]
     slowest = 0.0
     for _ in range(20):
-        hooks = [
-            lambda: capture.pre_llm_call(session_id="ses_1"),
-            lambda: _request(capture, request=big),
-            lambda: _reply(capture),
-            lambda: capture.post_tool_call(tool_name="goal", session_id="ses_1", status="ok"),
-            lambda: capture.on_session_end(session_id="ses_1", turn_id="t", completed=True),
-        ]
-        for hook in hooks:
+        for call in calls:
             started = time.monotonic()
-            hook()
+            call()
             slowest = max(slowest, time.monotonic() - started)
     # A few milliseconds alone, more on a loaded CI runner; a wait on the writer would never end.
     assert slowest < 1.0
+    assert set(read_on) <= {"telemetry-writer"}
 
 
 def test_a_turns_calls_are_forgotten_at_its_end_and_its_failures_stay_attributed(

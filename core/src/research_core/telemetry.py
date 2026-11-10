@@ -208,6 +208,23 @@ def tracer() -> trace.Tracer:
         return _provider.get_tracer("research_core")
 
 
+def correlation(span: Span) -> dict[str, str]:
+    """The IDs a record carries to join its span: Datadog's names and form for log and trace
+    correlation (``trace_id``, 32 lowercase hex digits, and ``span_id``, 16), with none for no
+    span."""
+    context = span.get_span_context()
+    if not context.is_valid:
+        return {}
+    return {"trace_id": f"{context.trace_id:032x}", "span_id": f"{context.span_id:016x}"}
+
+
+def trace_carrier() -> dict[str, str]:
+    """The current trace context as W3C ``traceparent`` and ``tracestate``, to store or send."""
+    carrier: dict[str, str] = {}
+    propagator.inject(carrier)
+    return carrier
+
+
 @contextmanager
 def span(name: str, *, context: Context | None = None, **attributes) -> Iterator[Span]:
     """Record safe, explicitly selected attributes; never capture exception text or payloads."""

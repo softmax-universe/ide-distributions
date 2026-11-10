@@ -35,6 +35,12 @@ cannot take at once is dropped with a warning, so the command never waits and ex
 process waits for telemetry at exit, as for spans and logs in [`image/README.md`](../image/README.md).
 [`CONTRACT.md`](../core/src/research_core/agent_telemetry/CONTRACT.md), "Lines", says how each line is written.
 
+A record written inside an OpenTelemetry span carries that span's `trace_id` and `span_id`, read from memory, under the
+names Datadog joins logs to traces by ([Datadog: correlate OpenTelemetry traces and
+logs](https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/opentelemetry/)). One user message is one
+trace: its admission, the seam's dispatch and every Hermes turn that works on it, including one that resumes it
+(`plugin/tracing.py`). Records join on these IDs, not on Hermes's runs.
+
 `research_core/telemetry.py` moves the root logger's handlers behind its own queue, which drops and counts a record that does
 not fit rather than wait, at a process's first span, and the gateway at plugin registration. The gateway's
 log handler stays on the root logger, because it only enqueues.

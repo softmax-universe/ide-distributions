@@ -13,7 +13,6 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from opentelemetry import trace
 
 from research_core import inference, run_failures, serve
 from research_core.plugin.inference_hook import OUTAGE_COUNT, record_api_error
@@ -460,7 +459,7 @@ def test_a_resume_never_binds_the_context_to_its_continuation(dispatch, tmp_path
     dispatch.tick()
     assert dispatch.admission(op_id)["status"] == "running"
     message_plugin.record_native_message(
-        span_for_session=lambda _: trace.INVALID_SPAN,
+        bind_origin=lambda *_: None,
         session_id=dispatch.session_id,
         conversation_history=[{"role": "user", "_row_id": 9}],
     )

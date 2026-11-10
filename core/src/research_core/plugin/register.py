@@ -23,22 +23,15 @@ def toolset_name(role: Role) -> str:
 
 def make_register(role: Role) -> Callable[[Any], None]:
     def register(ctx: Any) -> None:
-        from opentelemetry import trace
-
         from research_core.plugin.advisory import make_hooks
         from research_core.plugin.executor import make_handler
         from research_core.plugin.messages import record_native_message
         from research_core.plugin.tracing import make_instrumentation
 
-        hooks, session_turn = make_instrumentation(role)
+        hooks, traces = make_instrumentation(role)
+        # Before the tracing hooks: the turn's span starts in the trace of the message it serves.
         ctx.register_hook(
-            "pre_api_request",
-            partial(
-                record_native_message,
-                span_for_session=lambda session_id: (
-                    trace.INVALID_SPAN if (turn := session_turn(session_id)) is None else turn.span
-                ),
-            ),
+            "pre_api_request", partial(record_native_message, bind_origin=traces.bind_origin)
         )
         for hook_name, callback in hooks.items():
             ctx.register_hook(hook_name, callback)
@@ -48,7 +41,7 @@ def make_register(role: Role) -> Callable[[Any], None]:
                 name=spec.name,
                 toolset=toolset_name(role),
                 schema=spec.schema(role),
-                handler=make_handler(spec, role, session_turn),
+                handler=make_handler(spec, role, traces),
                 description=spec.description,
             )
         from research_core.plugin.repeats import make_hooks as make_repeat_hooks
@@ -77,7 +70,7 @@ def make_register(role: Role) -> Callable[[Any], None]:
         )
         from research_core.plugin.turn import make_pre_llm_call
 
-        on_context = register_capture(ctx)
+        on_context = register_capture(ctx, traces)
         ctx.register_hook("pre_llm_call", make_pre_llm_call(role, on_context))
         from research_core.plugin.reasoning_relay import register_relay
 
