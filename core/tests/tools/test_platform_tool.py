@@ -69,7 +69,7 @@ def test_spec_is_a_workspace_tool_for_both_roles():
         "leagues", "league", "divisions", "standings", "active_policies", "policy_versions",
         "policy_file", "results", "episodes", "episode", "replay", "credits", "champion",
         "forum_list", "forum_read", "forum_search", "wiki_read", "wiki_search", "wiki_history",
-        "coworld",
+        "coworld", "coworld_update",
     }  # fmt: skip
 
 
