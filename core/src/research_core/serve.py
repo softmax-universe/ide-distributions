@@ -103,6 +103,9 @@ SERVE_WRITER = "research-serve"
 TELEMETRY_STOP_FLUSH_S = 3.0  # ``image/processes.py`` gives this process ten seconds to stop
 WATCHER_INTERVAL_S = 60.0
 RUN_POLL_INTERVAL_S = 1.0
+# How Hermes describes its prompt before a file-tool write to an AGENTS.md (``tools/
+# file_tools_write_guards.py``), which it raises even with approvals off.
+PROTECTED_INSTRUCTION_PROMPT = "Write to protected agent-instruction file(s): "
 DEFAULT_ACTOR = "user:local"
 RETRY_AFTER_S = 1
 UI_ACTIONS = ("answer", "reaction")
@@ -702,6 +705,8 @@ class SeamServer:
                     else:
                         continue
                     self._last_native_poll[key] = now
+                    if status.status == "waiting_for_approval":
+                        self._approve_unattended_instruction_writes(stores, row, status)
                     self.coordinator.settle_attempt(stores.wstore, row["op_id"], status)
                     continue
                 opening = stores.wstore.one(
@@ -1226,6 +1231,20 @@ class SeamServer:
             )
 
     # --- the pieces -----------------------------------------------------------------------
+
+    def _approve_unattended_instruction_writes(
+        self, stores: store_cli.Stores, row: Mapping[str, Any], status: hermes_api.RunStatus
+    ) -> None:
+        """Approve Hermes's AGENTS.md write prompt in a Task or wake run. Every /v1/runs run can
+        raise it, but only a chat has a person to answer, through AIDE; elsewhere it waited 300 s
+        and failed, and the setup wake writes the lab AGENTS.md. A chat keeps the prompt."""
+        if self._require_session(stores, row["session_id"])["kind"] == "chat":
+            return
+        for control in status.raw["pending_controls"]:
+            if control["kind"] == "approval" and control["description"].startswith(
+                PROTECTED_INSTRUCTION_PROMPT
+            ):
+                self.hermes.approve_once(row["run_id"], control, profile=row["profile"])
 
     def _require_session(self, stores: store_cli.Stores, session_id: str) -> dict:
         session = sessions.read(stores.wstore, session_id)

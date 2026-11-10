@@ -42,8 +42,8 @@ it produced, and a submission answer. One conceptual change per Version.
 Start: read the Task, its Goal, the directives, the briefing and these instructions;
 `claim.search` and `experiment.search` for what was tried. Load skills when needed: `experiment`
 before step 1, `candidate` before building, `run-eval` before requesting XP, `writing-claims`
-before the first claim. Game-specific metrics, floors and rosters: see the mixin's `<coworld>-ab`
-and `<coworld>-eval-design` skills or docs.
+before the first claim. Game-specific metrics, floors and rosters: see `code/mixin/skills/<coworld>-ab/SKILL.md`
+and `code/mixin/skills/<coworld>-eval-design/SKILL.md` or the mixin docs.
 
 Work, in order:
 1. When the Task names an Experiment (`experiment_id` in `task.read`), that is the one: finish

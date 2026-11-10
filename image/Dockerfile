@@ -2,6 +2,8 @@ FROM ghcr.io/astral-sh/uv:0.11.8@sha256:3b7b60a81d3c57ef471703e5c83fd4aaa33abcd4
 FROM nousresearch/hermes-agent@sha256:d27689bc6e8581ec884a7227c9101fdaebf6c853cff8859020dac14f21452b4d
 RUN apt-get update && apt-get install -y --no-install-recommends --reinstall tini poppler-utils ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+# Agents commit in their worktrees from the terminal; give git the identity research_core.gitops uses.
+RUN git config --system user.name IDE && git config --system user.email ide@softmax.invalid
 COPY --from=uv /uv /usr/local/bin/uv
 COPY --from=moby/buildkit@sha256:0ffa2fcf6b8757c47d569b3ef0f03f9d5eb3b9ff5ce68d858f994f89b749da0c /usr/bin/buildctl /usr/local/bin/buildctl
 COPY pyproject.toml uv.lock /opt/distribution/
@@ -52,7 +54,7 @@ ENV PYTHONUNBUFFERED=1 \
     HERMES_BUNDLED_PLUGINS=/opt/workspace-plugins \
     HERMES_HOME=/workspace/host \
     HERMES_REAL_HOME=/workspace/host \
-    HERMES_WRITE_SAFE_ROOT=/workspace \
+    HERMES_WRITE_SAFE_ROOT=/workspace:/tmp \
     IDE_WORKSPACE=/workspace/research \
     XDG_RUNTIME_DIR=/tmp/hermes-runtime \
     PATH=/opt/workspace-env/bin:/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin

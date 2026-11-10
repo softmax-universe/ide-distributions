@@ -82,6 +82,10 @@ def make_register(role: Role) -> Callable[[Any], None]:
         ctx.register_system_prompt_section(
             "ide-session-context", make_section(role), max_chars=SECTION_MAX_CHARS
         )
+        from research_core.plugin.native_tools import read_file_nearest_directory, skill_by_category
+
+        ctx.register_middleware("tool_request", skill_by_category)
+        ctx.register_middleware("tool_execution", read_file_nearest_directory)
 
     register.__name__ = f"register_{role}"
     return register

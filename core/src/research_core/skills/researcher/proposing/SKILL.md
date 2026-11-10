@@ -30,7 +30,7 @@ with the ids `task_propose` returned. Ground every proposal in the Goal's claims
 tried: `claim.search {query, tags: ["G-n"], include_retired: true}`, `experiment.search` for
 the refuted and inconclusive Experiments too, then `platform.standings` and
 `platform.active_policies {league, exclude_player: true}` for what the league looks like now.
-Game-specific levers: see the mixin's `<coworld>-diagnosis` and `<coworld>-ab` skills or docs.
+Game-specific levers: see `code/mixin/skills/<coworld>-diagnosis/SKILL.md` and `code/mixin/skills/<coworld>-ab/SKILL.md` or the mixin docs.
 Rank them: the first proposal is the one you would run.
 
 Outside an ideation Task, propose when the work shows a follow-up worth a Task of its own (a

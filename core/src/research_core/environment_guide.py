@@ -73,7 +73,9 @@ def _where_you_are(root: Path, coworld) -> list[str]:
             f"- Session Coworld: `{coworld.coworld_id}`, folder `{coworld.root}`:",
             "  - `code/`: the policy repository (git; `main` holds the policy and `mixin/`).",
             "  - `source/`: the Coworld's public repository at the release-pinned commit.",
-            "  - `worktrees/task-<n>/` and `worktrees/orch-<n>/`: one worktree per piece of work.",
+            "  - `worktrees/task-<n>/` and `worktrees/orch-<n>/`: one worktree per piece of work, "
+            "each a checkout of `code/`: `mixin/` is at its top, and it has no `code/`, "
+            "`documents/` or `source/`.",
             "  - `documents/`: your own notes and files (command logs under `documents/logs/`). "
             "It is in no git repository, so nothing there is committed; it stays through sleep "
             "and restarts.",
@@ -122,6 +124,8 @@ def _paths(checkout: Path | None, coworld) -> list[str]:
     else:
         lines.append("- Writable: the session Coworld's `code/`, `documents/` and `worktrees/`.")
     lines += [
+        "- Scratch: `/tmp` is writable too, but it is not on the durable volume: it does not "
+        "outlive the sandbox.",
         f"- Read-only: the profile source checkout `{checkout or '(unknown)'}` (plugin, store "
         "library and schema, tools, prompts). Report a bug there instead of "
         "patching it; `config.yaml` is writable but `prepare.py` re-applies the protected keys.",
@@ -156,6 +160,9 @@ def _credentials(env: Mapping[str, str], player_id: str | None) -> list[str]:
             else " User-identity actions report 'User identity not provisioned'."
         ),
         f"- Platform API: `{api}`.",
+        "- GitHub: the workspace holds no GitHub credential, so `git` cannot push to github.com "
+        "or clone a private repository there. The Orchestrator's `github` tool clones the "
+        "repositories the user granted, read-only.",
         f"- Hermes API server key: {'present' if env.get('API_SERVER_KEY') else 'absent'} "
         "(the watcher reads it from the profile's `.env`).",
         "",

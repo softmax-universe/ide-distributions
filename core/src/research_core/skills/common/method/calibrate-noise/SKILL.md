@@ -13,7 +13,7 @@ Only hosted episodes count; local runs never do.
 
 - League episodes: `platform.episodes {league}` lists episodes of up to ten active policies, from any league or XP request (20 per policy by default; `limit` selects up to 100; `round_id` marks a round's; `truncated` says policies were left out; `next_cursors` maps each policy to its next page, fetched with `platform.episodes {policy_version, cursor}`); `platform.episode {episode}` gives each one's scores and participants. Per-seat metrics beyond the score need the mixin's `evaluate` command on downloaded results (the results artifact through `softmax_api`; see the `softmax-api-routes` skill).
 - Completed Experiments of the same game version: `experiment.read {experiment, section: results}` has the stored rows that `xp.status` downloaded.
-- Which metrics matter, and how to run `evaluate` on a folder of results, is game-specific: see the mixin's `<coworld>-ab` skill or docs.
+- Which metrics matter, and how to run `evaluate` on a folder of results, is game-specific: see `code/mixin/skills/<coworld>-ab/SKILL.md` or the mixin docs.
 
 ## Method
 

@@ -28,7 +28,7 @@ refuted claim is a lead.
 Work: every claim rests on at least one evidence link (`code` at a commit, `doc`, `replay`,
 `measurement`, `transcript`, `experiment`, `version`, `claim`, `annotation`). Summary at most 40 words, body
 at most 500; tag it with the Goal's id (`G-n`). Retire what new evidence supersedes or refutes
-(`claim.retire`). Game-specific reading: see the mixin's `<coworld>-<binding>` skill or docs.
+(`claim.retire`). Game-specific reading: see `code/mixin/skills/<coworld>-<binding>/SKILL.md` or the mixin docs.
 
 Ask (`task_ask`) when the question itself is unclear or the Goal would change; decide method,
 scope and which claims to write yourself. After `task_wait`, end your run yourself; the
