@@ -20,6 +20,10 @@ from research_core.tools.base import INLINE_CHARS, ToolCall, ToolError, ToolSpec
 BOTH = frozenset({"orchestrator", "researcher"})
 METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE")
 READ_METHODS = ("GET", "HEAD")
+# A read without params.limit asks for this many. Episode lists default to 50 (at most 100) at
+# about 650 characters an entry; one Orchestrator Session read seven pages of 100. A route that
+# declares no limit ignores it.
+DEFAULT_LIMIT = 20
 
 
 def handle(call: ToolCall) -> dict:
@@ -28,6 +32,8 @@ def handle(call: ToolCall) -> dict:
     path = normalise_path(call.get("path"))
     identity = identity_for(ctx, call.get("identity"))
     params, body = call.get("params"), call.get("json")
+    if method in READ_METHODS and "limit" not in (params or {}):
+        params = {**(params or {}), "limit": DEFAULT_LIMIT}
     if method not in METHODS:
         raise ToolError(f"method must be one of {', '.join(METHODS)}, not {method!r}")
     route = f"{method} {path}"
@@ -94,7 +100,8 @@ SPEC = tool(
         description=(
             "Call any Softmax Observatory route with authentication handled, for routes no tool "
             "covers (see the softmax-api-routes skill). Paths are relative to /observatory. "
-            "Runs as the Player unless an Orchestrator passes identity: user. Every call is logged."
+            "Runs as the Player unless an Orchestrator passes identity: user. Every call is "
+            "logged. A GET or HEAD without params.limit sends limit 20."
         ),
         handler=handle,
         roles=BOTH,

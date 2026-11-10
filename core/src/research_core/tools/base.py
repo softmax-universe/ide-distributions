@@ -13,9 +13,9 @@ That refusal says what the call sent and carries ``usage`` (the action's require
 fields and an example call), so a model can fix the call in one try instead of repeating it.
 Empty placeholders for fields the action does not take are dropped, not refused.
 
-A tool with ``inline_chars`` hands a longer successful result to the model as a file: the result
-names the file, its largest list and an outline (:func:`spill`), so one platform response does
-not ride along in every later request of the Session.
+A tool with ``inline_chars`` hands a longer successful result to the model as a file in Hermes's
+spillover folder: the result names the file, its largest list and an outline (:func:`spill`), so
+one platform response does not ride along in every later request of the Session.
 
 An action marked ``own_tool`` is also a flat tool, ``<tool>_<action>``, running the same handler as
 the same grouped call (:func:`own_tool`). A flat tool has no ``action`` field and refuses one.
@@ -33,6 +33,7 @@ import traceback
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import cached_property
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from research_core import layout
@@ -646,16 +647,17 @@ def _largest_list(value: Any, path: str = "") -> tuple[str, int, int]:
 
 
 def spill(spec: ToolSpec, ctx: ToolContext, result: dict, chars: int) -> dict:
-    """Write a long result to the Session's documents folder; return its path and outline.
+    """Write a long result to the profile's Hermes spillover folder; return its path and outline.
 
     Kept inline, a 20k-65k character platform response stays in every later request of the
     Session. The file is indented JSON, so ``read_file`` pages it by line and ``jq`` filters it.
+    It lives where Hermes keeps its own persisted tool results, ``$HERMES_HOME/cache/spillover``,
+    and its path is in the transcript, so Hermes's retention removes it with the Session that
+    references it (or after ``sessions.retention_days`` once nothing does).
     """
-    coworld = ctx.coworld_or_none()
-    documents = coworld.documents if coworld else ctx.workspace.root / "documents"
     call_id = ctx.env.get("IDE_TOOL_CALL_ID") or str(time.time_ns())
-    folder = documents / "tool-results" / (ctx.hermes_session_id() or "no-session")
-    path = folder / f"{spec.name}-{re.sub(r'[^\w.-]', '_', call_id)}.json"
+    folder = Path(ctx.env["HERMES_HOME"]) / "cache" / "spillover"
+    path = folder / f"ide-{spec.name}-{re.sub(r'[^A-Za-z0-9_.-]', '_', call_id)}.json"
     folder.mkdir(parents=True, exist_ok=True)
     text = ctx.scrub(json.dumps(result, indent=1, default=str))
     path.write_text(text + "\n")
@@ -725,7 +727,9 @@ def run_tool(name: str, args: Mapping[str, Any], ctx: ToolContext) -> str:
                 result.setdefault("ok", True)
                 outcome = "succeeded" if result["ok"] else "failed"
                 text = json.dumps(result, default=str)
-                if spec.inline_chars is not None and len(text) > spec.inline_chars:
+                # Outside Hermes (the CLI) there is no context to protect and no spillover folder.
+                spills = spec.inline_chars is not None and "HERMES_HOME" in ctx.env
+                if spills and len(text) > spec.inline_chars:
                     text = json.dumps(spill(spec, ctx, result, len(text)), default=str)
             except ToolError as error:
                 outcome = "tool_rejected"
