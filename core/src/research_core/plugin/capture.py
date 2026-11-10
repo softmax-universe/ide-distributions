@@ -14,6 +14,7 @@ no agent; Hermes logs it.
   text is on its commit too, for a turn that ends before a request carries it (a guard halt).
 - Committed rows: read from ``state.db`` at the end of each turn (``on_session_end``).
 - The run: ``plugin/runs.py``, from the Session's started admission.
+  An auxiliary call keeps the run its Session's turn was in when the call began.
 
 A hard exit loses what the writer still had queued. One writer serves the whole gateway process,
 because a multiplexed gateway registers this plugin once per profile. Each profile has its own
