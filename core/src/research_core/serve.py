@@ -80,10 +80,11 @@ from research_core.prepare import Runner
 from research_core.profile_models import Catalog, ModelError, Profile
 from research_core.store import admissions, coworlds, sessions, settings, ui_state
 from research_core.store import cli as store_cli
-from research_core.store._common import parse_iso
+from research_core.store._common import parse_display_id, parse_iso
 from research_core.store.actors import Actor
 from research_core.store.db import Store, change_version, wait_for_change
 from research_core.store.errors import NotFound, StoreError
+from research_core.store.registry import GOAL, TASK, record_from_row
 from research_core.telemetry import propagator, span
 from research_core.tools.ui import coworld_conversation, pointer_token
 from research_core.watcher import context, hermes_api
@@ -1096,6 +1097,30 @@ class SeamServer:
                 coworlds.read(stores.wstore, coworld_id)
             return store_cli.snapshot(self.store_for(stores, kind), stores.coworld_id)
 
+    def board_snapshot(self, coworld_id: str, resource: str, item_id: str | None) -> dict:
+        """Only the requested board rows and the event cursor from the same read transaction."""
+        specs = {"tasks": TASK, "goals": GOAL}
+        if resource not in specs:
+            raise Refused(HTTPStatus.BAD_REQUEST, "Board resource must be tasks or goals")
+        spec = specs[resource]
+        with self.stores(coworld_id) as stores:
+            coworlds.read(stores.wstore, coworld_id)
+            store = self.store_for(stores, "coworld")
+            with store.read_tx():
+                if item_id is None:
+                    rows = store.q(f"SELECT * FROM {spec.table} ORDER BY rowid")
+                else:
+                    kind, number = parse_display_id(item_id)
+                    if kind != resource[:-1]:
+                        raise Refused(
+                            HTTPStatus.BAD_REQUEST, "Item ID does not match the board resource"
+                        )
+                    rows = store.q(f"SELECT * FROM {spec.table} WHERE id = ?", (number,))
+                return {
+                    "seq": store.last_seq(),
+                    "records": {resource: [record_from_row(spec, row) for row in rows]},
+                }
+
     def run_status(self, run_id: str) -> dict:
         return dataclasses.asdict(self.hermes.status(run_id, profile=self.profile))
 
@@ -1368,6 +1393,11 @@ class _Handler(BaseHTTPRequestHandler):
             elif url.path == "/command":
                 self._json(
                     HTTPStatus.OK, seam.command_status(query["coworld_id"], query["command_id"])
+                )
+            elif url.path == "/snapshot" and "board" in query:
+                self._json(
+                    HTTPStatus.OK,
+                    seam.board_snapshot(query["coworld"], query["board"], query.get("item")),
                 )
             elif url.path == "/snapshot":
                 self._json(

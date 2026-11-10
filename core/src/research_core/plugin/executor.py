@@ -69,11 +69,15 @@ def hermes_call_ids() -> dict[str, str]:
     return {name: value for name, value in known.items() if value}
 
 
-def tool_env(role: Role, session_id: str, env: dict[str, str] | None = None) -> dict[str, str]:
+def tool_env(
+    role: Role, session_id: str, env: dict[str, str] | None = None, turn_id: str | None = None
+) -> dict[str, str]:
     merged = profile_env() if env is None else dict(env)
     merged["IDE_ROLE"] = role
     if session_id:
         merged["IDE_SESSION_ID"] = session_id
+    if turn_id:
+        merged["IDE_TURN_ID"] = turn_id
     call_ids = hermes_call_ids()
     if "run_id" in call_ids:
         merged["IDE_RUN_ID"] = call_ids["run_id"]
@@ -82,8 +86,11 @@ def tool_env(role: Role, session_id: str, env: dict[str, str] | None = None) -> 
     return merged
 
 
-def error_result(message: str, **context: Any) -> str:
-    return json.dumps({"ok": False, "error": message, "problems": [message], "context": context})
+def error_result(kind: str, message: str, **context: Any) -> str:
+    """A failure Hermes's tool never reported, with ``kind`` its short class for telemetry."""
+    return json.dumps(
+        {"ok": False, "kind": kind, "error": message, "problems": [message], "context": context}
+    )
 
 
 # Variables that bind a process to one interpreter. Hermes sets them for its own venv; the
@@ -118,6 +125,7 @@ def run_in_workspace(
     python = ws.venv_python
     if not python.exists():
         return error_result(
+            "workspace_missing",
             "workspace environment missing; run the profile's scripts/prepare.py",
             expected=str(python),
         )
@@ -135,11 +143,12 @@ def run_in_workspace(
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return error_result(f"tool {name} timed out after {timeout} s", command=command)
+        return error_result("timeout", f"tool {name} timed out after {timeout} s", command=command)
     # Inherit stderr: the SDK exports directly to normal process logs, once.
     stdout = completed.stdout.strip()
     if completed.returncode != 0 or not stdout:
         return error_result(
+            "process_failed",
             f"tool {name} process failed",
             exit_code=completed.returncode,
             stdout_tail=stdout[-2000:],
@@ -148,14 +157,15 @@ def run_in_workspace(
     return stdout.splitlines()[-1]
 
 
-def make_handler(spec: Any, role: Role, session_span: Callable) -> Callable[..., str]:
+def make_handler(spec: Any, role: Role, session_turn: Callable) -> Callable[..., str]:
     def handler(args: dict | None = None, session_id: str = "", **_: Any) -> str:
         args = dict(args or {})
-        env = tool_env(role, session_id)
+        turn = session_turn(session_id)
+        env = tool_env(role, session_id, turn_id=turn and turn.turn_id)
         from opentelemetry import trace
 
         with trace.use_span(
-            session_span(session_id),
+            trace.INVALID_SPAN if turn is None else turn.span,
             end_on_exit=False,
             record_exception=False,
             set_status_on_exception=False,
@@ -167,7 +177,9 @@ def make_handler(spec: Any, role: Role, session_span: Callable) -> Callable[...,
                     return run_tool(spec.name, args, ToolContext.from_env(role, env))
                 return run_in_workspace(spec.name, args, env, spec.timeout_s)
             except Exception as error:  # never raise into Hermes
-                return error_result(f"{type(error).__name__}: {error}", tool=spec.name)
+                return error_result(
+                    type(error).__name__, f"{type(error).__name__}: {error}", tool=spec.name
+                )
 
     handler.__name__ = f"tool_{spec.name}"
     return handler

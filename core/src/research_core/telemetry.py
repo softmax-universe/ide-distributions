@@ -7,13 +7,16 @@ console and remote delivery off functional threads; process exit does not flush 
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import os
 import queue
+import re
 import sys
 import threading
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from logging.handlers import QueueHandler, QueueListener
 
 from opentelemetry import trace
@@ -28,14 +31,59 @@ from opentelemetry.sdk.trace.export import (
 from opentelemetry.trace import Span, StatusCode
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
+from research_core.agent_telemetry.redaction import mask_softmax_tokens
+
 _provider: TracerProvider | trace.NoOpTracerProvider | None = None
 _lock = threading.Lock()
 _logging_started = False
 propagator = TraceContextTextMapPropagator()
 
 
+class JsonLines(logging.Formatter):
+    """One record as one JSON line, for Datadog, which reads the container's output.
+
+    ``status`` becomes the log's status, so a warning on stderr is no longer an error, and a
+    traceback stays inside its record's ``message`` instead of arriving as one log per line.
+    Fields a caller passes as ``extra={"attributes": {...}}`` become top-level fields. The
+    message goes through ``redact``.
+    """
+
+    def __init__(self, redact: Callable[[str], str]) -> None:
+        super().__init__()
+        self.redact = redact
+
+    def format(self, record: logging.LogRecord) -> str:
+        created = datetime.fromtimestamp(record.created, UTC)
+        return json.dumps(
+            {
+                "timestamp": created.isoformat(timespec="milliseconds"),
+                "status": record.levelname.lower(),
+                "logger.name": record.name,
+                # The message with any traceback, which the queue in front has already joined.
+                "message": self.redact(super().format(record)),
+                **getattr(record, "attributes", {}),
+            },
+            default=str,
+        )
+
+
+def json_console(handlers: Iterable[logging.Handler], redact: Callable[[str], str]) -> None:
+    """Give each console handler JSON lines. A file handler keeps its format."""
+    for handler in handlers:
+        if (
+            isinstance(handler, logging.StreamHandler)
+            and not isinstance(handler, logging.FileHandler)
+            and not isinstance(handler.formatter, JsonLines)
+        ):
+            handler.setFormatter(JsonLines(redact))
+
+
 def configure_logging() -> None:
-    """Standard bounded logging queue; slow handlers never run on functional threads."""
+    """Standard bounded logging queue; slow handlers never run on functional threads.
+
+    Console handlers write JSON lines (``JsonLines``). The gateway plugin gives Hermes's own
+    console handler Hermes's scanner first; any other gets the Softmax token masks.
+    """
     global _logging_started
     if _logging_started:
         return
@@ -50,6 +98,7 @@ def configure_logging() -> None:
     destinations = [h for h in root.handlers if h not in direct] or [
         logging.StreamHandler(sys.stderr)
     ]
+    json_console(destinations, mask_softmax_tokens)
     handler = QueueHandler(queue.Queue(maxsize=2048))
     root.handlers = [handler, *direct]
     QueueListener(handler.queue, *destinations, respect_handler_level=True).start()
@@ -146,4 +195,65 @@ def process_env(env: Mapping[str, str]) -> dict[str, str]:
 def process_context(env: Mapping[str, str]) -> Context:
     return propagator.extract(
         {key.lower(): value for key, value in env.items() if key in {"TRACEPARENT", "TRACESTATE"}}
+    )
+
+
+tool_log = logging.getLogger("research_core.tool_call")
+_ERROR_TYPE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+
+
+def is_error_type(value: object) -> bool:
+    """Whether a ``kind`` read from a tool's result can be an ``error.type``: a short identifier
+    such as ``transition_refused`` or an exception's class, never a sentence or a path."""
+    return isinstance(value, str) and _ERROR_TYPE.fullmatch(value) is not None
+
+
+def finish_tool_call(
+    current: Span,
+    *,
+    boundary: str,
+    role: str,
+    tool_name: str,
+    tool_call_id: str | None,
+    session_id: str | None,
+    turn_id: str | None,
+    outcome: str,
+    error_type: str | None,
+    duration_s: float,
+    action: str | None = None,
+) -> None:
+    """Name one ``execute_tool`` span's call and result, and log it: the same fields at both
+    boundaries, ``native`` (Hermes's hooks) and ``distribution`` (``tools.base.run_tool``).
+
+    A call failed exactly when it has an ``error_type``: a short, bounded class such as
+    ``exit_code_nonzero`` or ``transition_refused``, never text from the call. The log line holds
+    no arguments or results either, because those can hold file contents, paths and secrets.
+    The caller ends the span.
+    """
+    attributes = {
+        "gen_ai.operation.name": "execute_tool",
+        "tool.boundary": boundary,
+        "gen_ai.agent.name": role,
+        "gen_ai.tool.name": tool_name,
+        "gen_ai.tool.call.id": tool_call_id,
+        "session.id": session_id,
+        "turn.id": turn_id,
+        "tool.action": action,
+        "outcome": outcome,
+        "error.type": error_type,
+    }
+    current.set_attribute("operation.success", 0 if error_type else 1)
+    known = {key: value for key, value in attributes.items() if value}
+    current.set_attributes(known)
+    if error_type is not None:
+        current.set_status(StatusCode.ERROR)
+    tool_log.log(
+        logging.INFO if error_type is None else logging.WARNING,
+        "%s tool %s %s%s in %.2fs",
+        boundary,
+        tool_name,
+        outcome,
+        f" ({error_type})" if error_type not in (None, outcome) else "",
+        duration_s,
+        extra={"attributes": {**known, "duration_s": round(duration_s, 3)}},
     )

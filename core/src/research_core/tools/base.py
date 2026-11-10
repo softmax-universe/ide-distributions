@@ -585,9 +585,13 @@ def tool_context(name: str, action: str | None) -> dict:
     return {"tool": name, **({"action": action} if action else {})}
 
 
-def error_payload(problems: list[str], context: dict | None = None) -> dict:
+def error_payload(
+    problems: list[str], context: dict | None = None, kind: str | None = None
+) -> dict:
+    """A refusal. ``run_tool`` names its ``kind``, the short class telemetry reports it under."""
     return {
         "ok": False,
+        **({"kind": kind} if kind else {}),
         "error": problems[0] if len(problems) == 1 else "; ".join(problems),
         "problems": problems,
         "context": context or {},
@@ -597,7 +601,6 @@ def error_payload(problems: list[str], context: dict | None = None) -> dict:
 def run_tool(name: str, args: Mapping[str, Any], ctx: ToolContext) -> str:
     """Validate, run and render a tool call as JSON text. Raises only if the catalog cannot load."""
     from opentelemetry import trace
-    from opentelemetry.trace import StatusCode
 
     from research_core import telemetry
     from research_core.tools.catalog import _load_tool_modules
@@ -613,19 +616,24 @@ def run_tool(name: str, args: Mapping[str, Any], ctx: ToolContext) -> str:
         action = None
         own_tool_action = None
         outcome = "internal_error"
+        # The failure's short class; ``None`` while the call has not failed.
+        error_type = None
         spec = None
         try:
             _load_tool_modules()
             spec = TOOLS.get(name)
             if spec is None or ctx.role not in spec.roles:
-                outcome = "unknown_tool"
-                return json.dumps(error_payload([f"unknown tool {name!r} for the {ctx.role}"]))
+                outcome = error_type = "unknown_tool"
+                return json.dumps(
+                    error_payload([f"unknown tool {name!r} for the {ctx.role}"], kind=error_type)
+                )
             # A tool of an action's own reports as the grouped tool and action it stands for.
             tool_name, own_tool_action = spec.split_from or (spec.name, None)
             action, problems = validate_args(spec, ctx.role, args)
             if problems:
-                outcome = "validation_rejected"
-                return json.dumps(argument_error(spec, ctx.role, action, args, problems))
+                outcome = error_type = "validation_rejected"
+                refusal = argument_error(spec, ctx.role, action, args, problems)
+                return json.dumps({"kind": error_type, **refusal})
             try:
                 args = drop_unused_empty(spec, action, args)
                 call = ToolCall(
@@ -636,43 +644,55 @@ def run_tool(name: str, args: Mapping[str, Any], ctx: ToolContext) -> str:
                     result = {"result": result}
                 result.setdefault("ok", True)
                 outcome = "succeeded" if result["ok"] else "failed"
+                if not result["ok"]:
+                    # A handler's refusal names its class in ``kind`` (``transition_refused``).
+                    kind = result.setdefault("kind", outcome)
+                    error_type = kind if telemetry.is_error_type(kind) else outcome
                 text = json.dumps(result, default=str)
             except ToolError as error:
-                outcome = "tool_rejected"
-                text = json.dumps(error_payload(error.problems, {"tool": name, **error.context}))
-            except StoreError as error:
-                outcome = "store_rejected"
+                outcome = error_type = "tool_rejected"
                 text = json.dumps(
-                    error_payload(list(error.problems) or [str(error)], tool_context(name, action))
+                    error_payload(error.problems, {"tool": name, **error.context}, error_type)
+                )
+            except StoreError as error:
+                outcome = error_type = "store_rejected"
+                text = json.dumps(
+                    error_payload(
+                        list(error.problems) or [str(error)],
+                        tool_context(name, action),
+                        error_type,
+                    )
                 )
             except Exception as error:  # the agent must see what failed, with context
                 outcome = "internal_error"
+                error_type = type(error).__name__
                 text = json.dumps(
                     error_payload(
                         [f"{type(error).__name__}: {error}"],
                         {**tool_context(name, action), "traceback": traceback.format_exc()[-2000:]},
+                        error_type,
                     )
                 )
             return ctx.scrub(text)
         finally:
             # No arguments, results, prompts or error text: tool payloads may contain secrets.
-            span.set_attributes(
-                {
-                    "gen_ai.operation.name": "execute_tool",
-                    "tool.boundary": "distribution",
-                    "gen_ai.tool.name": tool_name,
-                    "session.id": ctx.hermes_session_id(),
-                    "role": ctx.role,
-                    "outcome": outcome,
-                }
-            )
             reported_action = own_tool_action or (
                 action if spec is not None and spec.action(action) is not None else None
             )
-            if reported_action is not None:
-                span.set_attribute("tool.action", reported_action)
-            if outcome != "succeeded":
-                span.set_status(StatusCode.ERROR)
+            duration_s = time.monotonic() - started
+            telemetry.finish_tool_call(
+                span,
+                boundary="distribution",
+                role=ctx.role,
+                tool_name=tool_name,
+                tool_call_id=ctx.env.get("IDE_TOOL_CALL_ID"),
+                session_id=ctx.hermes_session_id(),
+                turn_id=ctx.env.get("IDE_TURN_ID"),
+                outcome=outcome,
+                error_type=error_type,
+                duration_s=duration_s,
+                action=reported_action,
+            )
             # The completion for agent telemetry, written by the process that ran the tool.
             observed.record(
                 "workspace_tool",
@@ -682,7 +702,9 @@ def run_tool(name: str, args: Mapping[str, Any], ctx: ToolContext) -> str:
                 tool_name=tool_name,
                 native_event_type=reported_action,
                 outcome=outcome,
-                duration_ms=round((time.monotonic() - started) * 1000, 3),
+                reason=error_type,
+                duration_ms=round(duration_s * 1000, 3),
                 tool_call_id=ctx.env.get("IDE_TOOL_CALL_ID"),
+                turn_id=ctx.env.get("IDE_TURN_ID"),
                 run_id=ctx.env.get("IDE_RUN_ID"),
             )
