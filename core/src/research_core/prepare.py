@@ -99,7 +99,16 @@ PROTECTED_KEYS: dict[str, Any] = {
     # disables whole toolsets: `browser` also takes browser_vault, browser_cdp and browser_dialog.
     # `todo`: the plan is Goals and Tasks, and no call in 1,981 used it. `delegation` stays: the
     # expert-consultation skill needs it, and a child without a Coworld is told so when it tries.
-    "agent.disabled_toolsets": ["browser", "connections", "cronjob", "todo"],
+    # `session_search` (a toolset of one tool): 11 calls in 3,761 model calls (2026-11-07 to
+    # 11-09), half of them empty and the rest other Sessions' summaries the records hold; its
+    # schema was 4.0k characters on every call.
+    "agent.disabled_toolsets": [
+        "browser",
+        "connections",
+        "cronjob",
+        "todo",
+        "session_search",
+    ],
     # Reclaim stale results below Hermes's 8,000-character default cutoff as well. The existing
     # deterministic prune protects recent results and archives originals without a model call.
     "compression.proactive_prune_tokens": 64000,

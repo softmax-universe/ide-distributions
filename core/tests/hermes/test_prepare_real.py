@@ -114,6 +114,7 @@ def test_prepare_orchestrator_end_to_end(hermes_bin, host, prepared_orchestrator
         "connections",
         "cronjob",
         "todo",
+        "session_search",
     ]
     assert config["skills"]["external_dirs"] == [
         str(CORE_SRC / "research_core" / "skills" / "common"),
@@ -169,6 +170,7 @@ def test_prepare_researcher_shares_the_environment(hermes_bin, host, prepared_re
         "connections",
         "cronjob",
         "todo",
+        "session_search",
     ]
     assert not (host.profile("researcher") / "cron" / "jobs.json").exists()
     assert (host.profile("researcher") / "local" / "core-path.txt").is_file()
@@ -469,10 +471,11 @@ from hermes_cli.config import load_config
 from toolsets import resolve_toolset
 disabled = load_config()["agent"]["disabled_toolsets"]
 removed = {tool for name in disabled for tool in resolve_toolset(name)}
-assert {"browser_exec", "manage_connections", "cronjob_manage", "todo_list"} <= removed, removed
+assert {"browser_exec", "manage_connections", "cronjob_manage", "todo_list",
+    "session_search"} <= removed, removed
 kept = {"terminal", "read_file", "write_file", "patch", "search_files", "skill_view",
     "skill_manage", "skills_list", "execute_code", "delegate_task", "process_manage",
-    "session_search", "web_extract", "web_search", "vision_analyze"}
+    "web_extract", "web_search", "vision_analyze"}
 assert not kept & removed, kept & removed
 names = {tool["function"]["name"] for tool in model_tools.get_tool_definitions(
     enabled_toolsets=["hermes-api-server"], disabled_toolsets=disabled, quiet_mode=True)}

@@ -206,8 +206,19 @@ async def run(stack: AsyncExitStack) -> None:
             base_url="http://127.0.0.1:8642", headers={"Authorization": f"Bearer {key}"}
         ) as client:
             with telemetry.span("workspace.gateway_ready", context=startup_context):
+                # Hermes notifies NOTIFY_SOCKET only with its systemd watchdog on, which needs
+                # both the config key and WATCHDOG_USEC. An hour apart, its pings are inert.
+                await command(
+                    HERMES, "config", "set", "gateway.systemd_watchdog_seconds", "3600", env=common
+                )
                 gateway = await stack.enter_async_context(
-                    ready_process(PYTHON, "-m", "gateway.run", env=common, timeout=180)
+                    ready_process(
+                        PYTHON,
+                        "-m",
+                        "gateway.run",
+                        env={**common, "WATCHDOG_USEC": "3600000000"},
+                        timeout=180,
+                    )
                 )
                 # One contract check after the listener's notification, never a readiness poll.
                 (await client.get("/v1/capabilities")).raise_for_status()

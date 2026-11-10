@@ -28,7 +28,7 @@ compression:
 # toolsets: `browser` also takes browser_vault, browser_cdp and browser_dialog. prepare.py keeps
 # this key (PROTECTED_KEYS).
 agent:
-  disabled_toolsets: [browser, connections, cronjob, todo]
+  disabled_toolsets: [browser, connections, cronjob, todo, session_search]
 platform_toolsets:
   api_server: [hermes-api-server, ide-orchestrator]
   cron: []

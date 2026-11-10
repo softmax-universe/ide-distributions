@@ -833,6 +833,12 @@ def _gateway_writer() -> TelemetryWriter:
 
             telemetry.json_console(logging.getLogger().handlers, redactor.text)
             logging.getLogger().addHandler(DiagnosticsHandler(_writer))
+            # Hermes logs a failed tool's output with its `Tool X returned error` warning, and the
+            # output can hold file contents and tracebacks. ``telemetry.finish_tool_call`` logs
+            # each failure without it. A logger filter drops the record before any handler.
+            logging.getLogger("agent.tool_executor").addFilter(
+                lambda record: not str(record.msg).startswith("Tool %s returned error")
+            )
         return _writer
 
 
