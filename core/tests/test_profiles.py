@@ -42,7 +42,6 @@ def test_config_has_protected_keys_and_no_gates(role):
             "cronjob",
             "todo",
             "session_search",
-            "skill_manage",
         ]
     }
     assert config["compression"]["proactive_prune_tokens"] == 64000

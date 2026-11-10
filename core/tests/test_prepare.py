@@ -141,7 +141,6 @@ def test_protected_keys_for_role_substitutes_the_role():
             "cronjob",
             "todo",
             "session_search",
-            "skill_manage",
         ]
         assert keys["compression.proactive_prune_tokens"] == 64000
         assert keys["compression.proactive_prune_min_result_chars"] == 2000

@@ -106,7 +106,7 @@ def test_environment_guide_names_the_workspace_and_player_but_no_secret(workspac
     )
     assert "every 60 seconds" in text and "/scratch/tmp" in text
     assert "No capability check is recorded yet" in text
-    assert "in no git repository" in text and "Shipped skills" in text
+    assert "in no git repository" in text and "`skill_manage` `patch`" in text
 
 
     result = json.loads(run_tool("workspace", {"action": "environment_guide"}, ctx))

@@ -125,9 +125,14 @@ def _paths(checkout: Path | None, coworld) -> list[str]:
         f"- Read-only: the profile source checkout `{checkout or '(unknown)'}` (plugin, store "
         "library and schema, tools, prompts). Report a bug there instead of "
         "patching it; `config.yaml` is writable but `prepare.py` re-applies the protected keys.",
-        "- Shipped skills live in that checkout and are read-only to you. Record a fix as a "
-        "claim tagged `lesson` and report the fault; game steps go in a mixin skill, committed "
-        "on a branch.",
+        "- Shipped skills live in that checkout, whatever Hermes's skill index says about "
+        "fixing them. Where it is read-only, as in hosting, `skill_manage` `patch`, `write_file` "
+        "and `delete` on one fail with a file system error and change nothing. On a writable "
+        "checkout (a local install) they change the shipped files for every profile using it: "
+        "do not. `create` under a shipped name is refused. Record a fix as a claim tagged "
+        "`lesson` and report the fault; game steps go in a mixin skill, committed on a branch. "
+        "`create` with a new name makes a skill in this profile's folder only, which `patch` "
+        "can change; it stays through sleep, restarts and releases.",
         "- Records (Goals, Tasks, Claims, Experiments, Versions, settings) live in the store and "
         "change only through the record tools. Direct edits are detected and reported.",
         "",

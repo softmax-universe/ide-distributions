@@ -19,10 +19,10 @@ compression:
   proactive_prune_tokens: 64000
   proactive_prune_min_result_chars: 2000
 # Hermes tools these agents never called, each sent on every model call. Hermes disables whole
-# toolsets: `browser` also takes browser_vault, browser_cdp and browser_dialog; with patch 0012 an
-# entry may name one tool (skill_manage of `skills`). prepare.py keeps this key (PROTECTED_KEYS).
+# toolsets: `browser` also takes browser_vault, browser_cdp and browser_dialog. prepare.py keeps
+# this key (PROTECTED_KEYS).
 agent:
-  disabled_toolsets: [browser, connections, cronjob, todo, session_search, skill_manage]
+  disabled_toolsets: [browser, connections, cronjob, todo, session_search]
 platform_toolsets:
   api_server: [hermes-api-server, ide-researcher]
   cron: []

@@ -9,4 +9,4 @@ Read the rest when the work needs it, each time, because it changes:
 - `research softmax exec -- coworld docs --local` lists the reference docs installed with the CLI; `--skill` in place of `--local` prints Softmax's own agent skill document.
 - The Coworld's forum and wiki, through the `platform` reads and the `forum_post` and `wiki_edit` tools.
 
-Hermes's generic guidance may recommend a tool you lack: ignore it. Keep a fix to a shipped skill as a claim tagged `lesson`.
+Hermes's generic guidance may recommend a tool you lack, or `skill_manage` on a shipped skill: ignore it, and keep such a fix as a claim tagged `lesson`.
