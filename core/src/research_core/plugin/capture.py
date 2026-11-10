@@ -16,7 +16,11 @@ no agent; Hermes logs it.
 - The run: ``plugin/runs.py``, from the Session's started admission.
   An auxiliary call keeps the run its Session's turn was in when the call began.
 
-A hard exit loses what the writer still had queued. One writer serves the whole gateway process,
+The writer's thread is a daemon, and Hermes ends the gateway with ``os._exit``, so what it still had
+queued at exit is lost unless flushed first. Each turn's end (``on_session_end``) and each Session
+Hermes finalizes on shutdown (``on_session_finalize``) waits up to ``FLUSH_S`` for the writer: a
+graceful stop drains each running turn to its end, so it keeps that turn's records. A hard exit
+loses what the writer still had queued. One writer serves the whole gateway process,
 because a multiplexed gateway registers this plugin once per profile. Each profile has its own
 ``GatewayCapture``, for its name and per-session state.
 
@@ -54,6 +58,9 @@ from research_core.plugin.repeats import refusal_of
 from research_core.plugin.runs import parents, run_of
 
 GATEWAY_WRITER = "gateway"
+# How long a turn's end or a Session's finalization waits for the writer. Hermes abandons an
+# ``on_session_end`` callback after 30 seconds and a shutdown's finalization after 10.
+FLUSH_S = 5.0
 # Auxiliary calls outside a turn belong to no Session, and a manifest must name one.
 NO_SESSION = "no-session"
 _NOT_A_NAME = re.compile(r"[^a-z0-9_.-]+")
@@ -256,6 +263,7 @@ class GatewayCapture:
             "post_compaction": self.post_compaction,
             "on_session_start": self.on_session_start,
             "on_session_end": self.on_session_end,
+            "on_session_finalize": self.on_session_finalize,
             "subagent_start": self.subagent_start,
             "subagent_stop": self.subagent_stop,
         }
@@ -737,6 +745,11 @@ class GatewayCapture:
             details={"completed": completed} if isinstance(completed, bool) else None,
             **self._ids(session_id, turn_id=turn_id, hermes_task_id=task_id),
         )
+        self._writer.flush(FLUSH_S)
+
+    def on_session_finalize(self, **_: Any) -> None:
+        """A Session ends, as on a gateway's shutdown: what is queued must not wait for the exit."""
+        self._writer.flush(FLUSH_S)
 
     def _capture_commits(self, session_id: str, run_id: str | None) -> None:
         """Each row of the Session that Hermes committed since the last turn's end, or since this

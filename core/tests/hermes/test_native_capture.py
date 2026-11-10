@@ -36,6 +36,7 @@ class DroppingStub:
         self.lock = threading.Lock()
         self.dropped: set[str] = set()
         self.hang = threading.Event()
+        self.followup = threading.Event()
         self.title_gate = threading.Event()
         self.server = stub_server(self.answer)
         self.url = f"http://openrouter.ai:{self.server.server_address[1]}/api/v1"
@@ -56,6 +57,10 @@ class DroppingStub:
             first_time = script not in self.dropped
             self.dropped.add(script)
         if "HANG_IN_THE_CALL" in script:
+            self.hang.wait(60)
+            return
+        if messages[-1]["role"] == "tool" and "HANG_AFTER_THE_TOOL" in script:
+            self.followup.set()
             self.hang.wait(60)
             return
         if messages[-1]["role"] == "tool" or "plain answer" in script:
@@ -264,3 +269,56 @@ def test_a_request_is_on_the_stream_before_its_call_ends(hermes_bin, tmp_path, s
     assert requests
     objects = objects_of(stored_records(gateway.stream))
     assert any(b"HANG_IN_THE_CALL" in body for body in objects.values())
+
+
+class SlowStream:
+    """The reading end of the stream, slower than the writer, as a busy container pipe can be, so
+    the pipe stays full and the writer keeps a queue. Clearing ``reading`` stops it."""
+
+    def __init__(self, fifo, copy) -> None:
+        self.fifo, self.copy = fifo, copy
+        self.reading = threading.Event()
+        self.reading.set()
+        os.mkfifo(fifo)
+        self.thread = threading.Thread(target=self._read, daemon=True)
+        self.thread.start()
+
+    def _read(self) -> None:
+        with open(self.fifo, "rb", buffering=0) as stream, open(self.copy, "ab") as out:
+            while data := stream.read(4096):
+                out.write(data)
+                out.flush()
+                time.sleep(0.05)
+                self.reading.wait()
+
+
+def test_a_graceful_stop_mid_session_keeps_what_the_writer_had_queued(hermes_bin, tmp_path, stub):
+    """Hermes ends the gateway with ``os._exit`` and the writer's thread is a daemon. SIGTERM
+    arrives during a turn while the stream is stopped, which starts again only after the gateway
+    would have exited had nothing waited for the writer. The interrupted turn's end waits for it,
+    so what was queued behind the full pipe reaches the stream."""
+    stream = SlowStream(tmp_path / "telemetry-stream", tmp_path / "stream-copy")
+    # Hermes waits this long for a running API turn before it interrupts it (30 by default).
+    drain = {"HERMES_CRON_DRAIN_TIMEOUT": "1"}
+    gateway = start_gateway(
+        tmp_path, hermes_python(hermes_bin), stub.url, free_port(), extra_env=drain
+    )
+    session_id = open_session(gateway)
+    start_run(gateway, session_id, "use the tools then HANG_AFTER_THE_TOOL")
+    assert stub.followup.wait(120), gateway.log_tail()
+    stream.reading.clear()
+    stopped_at = time.monotonic()
+    gateway.process.send_signal(signal.SIGTERM)
+    # Without a flush this gateway exits about 1.7 seconds after SIGTERM.
+    time.sleep(3)
+    stream.reading.set()
+    gateway.process.wait(60)
+    stream.thread.join(60)
+    print(f"stop took {time.monotonic() - stopped_at:.2f}s")
+    # A line the exit cut short is no record.
+    written = stream.copy.read_bytes()
+    stream.copy.write_bytes(written[: written.rfind(b"\n") + 1])
+    records = [r for r in stored_records(stream.copy) if r.get("hermes_session_id") == session_id]
+    assert operations(records, "model_attempt", "response"), gateway.log_tail()
+    assert {r["stage"] for r in operations(records, "tool")} >= {"proposed", "completed", "result"}
+    assert operations(records, "turn", "ended") and operations(records, "message", "committed")
