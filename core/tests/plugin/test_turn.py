@@ -42,6 +42,20 @@ def test_context_block_bad_input_never_crashes():
     assert "ignored:" in text and "client_data" in text and "bogus" in text
 
 
+def test_context_distinguishes_viewed_upload_from_bound_coworld():
+    context = {
+        "contract_version": 1,
+        "coworld": "cow_original",
+        "client_data": {"coworld_upload_id": "cow_new"},
+    }
+    changed = turn.render_context_block(context)
+    assert "coworld: cow_original" in changed
+    assert "cow_new" in changed
+    assert "consult its release notes" in changed
+    context["client_data"]["coworld_upload_id"] = "cow_original"
+    assert "different Coworld upload" not in turn.render_context_block(context)
+
+
 def test_notices_appear_once_and_changed_since_note(tmp_path):
     ctx = make_ctx(tmp_path)
     harness = Actor.parse("harness")
