@@ -372,3 +372,71 @@ print(json.dumps({"run": env["IDE_RUN_ID"], "call": env["IDE_TOOL_CALL_ID"]}))
         check=True,
     )
     assert json.loads(done.stdout.splitlines()[-1]) == {"run": "run_1", "call": "call_1"}
+
+
+def test_reasoning_replay_keeps_only_the_newest_assistant_turns(hermes_bin, tmp_path):
+    """``0013``: with ``agent.reasoning_replay_keep_last: 2`` a tool loop replays reasoning on the
+    newest 2 to 3 assistant turns and drops it from older ones in blocks of 2."""
+    (tmp_path / "config.yaml").write_text(json.dumps({"agent": {"reasoning_replay_keep_last": 2}}))
+    (tmp_path / "note.txt").write_text("a note\n")
+    script = r"""
+import json, sys, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from run_agent import AIAgent
+path = sys.argv[1]
+requests = []
+class Provider(BaseHTTPRequestHandler):
+    def do_POST(self):
+        request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if request.get("tools"):
+            requests.append(request)
+        index = sum(m["role"] == "assistant" for m in request.get("messages", []))
+        if request.get("tools") and index < 6:
+            message = {"role": "assistant", "content": None,
+                "reasoning_content": f"thought-{index}",
+                "tool_calls": [{"index": 0, "id": f"read_{index}", "type": "function",
+                "function": {"name": "read_file", "arguments": json.dumps({"path": path})}}]}
+            reason = "tool_calls"
+        else:
+            message, reason = {"role": "assistant", "content": "Finished"}, "stop"
+        reply = {"id": "replay-proof", "object": "chat.completion.chunk", "created": 1,
+            "model": "proof", "choices": [{"index": 0, "finish_reason": reason, "delta": message}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}}
+        body = ("data: " + json.dumps(reply) + "\n\ndata: [DONE]\n\n").encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+try:
+    agent = AIAgent(model="proof", provider="custom", api_mode="chat_completions",
+        base_url=f"http://127.0.0.1:{server.server_port}/v1", api_key="fixture",
+        enabled_toolsets=["file"], quiet_mode=True, skip_context_files=True, skip_memory=True,
+        skip_background_review=True, max_iterations=20)
+    result = agent.run_conversation("Read the note.", conversation_history=[])
+    assert result["final_response"] == "Finished", result
+    print(json.dumps([[m.get("reasoning_content") for m in r["messages"]
+        if m["role"] == "assistant"] for r in requests]))
+finally:
+    server.shutdown()
+    server.server_close()
+"""
+    done = subprocess.run(
+        [str(hermes_python(hermes_bin)), "-c", script, str(tmp_path / "note.txt")],
+        env={**os.environ, "HERMES_HOME": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        timeout=RUN_TIMEOUT_S,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    replayed = json.loads(done.stdout.splitlines()[-1])
+    t = [f"thought-{i}" for i in range(6)]
+    assert replayed[:4] == [[], [t[0]], t[:2], t[:3]]
+    # From the fourth assistant turn on, the oldest two lose their reasoning together.
+    assert replayed[4] == [None, None, *t[2:4]]
+    assert replayed[5] == [None, None, *t[2:5]]
+    assert replayed[6] == [None, None, None, None, *t[4:6]]

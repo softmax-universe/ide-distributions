@@ -1,6 +1,6 @@
 # Hermes patches
 
-Our own small changes to Hermes for telemetry hooks and hosted listener readiness. They apply to the Hermes in the image that `image/Dockerfile` pins (v0.22.6, upstream commit
+Our own small changes to Hermes for telemetry hooks, hosted listener readiness and replayed reasoning. They apply to the Hermes in the image that `image/Dockerfile` pins (v0.22.6, upstream commit
 `f0d94882e89ab8d4098b5bb2f166adfb9ee0a0ab`). We do not propose them upstream. A Hermes update means
 reapplying them, rebuilding the image and rerunning `core/tests/hermes/test_hermes_patches.py`.
 
@@ -16,6 +16,7 @@ uses the unpatched image.
 | `0004-run-binding.patch` | Tell a callback which run it belongs to, so that it never has to look up the session's latest run. |
 | `0005-gateway-exit-flush.patch` | Give plugins one call before the gateway's `os._exit`, which skips every `atexit` step. |
 | `0006-api-listener-ready.patch` | Notify the hosted supervisor when the API listener has bound and registered its routes, replacing readiness polling. |
+| `0013-reasoning-replay-window.patch` | `agent.reasoning_replay_keep_last`: replay stored reasoning on the newest assistant turns only. Off by default. |
 
 `core/src/research_core/plugin/capture.py` is what uses them.
 
@@ -80,3 +81,17 @@ launching the gateway, then waits for its notification or process exit, with a s
 It performs one authenticated capabilities request after notification. This proves the same
 listener boundary as the previous HTTP polling; it does not assert inference availability.
 No upstream release or external integration is required.
+
+## Replayed reasoning window
+
+`0013` adds `agent.reasoning_replay_keep_last` (default `null`: every assistant turn's stored
+reasoning is replayed, as upstream does). With a positive N, a chat-completions request carries
+the reasoning of the newest N to 2N-1 assistant messages and none from older ones; the older ones
+lose it in blocks of N, so the replayed prefix changes, and the prompt cache breaks, once per N
+calls rather than on every call. A must-echo route (direct Moonshot, DeepSeek) still gets its
+`" "` pad. Stored history keeps every reasoning field; only the wire copy changes. Native adapters
+(Anthropic, Bedrock, Codex) are untouched.
+
+No shipped profile sets it. Moonshot documents complete assistant messages, reasoning included,
+as required for Kimi K3 and K3.1 Pro in tool-call loops, so it stays off until a replay experiment
+shows the models keep working without it. 0007 to 0012 are reserved by open pull requests.

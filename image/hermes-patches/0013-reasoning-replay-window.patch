@@ -1,0 +1,119 @@
+diff --git a/agent/agent_init.py b/agent/agent_init.py
+index 72d96a38..08285aad 100644
+--- a/agent/agent_init.py
++++ b/agent/agent_init.py
+@@ -1294,6 +1294,11 @@ def _apply_agent_section(agent, _agent_cfg):
+     # Both: "auto" (model-list match), true, false, or list of model substrings; independent
+     # of each other (gates in agent/system_prompt.py).
+     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
++    # Replay stored reasoning only on the newest N assistant turns (None: every turn).
++    from agent.message_sanitization import normalize_reasoning_replay_keep_last
++    agent._reasoning_replay_keep_last = normalize_reasoning_replay_keep_last(
++        _agent_section.get("reasoning_replay_keep_last")
++    )
+     agent._execution_guidance = _agent_section.get("execution_guidance", "auto")
+ 
+     # Wall-clock run budget from config — only when the constructor arg was not given.
+diff --git a/agent/message_sanitization.py b/agent/message_sanitization.py
+index 7018127a..9d7bfa67 100644
+--- a/agent/message_sanitization.py
++++ b/agent/message_sanitization.py
+@@ -471,6 +471,7 @@ __all__ = [
+     "_sanitize_messages_non_ascii", "_sanitize_messages_surrogates", "_sanitize_structure_non_ascii",
+     "_sanitize_structure_surrogates", "_sanitize_surrogates", "_sanitize_tools_non_ascii",
+     "_strip_images_from_messages", "_strip_non_ascii", "apply_reasoning_content_policy",
++    "normalize_reasoning_replay_keep_last", "reasoning_replay_withheld", "withhold_replayed_reasoning",
+     "close_interrupted_tool_sequence", "coalesce_tool_call_id", "coerce_tool_name",
+     "deterministic_call_id", "matches_reasoning_echo_family", "needs_reasoning_echo",
+     "normalize_provider_tool_call_ids", "reapply_reasoning_echo", "reasoning_echo_family",
+@@ -890,6 +891,41 @@ def apply_reasoning_content_policy(
+             api_msg[RD] = private
+ 
+ 
++def normalize_reasoning_replay_keep_last(value: Any) -> int | None:
++    """``agent.reasoning_replay_keep_last``: a positive int, or None (off: replay every turn's reasoning)."""
++    if value is None or isinstance(value, bool):
++        return None
++    try:
++        keep = int(value)
++    except (TypeError, ValueError):
++        return None
++    return keep if keep > 0 else None
++
++
++def reasoning_replay_withheld(messages: list, keep_last: int | None) -> set[int]:
++    """Indices of assistant messages whose stored reasoning is NOT replayed under ``keep_last``.
++
++    The newest ``keep_last`` assistant messages always keep their reasoning. Older ones lose it in
++    blocks of ``keep_last``: the boundary moves only when another ``keep_last`` assistant messages
++    have been added, so the wire prefix changes once per block (one prompt-cache break) instead of
++    on every call. Between ``keep_last`` and ``2 * keep_last - 1`` messages keep their reasoning.
++    """
++    if keep_last is None:
++        return set()
++    assistants = [i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "assistant"]
++    boundary = max(0, (len(assistants) - keep_last) // keep_last * keep_last)
++    return set(assistants[:boundary])
++
++
++def withhold_replayed_reasoning(source_msg: dict, api_msg: dict, needs_thinking_pad: bool, carriers: frozenset) -> None:
++    """Shape ``api_msg`` as if ``source_msg`` had no stored reasoning: every carrier is removed, and a
++    must-echo route keeps its " " pad (``apply_reasoning_content_policy``)."""
++    for key in REASONING_CARRIERS:
++        api_msg.pop(key, None)
++    bare = {key: value for key, value in source_msg.items() if key not in REASONING_CARRIERS}
++    apply_reasoning_content_policy(bare, api_msg, needs_thinking_pad, carriers)
++
++
+ def _reasoning_shape(msg: dict) -> tuple:
+     return tuple(msg.get(key) for key in REASONING_CARRIERS)
+ 
+diff --git a/agent/turn_context.py b/agent/turn_context.py
+index 67e3497f..e54a1384 100644
+--- a/agent/turn_context.py
++++ b/agent/turn_context.py
+@@ -1347,6 +1347,17 @@ def build_api_messages(
+     split = current_turn_user_idx if has_current else 0
+     canonical_messages = canonicalize_replay_history(messages[:split], now=turn_now) + messages[split:]
+ 
++    # agent.reasoning_replay_keep_last (default off): older assistant turns lose their replayed
++    # reasoning in blocks; chat-completions routes only (native adapters own signed thinking).
++    from agent.message_sanitization import reasoning_replay_withheld, withhold_replayed_reasoning
++
++    keep_last = getattr(agent, "_reasoning_replay_keep_last", None)
++    replay_route = agent._reasoning_replay_route() if keep_last is not None else None
++    withheld = (
++        reasoning_replay_withheld(canonical_messages, keep_last)
++        if replay_route is not None and replay_route.carriers is not None else set()
++    )
++
+     api_messages = []
+     for idx, msg in enumerate(canonical_messages):
+         # Structural clone, NOT msg.copy(): in-place transforms below must not reach
+@@ -1386,7 +1397,10 @@ def build_api_messages(
+ 
+         # Replay stored reasoning on every carrier the active route reads (and strip the
+         # rest): message_sanitization.reasoning_replay_route owns the decision.
+-        agent._copy_reasoning_content_for_api(msg, api_msg)
++        if idx in withheld:
++            withhold_replayed_reasoning(msg, api_msg, *replay_route)
++        else:
++            agent._copy_reasoning_content_for_api(msg, api_msg)
+         # finish_reason is rejected by strict APIs (e.g. Mistral).
+         api_msg.pop("finish_reason", None)
+         # Fill empty non-final user/assistant wire copies so the pre-call sanitizer
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index dd17e453..3c81294a 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -274,6 +274,10 @@ DEFAULT_CONFIG = {
+         # `reasoning_echo: true` on a `model:` or `fallback_providers:` entry for a custom gateway
+         # proxying one of them. Strict providers (Mistral, Groq, Cerebras) never get the field.
+         "reasoning_echo": False,
++        # null = replay every assistant turn's stored reasoning. A positive N keeps it on the newest
++        # N to 2N-1 assistant turns and drops it from older ones in blocks of N, so the prompt-cache
++        # prefix breaks once per N calls (chat-completions routes only; agent/message_sanitization.py).
++        "reasoning_replay_keep_last": None,
+         # Turn liveness watchdog: a turn with no observable progress for `timeout_s` seconds is
+         # logged, force-interrupted so the UI can retry, and its lease stops renewing so stale-turn
+         # cleanup can reclaim the session even if the interrupt can't unwind a wedged frame.
