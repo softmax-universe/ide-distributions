@@ -17,7 +17,6 @@ git rev-parse HEAD > "$scratch/source-revision.txt"
 aide_pid=
 cleanup() {
   if [[ -n "$aide_pid" ]]; then
-    kill "$aide_pid" 2>/dev/null || true
     wait "$aide_pid" 2>/dev/null || true
     cat "$scratch/aide-proof.log"
   fi
@@ -125,10 +124,12 @@ docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges --tm
 aide_pid=$!
 
 # Rare uncertain starts recover inside the image; no operator or forced platform hold is needed.
-bash image/system_tests/check-recovery.sh "$image" "$name-recovery" "$volume" "$scratch"
+recovery_status=0
+bash image/system_tests/check-recovery.sh "$image" "$name-recovery" "$volume" "$scratch" \
+  || recovery_status=$?
 
 aide_status=0
 wait "$aide_pid" || aide_status=$?
 aide_pid=
 cat "$scratch/aide-proof.log"
-(( aide_status == 0 ))
+(( recovery_status == 0 && aide_status == 0 ))
