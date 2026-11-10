@@ -35,7 +35,16 @@ def test_config_has_protected_keys_and_no_gates(role):
     assert config["plugins"]["enabled"] == [role]
     assert config["platform_toolsets"]["api_server"] == ["hermes-api-server", f"ide-{role}"]
     assert config["known_plugin_toolsets"]["cron"] == [f"ide-{role}"]
-    assert config["agent"] == {"disabled_toolsets": ["browser", "connections", "cronjob", "todo"]}
+    assert config["agent"] == {
+        "disabled_toolsets": [
+            "browser",
+            "connections",
+            "cronjob",
+            "todo",
+            "session_search",
+            "skill_manage",
+        ]
+    }
     assert config["compression"]["proactive_prune_tokens"] == 64000
     assert "timeouts" not in config
     assert "kanban" not in config

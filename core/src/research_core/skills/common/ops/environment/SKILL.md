@@ -21,7 +21,7 @@ Where you are, the image and source commits, the two Python environments, writab
 
 - Writable: everything in the session's Coworld's folder except its bookkeeping: `code/` (after setup, commit on a branch in a worktree, never on `main` directly), `documents/` (your files; command logs under `documents/logs/`, artifacts, replays and measurements; in no git repository, so never committed; kept through sleep and restarts), and `worktrees/`. `source/` is a clone to read, not to edit.
 - Read-only: the profile source checkout (plugin, store library and schema, tools, prompts). Report a bug there; do not patch it. `config.yaml` is writable, but `prepare.py` re-applies the protected keys.
-- Shipped skills are in that checkout: do not `skill_manage` one (it fails, or on a local install changes every profile). Keep a fix as a claim tagged `lesson` and report the fault. `create` with a new name makes a skill only this profile sees, kept through sleep, restarts and releases.
+- Shipped skills are in that checkout and read-only to you. Keep a fix as a claim tagged `lesson` and report the fault.
 - Records live in the store and change through the record tools and the user's edits; direct edits to the store are detected and reported. A record tool returns the updated record; a transition may answer `pending` instead.
 
 ## CLIs and identities

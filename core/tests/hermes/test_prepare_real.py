@@ -448,22 +448,25 @@ finally:
 
 
 def test_disabled_toolsets_remove_the_named_tools_and_keep_the_working_ones(hermes_bin, host):
-    """Hermes ignores an unknown toolset name, so a rename would silently restore its tools."""
+    """Hermes ignores an unknown toolset name, so a rename would silently restore its tools.
+    ``skill_manage`` is one tool of the kept ``skills`` toolset, removed by patch 0012."""
     prepare(hermes_bin, host, "researcher")
     script = r"""
 import json, sys
 import model_tools
 from toolsets import resolve_toolset
 disabled = json.loads(sys.argv[1])
-removed = {tool for name in disabled for tool in resolve_toolset(name)}
-assert {"browser_exec", "manage_connections", "cronjob_manage", "todo_list"} <= removed, removed
+removed = {tool for name in disabled for tool in resolve_toolset(name)} | {"skill_manage"}
+assert {"browser_exec", "manage_connections", "cronjob_manage", "todo_list",
+    "session_search"} <= removed, removed
 kept = {"terminal", "read_file", "write_file", "patch", "search_files", "skill_view",
-    "skill_manage", "skills_list", "execute_code", "delegate_task", "process_manage",
-    "session_search", "web_extract", "web_search", "vision_analyze"}
+    "skills_list", "execute_code", "delegate_task", "process_manage",
+    "web_extract", "web_search", "vision_analyze"}
 assert not kept & removed, kept & removed
 names = {tool["function"]["name"] for tool in model_tools.get_tool_definitions(
     enabled_toolsets=["hermes-api-server"], disabled_toolsets=disabled, quiet_mode=True)}
 assert not names & removed, names & removed
+assert {"skill_view", "skills_list", "terminal", "read_file"} <= names, names
 print("PASS")
 """
     disabled = config_get(hermes_bin, host, "researcher", "agent.disabled_toolsets")
