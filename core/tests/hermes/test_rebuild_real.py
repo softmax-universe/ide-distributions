@@ -251,7 +251,7 @@ def test_tool_results_equal_state_db_and_what_the_model_got(hermes_bin, proof, r
     assert wire == expected
 
 
-def test_the_operation_chain_joins_admission_run_and_requests(proof, report):
+def test_the_operation_chain_joins_admission_trace_and_requests(proof, report):
     admissions: dict[str, list[dict]] = {}
     for event in report["events"]:
         if "admission_id" in event:
@@ -261,11 +261,14 @@ def test_the_operation_chain_joins_admission_run_and_requests(proof, report):
     for events in admissions.values():
         kinds = [event.get("native_event_type") for event in events]
         assert "client.started" in kinds and "client.finished" in kinds, kinds
-    gateway_runs = {r["run_id"] for r in main_requests(report)}
-    assert gateway_runs == set(proof.run_ids)
+    # One input, one trace: each turn's records are in the trace of the admission it served,
+    # which the seam's dispatch of that admission is in too.
+    messages = {e["trace_id"] for e in started}
+    assert len(messages) == len(proof.run_ids)
+    assert {r["trace_id"] for r in main_requests(report)} == messages
     tools = [tool for request in report["requests"] for tool in request["tools"]]
-    assert {tool["run_id"] for tool in tools} == set(proof.run_ids)
-    assert {row["run_id"] for row in report["rows"]} == set(proof.run_ids)
+    assert {tool["trace_id"] for tool in tools} <= messages
+    assert {row["trace_id"] for row in report["rows"]} == messages
 
 
 def test_after_a_restart_prompt_sections_are_kept(report):

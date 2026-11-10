@@ -3,7 +3,7 @@
 import json
 from collections.abc import Callable
 
-from opentelemetry import trace
+from opentelemetry.context import Context
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.trace import Span
 
@@ -14,9 +14,7 @@ def record_native_message(
     *,
     session_id: str,
     conversation_history: list,
-    span_for_session: Callable[[str], Span],
-    user_message: object = None,
-    run_id: str | None = None,
+    bind_origin: Callable[[str, Context], Span | None],
     **_,
 ) -> None:
     """Bind application metadata to the native row ID supplied by the pinned observer hook.
@@ -30,6 +28,7 @@ def record_native_message(
     from research_core.plugin.executor import profile_env
     from research_core.store.actors import Actor
     from research_core.store.db import Store
+    from research_core.telemetry import correlation
 
     native_id = next(
         message["_row_id"]
@@ -40,7 +39,7 @@ def record_native_message(
     store = Store.open(workspace.store_path, kind="workspace")
     try:
         admission = store.one(
-            "SELECT op_id,run_id,payload,resumes FROM client_admissions"
+            "SELECT op_id,payload,resumes FROM client_admissions"
             " WHERE session_id=? AND kind='message'"
             " AND ((native_message_id IS NULL AND resumes=0) OR resumes>0)"
             " AND dispatch_started=1"
@@ -59,31 +58,25 @@ def record_native_message(
                     " AND native_message_id IS NULL",
                     (native_id, admission["op_id"]),
                 )
-            # The one place that sees an admission beside its native row and the run Hermes bound.
-            observed.record(
-                "admission",
-                "bound",
-                admission_id=admission["op_id"],
-                session_id=session_id,
-                run_id=run_id,
-                hermes_message_id=str(native_id),
-            )
     finally:
         store.close()
 
     # Reuse the required application binding read; tracing never opens another store.
-    # An optional trace annotation must not change the binding's functional outcome.
-    try:
-        current_span = span_for_session(session_id)
-        if isinstance(current_span, ReadableSpan) and "op.id" in current_span.attributes:
-            return  # Later model iterations cannot relink the turn to an older resume.
-        current_span.set_attribute("op.id", admission["op_id"])
-        if admission["run_id"] is not None:
-            current_span.set_attribute("run.id", admission["run_id"])
-        origin = trace.get_current_span(
-            propagator.extract(json.loads(admission["payload"])["trace_context"])
-        ).get_span_context()
-        if origin.is_valid:
-            current_span.add_link(origin)
-    except Exception:
-        pass
+    # The turn joins the message's trace: the admission carries the context it was admitted in.
+    # An admission stored before every admission carried one has none (``stored formats``).
+    payload = json.loads(admission["payload"])
+    turn_span = bind_origin(session_id, propagator.extract(payload.get("trace_context", {})))
+    if turn_span is None:
+        return
+    if isinstance(turn_span, ReadableSpan) and "op.id" not in turn_span.attributes:
+        turn_span.set_attribute("op.id", admission["op_id"])
+    if admission["resumes"] == 0:
+        # The one place that sees an admission beside its native row and the turn serving it.
+        observed.record(
+            "admission",
+            "bound",
+            admission_id=admission["op_id"],
+            session_id=session_id,
+            hermes_message_id=str(native_id),
+            **correlation(turn_span),
+        )

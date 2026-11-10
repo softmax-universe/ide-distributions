@@ -124,7 +124,7 @@ class _Finder:
             raise AmbiguousSession(", ".join(sorted(self.workspaces)))
 
     def find_session(self) -> None:
-        """The Session, what compaction moved it to, and what its admissions and runs recorded."""
+        """The Session, what compaction moved it to, and what its admissions and traces recorded."""
         names = ("session_id", "hermes_session_id", "parent_session_id")
         searched: set[str] = set()
         while self.session_ids - searched:
@@ -136,8 +136,10 @@ class _Finder:
                 linked = {record.get(name) for name in names} - {None}
                 if record.get("action") == "compaction" and linked & self.session_ids:
                     self.session_ids |= linked
-        # An approval names only its run, and a retried request only its admission.
-        for field in ("admission_id", "run_id"):
+        # A retried request names only its admission, and a store event or a workspace tool's
+        # record only the trace of the message it served. A record written before records named
+        # their trace (retained for 15 days) names its run instead.
+        for field in ("admission_id", "trace_id", "run_id"):
             values = {r[field] for r in self.records.values() if self.owned(r) and field in r}
             for batch in _batches(values):
                 self._find(_any_of(field, batch))
@@ -379,6 +381,12 @@ def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> li
     return requests
 
 
+def _scope(record: dict[str, Any]) -> str | None:
+    """What a tool call ID is unique within: the record's trace, or its run on a record written
+    before records named their trace."""
+    return record.get("trace_id") or record.get("run_id")
+
+
 def _attach_tools(finder: _Finder, operations: list[dict], requests: list[dict]) -> list[dict]:
     """Tool activity on the request that asked for it. Returns what names no such request."""
     by_attempt = {request["model_attempt_id"]: request for request in requests}
@@ -389,7 +397,7 @@ def _attach_tools(finder: _Finder, operations: list[dict], requests: list[dict])
     for record in operations:
         if record["action"] != "tool":
             continue
-        key = (record.get("run_id"), record.get("tool_call_id"))
+        key = (_scope(record), record.get("tool_call_id"))
         request = (
             by_attempt.get(record.get("model_attempt_id"))
             or by_call.get(record.get("api_request_id"))
@@ -402,12 +410,12 @@ def _attach_tools(finder: _Finder, operations: list[dict], requests: list[dict])
 
 
 def _results_of_rows(operations: list[dict]) -> dict:
-    """Each tool result by its row ID. One with none goes by ``(run_id, tool_call_id)``, and when
+    """Each tool result by its row ID. One with none goes by ``(_scope, tool_call_id)``, and when
     several share that nothing says which is whose, so it holds ``None``."""
     results: dict = {}
     for record in operations:
         if (record["action"], record["stage"]) == ("tool", "result"):
-            call = (record.get("run_id"), record.get("tool_call_id"))
+            call = (_scope(record), record.get("tool_call_id"))
             if row := record.get("hermes_message_id"):
                 results[row] = record
             else:
@@ -460,7 +468,7 @@ def _rows(finder: _Finder, operations: list[dict], requests: list[dict]) -> list
         row_id = record.get("hermes_message_id")
         entry = {**record, "hermes_message_id": row_id}
         call = record.get("tool_call_id")
-        result = results.get(row_id) or results.get((record.get("run_id"), call))
+        result = results.get(row_id) or results.get((_scope(record), call))
         key = ("row", row_id) if ("row", row_id) in first else ("call", call)
         if key[0] == "call" and key in first and result:
             if message_text(first[key][1]) != finder.text(_ref(result, "result")):

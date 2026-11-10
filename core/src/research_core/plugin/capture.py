@@ -12,9 +12,11 @@ no agent; Hermes logs it.
   ``api_request_error``; what a broken stream had shown is ``on_stream_end``'s ``final_text``.
 - A tool result: as the model got it, from the next request that carries it. A tool row's own
   text is on its commit too, for a turn that ends before a request carries it (a guard halt).
-- Committed rows: read from ``state.db`` at the end of each turn (``on_session_end``).
-- The run: ``plugin/runs.py``, from the Session's started admission.
-  An auxiliary call keeps the run its Session's turn was in when the call began.
+- Committed rows: read from ``state.db`` on the writer's thread after each turn's end
+  (``on_session_end``).
+- The span: each record carries the ``trace_id`` and ``span_id`` of the span it belongs to
+  (``plugin/tracing.py``): its model attempt or tool call, else its Session's latest turn. One
+  user message is one trace. An auxiliary call keeps the span it began in.
 
 Telemetry never waits on the agent's path: a hook only enqueues. The writer's thread is a daemon,
 and Hermes ends the gateway with ``os._exit``, so any exit loses what the writer still had queued.
@@ -38,12 +40,14 @@ import uuid
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
+from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from research_core.agent_telemetry import (
     ContextPart,
     Producer,
+    PromptFile,
     PromptSection,
     TelemetryWriter,
     hermes_redactor,
@@ -51,9 +55,10 @@ from research_core.agent_telemetry import (
     stream_path,
 )
 from research_core.agent_telemetry.encoder import message_text
-from research_core.plugin.executor import hermes_call_ids
 from research_core.plugin.repeats import refusal_of
-from research_core.plugin.runs import parents, run_of
+
+if TYPE_CHECKING:
+    from research_core.plugin.tracing import Traces
 
 GATEWAY_WRITER = "gateway"
 # Auxiliary calls outside a turn belong to no Session, and a manifest must name one.
@@ -69,6 +74,9 @@ _SEAM_POLL = re.compile(
     r'\S+ \[[^\]]*\] "GET /p/[^/\s]+/v1/runs/[^/\s?]+ HTTP/[\d.]+" 200 \S+ "[^"]*" '
     r'"Python-urllib/[\d.]+"'
 )
+
+# What names the span a record of a Session belongs to: ``(session, api_request_id, tool_call_id)``.
+Correlate = Callable[[str, str | None, str | None], dict[str, str]]
 
 _writer_lock = threading.Lock()
 _writer: TelemetryWriter | None = None
@@ -216,9 +224,11 @@ def _milliseconds(start: Any, end: Any) -> float | None:
 class GatewayCapture:
     """The hooks of one profile, writing through the gateway's one writer."""
 
-    def __init__(self, writer: TelemetryWriter, profile: str) -> None:
+    def __init__(self, writer: TelemetryWriter, profile: str, correlate: Correlate) -> None:
+        """``correlate`` names the span a Session's record belongs to: ``Traces.correlation``."""
         self._writer = writer
         self._profile = profile
+        self._correlate = correlate
         self._started = time.time()
         # All by live Hermes Session. One dict operation at a time needs no lock here.
         self._requests: dict[str, Mapping[str, Any]] = {}
@@ -233,19 +243,15 @@ class GatewayCapture:
         self._turn_parts: dict[str, list[ContextPart]] = {}
         self._reasoning: dict[str, list[str]] = defaultdict(list)
         self._committed: dict[str, int] = {}
-        # The run a Session's current turn belongs to, as its requests found it: the admission can
-        # leave ``started`` before ``on_session_end`` reads the turn's committed rows.
-        self._turn_run: dict[str, str | None] = {}
-        # The run each Session's latest turn belongs to, bound when the turn starts: the title call
-        # Hermes starts then can end after the run does. And the run each auxiliary call is in.
-        self._spawn_run: dict[str, str | None] = {}
-        self._call_run: dict[str, str | None] = {}
+        # When each Session's last turn ended, as its hook saw it: the next turn's rows come after.
+        self._turn_ended: dict[str, float] = {}
+        # The span each auxiliary call began in: a title call can end after its turn does.
+        self._call_trace: dict[str, dict[str, str]] = {}
         # Compaction moves a Session to a new live ID; records keep naming the one it started with.
         self._first_session: dict[str, str] = {}
 
     def hooks(self) -> dict[str, Callable[..., None]]:
         return {
-            "pre_llm_call": self.pre_llm_call,
             "pre_api_request": self.pre_api_request,
             "post_api_request": self.post_api_request,
             "api_request_error": self.api_request_error,
@@ -264,14 +270,24 @@ class GatewayCapture:
             "subagent_stop": self.subagent_stop,
         }
 
-    def _ids(self, session_id: str | None, **fields: Any) -> dict[str, Any]:
-        """The fields every record of a Session shares. ``None`` and empty ones are left out."""
+    def _ids(
+        self, session_id: str | None, *, trace: Mapping[str, str] | None = None, **fields: Any
+    ) -> dict[str, Any]:
+        """The fields every record of a Session shares. ``None`` and empty ones are left out.
+        ``trace_id`` and ``span_id`` name the span the record belongs to (``trace``, else the
+        Session's attempt, tool call or turn), and a record with none has neither."""
         live = session_id or None
+        if trace is None:
+            trace = (
+                self._correlate(live, fields.get("api_request_id"), fields.get("tool_call_id"))
+                if live
+                else {}
+            )
         known = {
             "profile": self._profile,
             "session_id": self._first_session.get(live, live) if live else None,
             "hermes_session_id": live,
-            "run_id": run_of(live),
+            **trace,
             **fields,
         }
         return {name: value for name, value in known.items() if value not in (None, "")}
@@ -299,22 +315,18 @@ class GatewayCapture:
             return []
         from hermes_constants import get_hermes_home
 
-        soul = Path(get_hermes_home()) / "SOUL.md"
-        sources = [
-            ("soul", soul.read_text(encoding="utf-8") if soul.exists() else ""),
-            *(("plugin_sections", text) for text in _plugin_sections[session_id].values()),
+        plugin = [("plugin_sections", text) for text in _plugin_sections[session_id].values()]
+        # SOUL is read on the writer's thread; a refresh can change it while the gateway runs.
+        return [
+            PromptFile("soul", str(Path(get_hermes_home()) / "SOUL.md")),
+            *prompt_sections(message_text(messages[0]) or "", plugin),
         ]
-        return prompt_sections(message_text(messages[0]) or "", sources)
 
     # Model requests and replies.
 
     def keep_request(self, request: Mapping[str, Any], session_id: str = "", **_: Any) -> None:
         """``llm_request`` middleware that changes nothing: the whole request, for the hook."""
         self._requests[session_id] = request
-
-    def pre_llm_call(self, session_id: str = "", **_: Any) -> None:
-        """A turn starts, before Hermes starts the calls (title, compression) that belong to it."""
-        self._spawn_run[session_id] = run_of(session_id or None)
 
     def pre_api_request(
         self,
@@ -334,8 +346,6 @@ class GatewayCapture:
         ids = self._ids(
             session_id, turn_id=turn_id, hermes_task_id=task_id, api_request_id=api_request_id
         )
-        self._turn_run[session_id] = ids.get("run_id")
-        self._spawn_run[session_id] = ids.get("run_id")
         self._writer.capture_operation(
             "model_request",
             "started",
@@ -411,7 +421,11 @@ class GatewayCapture:
                 tool_name=message.get("name"),
                 tool_call_id=call,
                 hermes_message_id=None if row_id is None else str(row_id),
-                **{key: value for key, value in ids.items() if key != "api_request_id"},
+                # The tool call's span, not the request's that carries its result.
+                **{
+                    **{key: value for key, value in ids.items() if key != "api_request_id"},
+                    **self._correlate(session_id, None, call),
+                },
             )
 
     def post_api_request(
@@ -537,15 +551,16 @@ class GatewayCapture:
         self, aux_task: str, started_at: Any, session_id: str, *, starting: bool
     ) -> tuple[dict[str, Any], str, str]:
         """The pair shares a start time and nothing else that identifies one attempt. A call is in
-        the run its Session's turn was in when the call began, even if it ends after that run."""
+        the span its Session was in when the call began, even if it ends after that span."""
         task = _name(aux_task) or "unknown"
         attempt_id = f"aux-{task}-{int((started_at or 0) * 1_000_000)}"
         if starting:
-            self._call_run[attempt_id] = self._spawn_run.get(session_id)
-            run_id = self._call_run[attempt_id]
+            trace = self._call_trace[attempt_id] = (
+                self._correlate(session_id, None, None) if session_id else {}
+            )
         else:
-            run_id = self._call_run.pop(attempt_id, None)
-        ids = self._ids(session_id, native_event_type=task, run_id=run_id)
+            trace = self._call_trace.pop(attempt_id, {})
+        ids = self._ids(session_id, trace=trace, native_event_type=task)
         return ids, attempt_id, ids.get("session_id", NO_SESSION)
 
     def pre_auxiliary_call(
@@ -738,7 +753,17 @@ class GatewayCapture:
         for call in self._turn_calls.pop(session_id, ()):
             self._attempts.pop(call, None)
             self._open_attempt.pop(call, None)
-        self._capture_commits(session_id, self._turn_run.pop(session_id, None))
+        if session_id:
+            from hermes_constants import get_hermes_home
+
+            ids = self._ids(session_id)
+            db = Path(get_hermes_home()) / "state.db"
+            # Hermes stamps a row when it commits it, so the turn's rows are those since the last
+            # turn's end, up to now. Bounding both ends here means a read the full queue dropped
+            # leaves those rows out, and never hands them to the next turn's span.
+            after = self._turn_ended.get(session_id, self._started)
+            self._turn_ended[session_id] = until = time.time()
+            self._writer.defer(partial(self._capture_commits, db, session_id, ids, after, until))
         self._writer.capture_operation(
             "turn",
             "ended",
@@ -747,27 +772,24 @@ class GatewayCapture:
             **self._ids(session_id, turn_id=turn_id, hermes_task_id=task_id),
         )
 
-    def _capture_commits(self, session_id: str, run_id: str | None) -> None:
-        """Each row of the Session that Hermes committed since the last turn's end, or since this
-        process started. ``occurred_at`` is the row's own timestamp. The copy Hermes keeps of a row
-        it prunes (``compacted``) and its ``session_meta`` notes are no messages of the Session."""
-        from hermes_constants import get_hermes_home
-
-        db = Path(get_hermes_home()) / "state.db"
-        if not session_id or not db.exists():
+    def _capture_commits(
+        self, db: Path, session_id: str, ids: dict[str, Any], after: float, until: float
+    ) -> None:
+        """On the writer's thread: each row of the Session that Hermes committed after the last
+        turn's end, or after this process started (``after``), until this turn's end (``until``).
+        ``occurred_at`` is the row's own timestamp. The copy Hermes keeps of a row it prunes
+        (``compacted``) and its ``session_meta`` notes are no messages of the Session."""
+        if not db.exists():
             return
         with closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)) as connection:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(
                 "SELECT id, role, content, tool_call_id, tool_calls, tool_name, timestamp, "
                 "finish_reason, reasoning_content FROM messages "
-                "WHERE session_id = ? AND id > ? AND timestamp >= ? AND NOT compacted "
-                "AND role != 'session_meta' ORDER BY id",
-                (session_id, self._committed.get(session_id, 0), self._started),
+                "WHERE session_id = ? AND id > ? AND timestamp >= ? AND timestamp <= ? "
+                "AND NOT compacted AND role != 'session_meta' ORDER BY id",
+                (session_id, self._committed.get(session_id, 0), after, until),
             ).fetchall()
-        ids = self._ids(session_id)
-        if run_id is not None:
-            ids["run_id"] = run_id
         for row in rows:
             self._committed[session_id] = row["id"]
             message = {name: row[name] for name in _ROW_TEXT_FIELDS if row[name]}
@@ -792,8 +814,6 @@ class GatewayCapture:
         child_session_id: str | None = None,
         **_: Any,
     ) -> None:
-        if parent_session_id and child_session_id:
-            parents[child_session_id] = parent_session_id
         self._writer.capture_operation(
             "subagent",
             "started",
@@ -815,7 +835,6 @@ class GatewayCapture:
             duration_ms=duration_ms,
             **self._ids(child_session_id, parent_session_id=parent_session_id),
         )
-        parents.pop(child_session_id or "", None)
 
 
 class DiagnosticsHandler(logging.Handler):
@@ -832,6 +851,12 @@ class DiagnosticsHandler(logging.Handler):
     def __init__(self, writer: TelemetryWriter) -> None:
         super().__init__(logging.INFO)
         self._writer = writer
+        # Imported here, when the plugin registers, not on a logging thread's first record.
+        from opentelemetry import trace
+
+        from research_core.telemetry import correlation
+
+        self._span_ids = lambda: correlation(trace.get_current_span())
 
     def emit(self, record: logging.LogRecord) -> None:
         if (
@@ -852,6 +877,8 @@ class DiagnosticsHandler(logging.Handler):
                 profile=Path(home).name if home else None,
                 session_id=session or None,
                 details=_numbers(line=record.lineno),
+                # The span the logging thread is in, as Datadog joins a log to its trace.
+                **self._span_ids(),
             )
         except Exception:  # The logging module's own way to report a handler's failure.
             self.handleError(record)
@@ -868,7 +895,12 @@ def _gateway_writer() -> TelemetryWriter:
                 Producer.for_process(GATEWAY_WRITER),
                 redactor=redactor,
             )
-            observed.bind(_writer, hermes_call_ids)
+            from opentelemetry import trace
+
+            from research_core.telemetry import correlation
+
+            # A store event names the span its commit happened in: a tool's, on its handler.
+            observed.bind(_writer, lambda: correlation(trace.get_current_span()))
             # Hermes's stderr handler writes JSON lines from here on, through the same scanner.
             # Imported here: this module's import needs the standard library alone.
             from research_core import telemetry
@@ -887,7 +919,9 @@ def _gateway_writer() -> TelemetryWriter:
         return _writer
 
 
-def register_capture(ctx: Any) -> Callable[[str, Any, Sequence[tuple[str, str]]], None] | None:
+def register_capture(
+    ctx: Any, traces: Traces
+) -> Callable[[str, Any, Sequence[tuple[str, str]]], None] | None:
     """Register every hook and the request middleware, and return where ``plugin/turn.py``
     reports what it adds to a turn.
 
@@ -898,7 +932,7 @@ def register_capture(ctx: Any) -> Callable[[str, Any, Sequence[tuple[str, str]]]
         writer = _gateway_writer()
     except ImportError:
         return None
-    capture = GatewayCapture(writer, ctx.profile_name)
+    capture = GatewayCapture(writer, ctx.profile_name, traces.correlation)
     for hook_name, callback in capture.hooks().items():
         ctx.register_hook(hook_name, callback)
     # Last of the plugin's llm_request middleware (``register.py`` calls this after the others), so

@@ -62,8 +62,3 @@ class LogStream:
             self._unavailable = True
             if not isinstance(error, FileNotFoundError):
                 logger.warning("telemetry: cannot open the stream (%s)", type(error).__name__)
-
-    def close(self) -> None:
-        if self._descriptor is not None:
-            os.close(self._descriptor)
-            self._descriptor = None

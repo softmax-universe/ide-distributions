@@ -3,35 +3,61 @@
 Native callbacks can arrive on different workers, so parent contexts are passed explicitly.
 No prompts, arguments, results or exception messages are recorded. Observed callback bounds
 avoid Hermes's cumulative retry clock. Missing terminal hooks never imply completion.
+
+One user message is one trace. A turn's ``invoke_agent`` span is a child of the message's
+admission (``bind_origin``, from ``plugin/messages.py``), so every Hermes turn that works on the
+message, including one that resumes it, joins the message's trace. The admission is known only at
+the turn's first model request, so the span starts then, with the turn's own start time. A turn
+with no admission (background work) is a trace of its own, and a delegated child's turn is a child
+of its parent's turn.
 """
 
 from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
 
 from opentelemetry import trace
+from opentelemetry.context import Context
 from opentelemetry.trace import Span, SpanKind, StatusCode
 
 from research_core import telemetry
+from research_core.telemetry import correlation
 from research_core.tools.catalog import Role
 
 
 @dataclass
 class Turn:
-    span: Span
     session_id: str
     turn_id: str
+    attributes: dict[str, Any]
+    started_ns: int
+    span: Span | None = None
     complete: bool = True
     model_attempts: int = 0
     attempts: dict[str, Span] = field(default_factory=dict)
     tools: dict[str, Span] = field(default_factory=dict)
+    tool_names: dict[str, str] = field(default_factory=dict)
+    # Every attempt and tool span the turn had, ended or not, for the records that name them.
+    spans: dict[str, Span] = field(default_factory=dict)
     tool_calls: int = 0
     tool_failures: int = 0
+
+    def start(self, parent: Context | None) -> Span:
+        """The turn's span, started once: under ``parent``, or as a trace of its own."""
+        if self.span is None:
+            self.span = telemetry.tracer().start_span(
+                "invoke_agent",
+                context=parent,
+                attributes=self.attributes,
+                start_time=self.started_ns,
+            )
+        return self.span
 
     def count(self) -> None:
         self.span.set_attributes(
@@ -72,13 +98,71 @@ def native_error_type(status: str, error_type: str | None, result: Any) -> str |
     return error_type
 
 
+class Traces:
+    """The turns of one profile, by Hermes's turn ID, and the calls a handler and a record need."""
+
+    def __init__(self, role: Role) -> None:
+        self.role = role
+        self.lock = threading.Lock()
+        self.turns: dict[str, Turn] = {}
+        # Each Session's latest turn, also after it ended: records of a turn are written after its
+        # end too (its committed rows), and an auxiliary call can end after the turn does.
+        self.latest: dict[str, Turn] = {}
+
+    def session_turn(self, session_id: str) -> Turn | None:
+        """The Session's running turn once its span started. Hermes invokes registered tool
+        handlers on isolated workers, and the coordinator permits one active turn per Session."""
+        with self.lock:
+            return next(
+                (
+                    turn
+                    for turn in self.turns.values()
+                    if turn.session_id == session_id and turn.span is not None
+                ),
+                None,
+            )
+
+    def bind_origin(self, session_id: str, origin: Context) -> Span | None:
+        """The Session's running turn joins the trace of the message it works on, at its first
+        model request. A later request finds the span started and changes nothing."""
+        with self.lock:
+            turn = next((t for t in self.turns.values() if t.session_id == session_id), None)
+            return None if turn is None else turn.start(origin)
+
+    def tool_call(self, session_id: str, tool_name: str) -> tuple[Span, str] | None:
+        """The native call a handler of ``tool_name`` serves: the one such call open in the
+        Session's turn. Hermes hands a handler no call ID, so two open calls of one tool name say
+        nothing about which is whose."""
+        with self.lock:
+            turn = next((t for t in self.turns.values() if t.session_id == session_id), None)
+            if turn is None:
+                return None
+            open_calls = [call for call, name in turn.tool_names.items() if name == tool_name]
+            if len(open_calls) != 1:
+                return None
+            return turn.tools[open_calls[0]], open_calls[0]
+
+    def correlation(
+        self, session_id: str, api_request_id: str | None = None, tool_call_id: str | None = None
+    ) -> dict[str, str]:
+        """The span a record of the Session belongs to: its model attempt or tool call, else the
+        Session's latest turn. None before that turn's span starts."""
+        with self.lock:
+            turn = self.latest.get(session_id)
+            if turn is None or turn.span is None:
+                return {}
+            span = turn.spans.get(tool_call_id or "") or turn.spans.get(api_request_id or "")
+            return correlation(span or turn.span)
+
+
 def make_instrumentation(
     role: Role,
-) -> tuple[dict[str, Callable[..., None]], Callable[[str], Turn | None]]:
-    turns: dict[str, Turn] = {}
-    lock = threading.Lock()
+) -> tuple[dict[str, Callable[..., None]], Traces]:
+    traces = Traces(role)
+    turns, lock = traces.turns, traces.lock
 
     def incomplete(turn: Turn, reason: str) -> None:
+        turn.start(None)
         turn.count()
         for current in (*turn.attempts.values(), *turn.tools.values(), turn.span):
             current.set_attributes({"observation.complete": False, "observation.reason": reason})
@@ -87,6 +171,7 @@ def make_instrumentation(
 
     def discard_session(*, session_id: str, reason: str, **_: Any) -> None:
         with lock:
+            traces.latest.pop(session_id, None)
             for turn_id, turn in list(turns.items()):
                 if turn.session_id == session_id:
                     incomplete(turn, reason)
@@ -97,6 +182,7 @@ def make_instrumentation(
         session_id: str,
         task_id: str,
         turn_id: str,
+        parent_session_id: str = "",
         conversation_history: list | None = None,
         **_: Any,
     ) -> None:
@@ -108,9 +194,10 @@ def make_instrumentation(
             if len(turns) >= 256:
                 oldest = next(iter(turns))
                 incomplete(turns.pop(oldest), "tracking_capacity")
-            current = telemetry.tracer().start_span(
-                "invoke_agent",
-                attributes={
+            turn = Turn(
+                session_id,
+                turn_id,
+                {
                     "gen_ai.operation.name": "invoke_agent",
                     "gen_ai.agent.name": role,
                     "session.id": session_id,
@@ -119,8 +206,19 @@ def make_instrumentation(
                     "observation.boundary": "pre_llm_call_to_session_end",
                     "gen_ai.turn.model_calls": 0,
                 },
+                time.time_ns(),
             )
-            turns[turn_id] = Turn(current, session_id, turn_id)
+            parent = next(
+                (t for t in turns.values() if t.session_id == parent_session_id and t.span), None
+            )
+            if parent is not None:
+                # A delegated child works inside its parent's turn, so it is in that trace.
+                turn.start(trace.set_span_in_context(parent.span))
+            turns[turn_id] = turn
+            traces.latest.pop(session_id, None)
+            traces.latest[session_id] = turn
+            if len(traces.latest) > 1024:
+                del traces.latest[next(iter(traces.latest))]
 
     def pre_api_request(
         *,
@@ -134,18 +232,22 @@ def make_instrumentation(
             if turn_id not in turns:
                 return
             turn = turns[turn_id]
+            # ``bind_origin`` ran first when the turn works on a client's message.
+            span = turn.start(None)
             turn.model_attempts += 1
-            turn.span.set_attribute("gen_ai.turn.model_calls", turn.model_attempts)
-            turn.attempts[api_request_id] = telemetry.tracer().start_span(
-                "chat",
-                kind=SpanKind.CLIENT,
-                context=trace.set_span_in_context(turn.span),
-                attributes={
-                    "gen_ai.operation.name": "chat",
-                    "gen_ai.agent.name": role,
-                    "request.id": api_request_id,
-                    "retry.count": retry_count,
-                },
+            span.set_attribute("gen_ai.turn.model_calls", turn.model_attempts)
+            turn.attempts[api_request_id] = turn.spans[api_request_id] = (
+                telemetry.tracer().start_span(
+                    "chat",
+                    kind=SpanKind.CLIENT,
+                    context=trace.set_span_in_context(span),
+                    attributes={
+                        "gen_ai.operation.name": "chat",
+                        "gen_ai.agent.name": role,
+                        "request.id": api_request_id,
+                        "retry.count": retry_count,
+                    },
+                )
             )
 
     def model_done(
@@ -169,7 +271,7 @@ def make_instrumentation(
             current = turn.attempts.pop(api_request_id, None)
             if current is None:
                 turn.complete = False
-                turn.span.add_event("observation.missing_start", {"kind": "model"})
+                turn.start(None).add_event("observation.missing_start", {"kind": "model"})
                 return
             current.set_attributes(
                 {"gen_ai.request.model": model, "gen_ai.provider.name": provider}
@@ -197,14 +299,15 @@ def make_instrumentation(
                 current.set_status(StatusCode.ERROR)
             current.end()
 
-    def pre_tool_call(*, turn_id: str, tool_call_id: str, **_: Any) -> None:
+    def pre_tool_call(*, turn_id: str, tool_call_id: str, tool_name: str = "", **_: Any) -> None:
         with lock:
             if turn_id in turns:
                 turn = turns[turn_id]
                 turn.tool_calls += 1
-                turn.tools[tool_call_id] = telemetry.tracer().start_span(
+                turn.tool_names[tool_call_id] = tool_name
+                turn.tools[tool_call_id] = turn.spans[tool_call_id] = telemetry.tracer().start_span(
                     "execute_tool",
-                    context=trace.set_span_in_context(turn.span),
+                    context=trace.set_span_in_context(turn.start(None)),
                     attributes={
                         "gen_ai.operation.name": "execute_tool",
                         "gen_ai.agent.name": role,
@@ -235,9 +338,10 @@ def make_instrumentation(
                 if failure is not None:
                     turn.tool_failures += 1
                 current = turn.tools.pop(tool_call_id, None)
+                turn.tool_names.pop(tool_call_id, None)
                 if current is None:
                     turn.complete = False
-                    turn.span.add_event("observation.missing_start", {"kind": "tool"})
+                    turn.start(None).add_event("observation.missing_start", {"kind": "tool"})
         # Logged even with no span to end: this line replaces Hermes's own, which held the output.
         telemetry.finish_tool_call(
             current or trace.INVALID_SPAN,
@@ -269,9 +373,10 @@ def make_instrumentation(
             if turn.attempts or turn.tools or not turn.complete:
                 incomplete(turn, "missing_callbacks")
                 return
+            span = turn.start(None)  # A turn with no model request, such as a vetoed one.
             turn.count()
-            turn.span.set_attribute("observation.complete", True)
-            turn.span.set_attribute(
+            span.set_attribute("observation.complete", True)
+            span.set_attribute(
                 "outcome",
                 "interrupted"
                 if interrupted
@@ -280,14 +385,8 @@ def make_instrumentation(
                 else "failed",
             )
             if failed or interrupted or not completed:
-                turn.span.set_status(StatusCode.ERROR)
-            turn.span.end()
-
-    def session_turn(session_id: str) -> Turn | None:
-        # Hermes invokes registered tool handlers on isolated workers. The coordinator permits
-        # exactly one active turn per native session; bind that turn explicitly on the worker.
-        with lock:
-            return next((turn for turn in turns.values() if turn.session_id == session_id), None)
+                span.set_status(StatusCode.ERROR)
+            span.end()
 
     hooks = {
         "pre_llm_call": pre_llm_call,
@@ -302,4 +401,4 @@ def make_instrumentation(
             for name in ("on_session_finalize", "on_session_reset", "on_session_delete")
         },
     }
-    return hooks, session_turn
+    return hooks, traces

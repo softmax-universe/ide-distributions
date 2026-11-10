@@ -48,7 +48,6 @@ import json
 import logging
 import os
 import shutil
-import signal
 import socket
 import subprocess
 import threading
@@ -58,7 +57,6 @@ from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
-from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -85,7 +83,7 @@ from research_core.store.actors import Actor
 from research_core.store.db import Store, change_version, wait_for_change
 from research_core.store.errors import NotFound, StoreError
 from research_core.store.registry import GOAL, TASK, record_from_row
-from research_core.telemetry import process_context, propagator, span
+from research_core.telemetry import correlation, process_context, propagator, span
 from research_core.tools.ui import coworld_conversation, pointer_token
 from research_core.watcher import context, hermes_api
 from research_core.watcher.heartbeat import HAS_WORK_REASONS_KEY, HEARTBEAT_KEY
@@ -100,7 +98,6 @@ KEEPALIVE_S = 10.0  # an SSE comment keeps an idle connection open through proxi
 STREAM_BATCH = 500
 DEFAULT_PORT = 8650
 SERVE_WRITER = "research-serve"
-TELEMETRY_STOP_FLUSH_S = 3.0  # ``image/processes.py`` gives this process ten seconds to stop
 WATCHER_INTERVAL_S = 60.0
 RUN_POLL_INTERVAL_S = 1.0
 # How Hermes describes its prompt before a file-tool write to an AGENTS.md (``tools/
@@ -277,7 +274,8 @@ class SeamServer:
         self.telemetry = TelemetryWriter(
             stream_path(), Producer.for_process(SERVE_WRITER, self.env)
         )
-        observed.bind(self.telemetry)
+        # A record names the span it is written in, such as the request admitting a message.
+        observed.bind(self.telemetry, lambda: correlation(trace.get_current_span()))
         # Initialize the schema before the dispatcher and HTTP handlers can open it concurrently.
         with Store.open(self.ws.store_path, kind="workspace") as store:
             self.coordinator.reconcile_inputs(store)
@@ -396,12 +394,6 @@ class SeamServer:
         self.stopping.set()
         self._http.shutdown()
         self._http.server_close()
-        self.stop_telemetry()
-
-    def stop_telemetry(self) -> None:
-        """Write out what the queue holds, within a bound. Safe to call more than once."""
-        observed.unbind(self.telemetry)
-        self.telemetry.close(TELEMETRY_STOP_FLUSH_S)
 
     # --- stores ---------------------------------------------------------------------------
 
@@ -1465,11 +1457,18 @@ class _Handler(BaseHTTPRequestHandler):
         }
         unrecorded = path in RECORDED_ROUTES
         body: dict = {}
+        request_span = trace.INVALID_SPAN
+
+        def record(*args: Any, **kwargs: Any) -> None:
+            """The request's record names the request's span, which its message's trace holds."""
+            with trace.use_span(request_span, end_on_exit=False):
+                seam.record_request(path, self.headers, body, *args, **kwargs)
+
         try:
             handler = routes.get(path)
             if handler is None:
                 raise Refused(HTTPStatus.NOT_FOUND, f"no route POST {path}")
-            with span("workspace.http", context=propagator.extract(self.headers)):
+            with span("workspace.http", context=propagator.extract(self.headers)) as request_span:
                 body = self._body()
                 result = handler(body)
             status = (
@@ -1479,11 +1478,10 @@ class _Handler(BaseHTTPRequestHandler):
             )
             if unrecorded:
                 unrecorded = False  # A reply that cannot be written is not a second outcome.
-                seam.record_request(path, self.headers, body, status, result=result)
+                record(status, result=result)
             self._json(status, result)
         except Exception as error:  # noqa: BLE001 - every failure becomes a JSON error
-            record = partial(seam.record_request, path, self.headers, body) if unrecorded else None
-            self._error(error, record)
+            self._error(error, record if unrecorded else None)
 
     # -- bodies and replies -----------------------------------------------------------------
 
@@ -1652,7 +1650,6 @@ def run(args: argparse.Namespace) -> int:
             env=dict(env),
         )
     print(f"research serve: {server.url} (profile {args.profile}, Hermes {hermes.base_url})")
-    signal.signal(signal.SIGTERM, _flush_then_die(server))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -1660,17 +1657,6 @@ def run(args: argparse.Namespace) -> int:
     finally:
         server.shutdown()
     return 0
-
-
-def _flush_then_die(server: SeamServer) -> Callable[[int, Any], None]:
-    """SIGTERM has always ended this process at once, and it still does, just after the flush."""
-
-    def stop(signum: int, _frame: Any) -> None:
-        server.stop_telemetry()
-        signal.signal(signum, signal.SIG_DFL)
-        os.kill(os.getpid(), signum)
-
-    return stop
 
 
 def main(argv: list[str] | None = None) -> int:

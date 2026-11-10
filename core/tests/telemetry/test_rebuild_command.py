@@ -25,6 +25,7 @@ from .fake_datadog import FakeDatadog
 
 SYSTEM = "You are a researcher. Be careful."
 TOOL = {"type": "function", "function": {"name": "read_file", "parameters": {}}}
+TRACE = "4bf92f3577b34da6a3ce929d0e0e4736"
 LONG_RESULT = 'café 日本語 😀 "quoted"\n' * 2000
 USAGE = {"input_tokens": 1000, "output_tokens": 7}
 
@@ -53,7 +54,7 @@ def two_requests(writer, session: str = "ses_1", prefix: str = "") -> list[dict]
         "tool_calls": [call],
     }
     result = {"role": "tool", "tool_call_id": call["id"], "content": LONG_RESULT}
-    ids = {"session_id": session, "provider": "moonshot", "run_id": f"{prefix}run_1"}
+    ids = {"session_id": session, "provider": "moonshot", "trace_id": f"{prefix}trace_1"}
     bodies = [request_body([user]), request_body([user, assistant, result])]
     for number, body in enumerate(bodies, start=1):
         attempt = f"{prefix}att_{number}"
@@ -79,7 +80,7 @@ def two_requests(writer, session: str = "ses_1", prefix: str = "") -> list[dict]
             reply,
             session_id=session,
             model_attempt_id=attempt,
-            run_id=ids["run_id"],
+            trace_id=ids["trace_id"],
             native_event_type="stream",
             outcome="completed",
             usage=USAGE if number == 1 else None,
@@ -88,7 +89,7 @@ def two_requests(writer, session: str = "ses_1", prefix: str = "") -> list[dict]
         "tool",
         "completed",
         session_id=session,
-        run_id=ids["run_id"],
+        trace_id=ids["trace_id"],
         tool_name="read_file",
         tool_call_id=call["id"],
         api_request_id=f"{prefix}call:api:1",
@@ -99,7 +100,7 @@ def two_requests(writer, session: str = "ses_1", prefix: str = "") -> list[dict]
         "tool",
         "result",
         session_id=session,
-        run_id=ids["run_id"],
+        trace_id=ids["trace_id"],
         tool_call_id=call["id"],
         hermes_message_id="3",
         content={"result": LONG_RESULT},
@@ -296,7 +297,7 @@ def test_a_restart_sends_a_full_manifest_and_everything_it_lists(
             model_attempt_id=f"att_{number}",
             native_event_type="stream",
         )
-        assert writer.close(5.0)
+        assert writer.flush(5.0)
     records = stored_records(stream_file)
     chunks: dict[str, set] = {"gateway-1": set(), "gateway-2": set()}
     for record in records:
@@ -331,7 +332,7 @@ def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
         writer.capture_operation(
             "admission", "accepted", request_id=request_id, admission_id="adm_1"
         )
-    event("client.accepted")
+    event("client.accepted", trace_id=TRACE)
     event("client.started", run_id="run_1")
     event("client.waiting", run_id="run_1", reason="provider_unavailable")
     event("client.resumed")
@@ -345,8 +346,8 @@ def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
         admission_id="adm_1",
         task_id="T-3",
     )
-    # A record with only the run, as an approval has.
-    writer.capture_operation("approval", "requested", run_id="run_2", content={"command": "ls"})
+    # A record with only the message's trace, as a store event in a tool's process has.
+    writer.capture_operation("approval", "requested", trace_id=TRACE, content={"command": "ls"})
     sent(writer, stream_file, datadog)
     report = rebuild_session(search_of(datadog), "ses_1")
     admitted = [e for e in report["events"] if e.get("admission_id") == "adm_1"]
@@ -356,6 +357,22 @@ def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
     runs = [e["run_id"] for e in admitted if e.get("native_event_type") == "client.started"]
     assert runs == ["run_1", "run_2"]
     assert next(e for e in admitted if "assignment_id" in e)["task_id"] == "T-3"
+    assert any(e.get("command") == "ls" for e in report["events"])
+
+
+def test_a_retained_record_from_before_traces_still_joins_by_its_run(writer, stream_file, datadog):
+    """Records written before they named their trace named their run, and Datadog keeps them for
+    15 days: an approval with only its run is still found through that run."""
+    writer.capture_operation(
+        "store_event",
+        "committed",
+        native_event_type="client.started",
+        session_id="ses_1",
+        run_id="run_old",
+    )
+    writer.capture_operation("approval", "requested", run_id="run_old", content={"command": "ls"})
+    sent(writer, stream_file, datadog)
+    report = rebuild_session(search_of(datadog), "ses_1")
     assert any(e.get("command") == "ls" for e in report["events"])
 
 
@@ -427,12 +444,12 @@ def test_a_datadog_failure_is_could_not_start_and_says_so_in_one_line(datadog, t
         assert len(done.stderr.strip().splitlines()) == 1, done.stderr
 
 
-def committed(writer, row, kind="tool", run="run_1", **fields):
+def committed(writer, row, kind="tool", trace="trace_1", **fields):
     writer.capture_operation(
         "message",
         "committed",
         session_id="ses_1",
-        run_id=run,
+        trace_id=trace,
         kind=kind,
         hermes_message_id=row,
         **fields,
@@ -440,20 +457,20 @@ def committed(writer, row, kind="tool", run="run_1", **fields):
 
 
 def asked(writer, attempt, reply):
-    """One model call of ``run_1``, and the reply it got."""
+    """One model call of ``trace_1``, and the reply it got."""
     writer.capture_request(
         request_body([{"role": "user", "content": "Go"}]),
         model_attempt_id=attempt,
         native_event_type="stream",
         session_id="ses_1",
         provider="moonshot",
-        run_id="run_1",
+        trace_id="trace_1",
     )
     writer.capture_response(
         reply,
         session_id="ses_1",
         model_attempt_id=attempt,
-        run_id="run_1",
+        trace_id="trace_1",
         native_event_type="stream",
     )
 
@@ -479,7 +496,7 @@ def test_a_guard_halt_rebuilds_the_text_hermes_committed_and_not_the_last_reply(
         "tool",
         "result",
         session_id="ses_1",
-        run_id="run_1",
+        trace_id="trace_1",
         tool_call_id="call_1",
         content={"result": "it failed"},
     )
@@ -534,7 +551,7 @@ def test_a_lost_final_text_is_reported_and_no_earlier_reply_takes_its_place(
             "tool",
             "result",
             session_id="ses_1",
-            run_id="run_1",
+            trace_id="trace_1",
             tool_call_id="call_1",
             content={"result": lost},
         )
@@ -593,7 +610,7 @@ def test_a_reused_tool_call_id_does_not_join_two_rows(writer, stream_file, datad
             session_id="ses_1",
             provider="moonshot",
             model_attempt_id=f"att_{number}",
-            run_id="run_1",
+            trace_id="trace_1",
             native_event_type="stream",
         )
     committed(writer, "10", tool_call_id="call_1")
@@ -612,7 +629,7 @@ def _result(writer, row, call, text):
         "tool",
         "result",
         session_id="ses_1",
-        run_id="run_1",
+        trace_id="trace_1",
         tool_call_id=call,
         **({"hermes_message_id": row} if row else {}),
         content={"result": text},
@@ -628,7 +645,7 @@ def test_a_new_row_with_a_reused_call_id_keeps_its_own_result(writer, stream_fil
         session_id="ses_1",
         provider="moonshot",
         model_attempt_id="att_1",
-        run_id="run_1",
+        trace_id="trace_1",
     )
     _result(writer, "10", "call_1", "OLD result")
     committed(writer, "10", tool_call_id="call_1")
@@ -677,11 +694,11 @@ def test_results_with_no_row_id_sharing_a_call_id_stand_in_for_no_row(writer, st
 )
 def test_repeated_text_counts_each_character_once(writer, stream_file, datadog, second_parts):
     """The same text twice in a Session is one digest with two observations of its parts."""
-    fields = {"session_id": "ses_1", "provider": "moonshot", "run_id": "run_1"}
+    fields = {"session_id": "ses_1", "provider": "moonshot", "trace_id": "trace_1"}
     writer.capture_context_parts(
-        "hello", [ContextPart("user_text", "hello")], session_id="ses_1", run_id="run_1"
+        "hello", [ContextPart("user_text", "hello")], session_id="ses_1", trace_id="trace_1"
     )
-    writer.capture_context_parts("hello", second_parts, session_id="ses_1", run_id="run_1")
+    writer.capture_context_parts("hello", second_parts, session_id="ses_1", trace_id="trace_1")
     writer.capture_request(
         {"model": "m", "messages": [{"role": "user", "content": "hello"}]},
         model_attempt_id="att_1",
@@ -714,7 +731,7 @@ def test_what_was_recorded_stays_in_the_report(writer, stream_file, datadog):
         "workspace_tool",
         "completed",
         session_id="ses_1",
-        run_id="run_1",
+        trace_id="trace_1",
         tool_name="goal",
         tool_call_id="call_b",
         duration_ms=12.5,
@@ -743,7 +760,7 @@ def test_what_was_recorded_stays_in_the_report(writer, stream_file, datadog):
 def test_hermes_classification_of_a_failed_attempt_stays_in_the_report(
     writer, stream_file, datadog, home
 ):
-    capture = GatewayCapture(writer, "researcher")
+    capture = GatewayCapture(writer, "researcher", lambda *_: {})
     request = request_body([{"role": "user", "content": "Go"}])
     capture.keep_request(request=request, session_id="ses_1")
     capture.pre_api_request(session_id="ses_1", api_request_id="t:api:1")
@@ -768,7 +785,7 @@ def test_a_failure_before_any_attempt_of_its_call_is_kept_and_the_rest_rebuilds(
     """Hermes reports a call whose request could not be built, so ``pre_api_request`` never
     recorded an attempt of it. Such a failure binds to no other call's attempt, and the rebuild
     keeps it as an event beside the rest of the Session."""
-    capture = GatewayCapture(writer, "researcher")
+    capture = GatewayCapture(writer, "researcher", lambda *_: {})
 
     def unbuilt(call: str) -> None:
         capture.api_request_error(
@@ -812,7 +829,7 @@ def test_a_stream_retried_inside_its_attempt_keeps_the_partial_and_the_final_rep
 ):
     """Hermes retries a broken stream inside one attempt: what the broken one showed and the
     retry's reply share the attempt and the ``response`` stage, and both come back."""
-    capture = GatewayCapture(writer, "researcher")
+    capture = GatewayCapture(writer, "researcher", lambda *_: {})
     capture.keep_request(
         request=request_body([{"role": "user", "content": "Go"}]), session_id="ses_1"
     )
@@ -842,7 +859,7 @@ def test_a_stream_retried_inside_its_attempt_keeps_the_partial_and_the_final_rep
 
 def test_a_users_message_survives_a_kill_during_its_first_call(writer, stream_file, datadog, home):
     """The request is written before the call, so a process killed during it keeps the text."""
-    capture = GatewayCapture(writer, "researcher")
+    capture = GatewayCapture(writer, "researcher", lambda *_: {})
     text = f"My key is {HERMES_STYLE_SECRET}"
     capture.keep_request(request=request_body([{"role": "user", "content": text}]), session_id="s")
     capture.pre_api_request(session_id="s", api_request_id="t:api:1")
@@ -862,7 +879,7 @@ def test_a_users_message_survives_a_kill_during_its_first_call(writer, stream_fi
 def test_a_user_row_joins_its_listing_by_row_id_or_keeps_its_commit(
     writer, stream_file, datadog, home, listed_row, expected
 ):
-    capture = GatewayCapture(writer, "researcher")
+    capture = GatewayCapture(writer, "researcher", lambda *_: {})
     listing = {"role": "user", "content": "What the model got"}
     if listed_row:
         listing["_row_id"] = listed_row

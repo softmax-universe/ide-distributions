@@ -20,12 +20,14 @@ def test_exception_status_never_records_sensitive_exception_text(spans):
 
 def test_native_callbacks_keep_concurrent_turns_and_retry_attempts_separate(monkeypatch, spans):
     active = {"t1", "t2"}
-    hooks, session_turn = tracing.make_instrumentation("researcher")
+    hooks, traces = tracing.make_instrumentation("researcher")
     for turn_id in active:
         hooks["pre_llm_call"](session_id=turn_id, task_id=turn_id, turn_id=turn_id)
-    bound = {turn_id: session_turn(turn_id).span.get_span_context().span_id for turn_id in active}
     for turn_id in active:
         hooks["pre_api_request"](turn_id=turn_id, api_request_id="same", retry_count=0)
+    bound = {
+        turn_id: traces.session_turn(turn_id).span.get_span_context().span_id for turn_id in active
+    }
     hooks["api_request_error"](
         turn_id="t1",
         api_request_id="same",
@@ -79,7 +81,7 @@ def test_both_tool_boundaries_name_the_same_call_and_only_a_short_error_class(
     ``error.type`` read from structured fields, and log one payload-free line each."""
     from research_core.tools.base import ToolContext, run_tool
 
-    hooks, session_turn = tracing.make_instrumentation("researcher")
+    hooks, _ = tracing.make_instrumentation("researcher")
     hooks["pre_llm_call"](session_id="ses_1", task_id="task", turn_id="turn_1")
     hooks["pre_api_request"](turn_id="turn_1", api_request_id="a1", retry_count=0)
     hooks["post_api_request"](turn_id="turn_1", api_request_id="a1", model="m", provider="p")

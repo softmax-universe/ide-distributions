@@ -24,6 +24,7 @@ from research_core.store import settings
 from research_core.store.actors import Actor
 from research_core.store.db import Store, Tx
 from research_core.store.errors import StoreError
+from research_core.telemetry import span, trace_carrier
 
 Origin = Literal[
     "client", "answer", "assignment", "continuation", "planning", "wake", "watcher", "migration"
@@ -258,6 +259,10 @@ def enqueue_in_transaction(
         if row["request"] != json.dumps(request, sort_keys=True):
             raise StoreError(["execution identity already belongs to a different payload"])
         return op_id
+    # The producer's span, as for a message put on a queue: the root of what this input causes,
+    # or a child of the span that admitted it, such as a tool call assigning a Task.
+    with span("workspace.admission", **{"op.id": op_id, "session.id": session_id}):
+        carrier = trace_carrier()
     tx.execute(
         "INSERT INTO client_admissions"
         " (op_id,kind,request,session_id,message,payload,status,created_at,"
@@ -268,7 +273,14 @@ def enqueue_in_transaction(
             json.dumps(request, sort_keys=True),
             session_id,
             text,
-            json.dumps({"input": text, "instructions": instructions, "context": None}),
+            json.dumps(
+                {
+                    "input": text,
+                    "instructions": instructions,
+                    "context": None,
+                    "trace_context": carrier,
+                }
+            ),
             tx.at,
             profile,
             origin,

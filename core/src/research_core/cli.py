@@ -54,14 +54,16 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_usage(sys.stderr)
         return 2
     # A long-running command replaces this writer with its own. Imported here to stay import-light.
-    from research_core.agent_telemetry import observed
+    from opentelemetry import trace
 
-    writer = observed.bind_command(os.environ)
+    from research_core.agent_telemetry import observed
+    from research_core.telemetry import correlation
+
+    writer = observed.bind_command(os.environ, lambda: correlation(trace.get_current_span()))
     try:
         return int(run(args) or 0)
     finally:
         observed.unbind(writer)
-        writer.close(observed.COMMAND_EXIT_FLUSH_S)
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised through subprocesses

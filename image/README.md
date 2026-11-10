@@ -34,9 +34,7 @@ Standalone orchestrator and researcher installations retain their normal plugin 
 
 Agent telemetry goes through the container's own output to the Datadog Agent, and holds content
 ([`docs/agent-telemetry.md`](../docs/agent-telemetry.md)). The [OpenTelemetry](#opentelemetry) spans
-below are separate: payload-free timing on stderr. Their rule that no process exit waits for a
-telemetry flush does not cover agent telemetry, which has its own bounded exit flushes
-([build scope](../docs/designs/datadog-agent-logging-build-scope.md)).
+below are separate: payload-free timing on stderr. No process exit waits for either.
 
 The lifecycle adapter sends replies over the platform's authenticated outbound workspace
 connection. Explicit sleep starts the distribution command asynchronously; status reports

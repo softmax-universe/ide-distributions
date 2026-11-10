@@ -27,6 +27,7 @@ Every line has:
 | `occurred_at` | UTC with three decimals. Datadog's own timestamp is when it read the line |
 | `sequence` | Capture order inside one `source_instance` |
 | `family` | `operation`, `context` or `content` |
+| `trace_id`, `span_id` | On an operation or context line written inside a span: the OpenTelemetry span it belongs to, as 32 and 16 lowercase hex digits, the names and form Datadog uses to join a log to its trace. A line written outside any span has neither |
 
 An `operation` line adds `event_id`, `action`, `stage`, its metadata and `content_refs`:
 
@@ -191,7 +192,7 @@ reader follows `parent_session_id` on the `compaction` records.
 | `tool` / `proposed`                                   | `arguments`                  | One call the model asked for, from the reply Hermes assembled         |
 | `tool` / `completed`, `refused`                       | `arguments`                  | What ran, with `outcome`. The result is on the next one               |
 | `tool` / `result`                                     | `result`                     | The result as the model got it, from the first request that sends it, with its `hermes_message_id` |
-| `message` / `committed`                               | `message`                    | A row of `state.db`, read at the end of each turn (`on_session_end`), with `hermes_message_id`. `occurred_at` is the row's own timestamp. `message` holds the row's `role`, `content`, `tool_calls` and `reasoning_content`, because a turn's last rows reach no later request |
+| `message` / `committed`                               | `message`                    | A row of `state.db`, read on the writer's thread after each turn's end (`on_session_end`), with `hermes_message_id`. `occurred_at` is the row's own timestamp. `message` holds the row's `role`, `content`, `tool_calls` and `reasoning_content`, because a turn's last rows reach no later request |
 | `approval` / `requested`, `decided`                   | `command`, `description`     | A human approval                                                      |
 | `system_prompt` / `built`, `compaction` / `committed` |                              | The prompt was assembled; the history was rewritten                   |
 | `session` / `started`, `turn` / `ended`, `subagent` / `started`, `stopped` | | Lifecycle |
@@ -213,7 +214,7 @@ writer.
 | `action` / `stage`                        | Written by             | Says                                                                                                   |
 | ----------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------ |
 | `admission` / `accepted`, `refused`       | `research serve`       | One POST to a route in `RECORDED_ROUTES` (`serve.py`). Reads such as `GET /snapshot` have none. `native_event_type` names the route. `details.status` is the status. On a refusal, `session_id` is what the client sent, unchecked |
-| `admission` / `bound`                     | gateway                | An admission's native row: `admission_id`, `run_id` from Hermes, `session_id`, `hermes_message_id`     |
+| `admission` / `bound`                     | gateway                | An admission's native row: `admission_id`, `session_id`, `hermes_message_id`, and the turn's span      |
 | `store_event` / `committed`               | whichever process commits | One committed `events` row. `native_event_type` is its kind and `details.store_seq` its `seq`       |
 | `workspace_tool` / `completed`            | the process running the tool | One `run_tool` completion, with `run_tool`'s outcome names, `reason` its span's `error.type` and `turn_id` |
 | `attachment` / `prepared`, `failed`       | `research serve`       | One file's type (`native_event_type`), original `size_bytes` and change (`outcome`), or why it failed  |
@@ -238,19 +239,23 @@ records nothing.
   (`image/aide.py`) it is the JSON-RPC request ID, and a retry keeps it.
 - **A retry:** another `accepted` record with the same `admission_id`, and no second `client.accepted`. Count acceptance from
   that event.
-- **An admission to its runs:** the `store_event` `client.started`, by `admission_id`. There can be several: a held chat has
-  `client.waiting` naming the run that failed (`run_id`, `reason`, `details.resume_after_s`), then `client.resumed`, then
-  `client.started` with the new run, all under one admission. `details.steered` means the input joined a run already going.
-- **A run to its gateway records:** `run_id`, the `request_id` of the Session's started admission in Hermes's `state.db`
-  (`plugin/runs.py`), or its parent Session's for delegated work. A gateway record can come before the seam's
-  `client.started`. Order across processes only by these links, never by `sequence`, which compares only within one
-  `source_instance`. Never take "the Session's latest run": one Session can hold several runs.
-- **Delegated work:** a subagent's records hold the `run_id` of the run that delegated it. `subagent` / `started` names the
-  child Session and its `parent_session_id`.
+- **A message to everything it caused:** `trace_id`. One user message is one trace: the seam's records of its admission
+  and dispatch, and every gateway turn that works on it, including a turn that resumes a held message, whose
+  `invoke_agent` span is a child of the admission's context. A delegated subagent's turn is a child of its parent's turn,
+  so its records are in the parent message's trace. `subagent` / `started` names the child Session and its
+  `parent_session_id`. A turn with no admission (background work) is a trace of its own.
+- **Records from before traces:** a record written before records named their trace names its Hermes run in `run_id`,
+  and Datadog keeps it for 15 days. The rebuild follows `run_id` as it follows `trace_id`, and a tool call ID is unique
+  within the trace, or within the run on such a record.
+- **A record to its step:** `span_id` names the model attempt (`chat`), tool call (`execute_tool`) or turn
+  (`invoke_agent`) span it belongs to. A record written before its turn's span starts, at the turn's first model request,
+  has no `trace_id`: an auxiliary call that begins then, such as a title, is one. Order across processes only by these
+  links, never by `sequence`, which compares only within one `source_instance`.
 - **A worker's successor:** `execution` / `successor`, from `admission_id` to `execution_attempt_id`. A new Session also has
   `parent_session_id` on its `session.started`.
-- **A tool call to what it did:** `tool_call_id`, on `workspace_tool` / `completed` and on the store events of its process or
-  its gateway thread. A durable command's later records have no `tool_call_id`, so follow `command_id` from
+- **A tool call to what it did:** `trace_id` with `tool_call_id`. A distribution tool's handler gets no call ID from Hermes,
+  so `workspace_tool` / `completed` and its store events hold `tool_call_id` only when the turn had one open call of that
+  tool. Otherwise they hold the turn's span, and two concurrent calls of one tool are not told apart. A durable command's later records have no `tool_call_id`, so follow `command_id` from
   `transition.requested`. `task.assigned` holds the first attempt's admission as both `assignment_id` and `admission_id`.
 - **Counting tool calls:** count `tool` / `completed` and `refused`. `workspace_tool` / `completed` is the same call seen from
   inside a distribution tool, with a finer outcome, so it joins by `tool_call_id` and is never added. A subprocess that times

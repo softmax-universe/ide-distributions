@@ -93,9 +93,7 @@ def redactor() -> Redactor:
 
 @pytest.fixture
 def writer(stream_file, producer, redactor) -> Iterator[TelemetryWriter]:
-    instance = TelemetryWriter(stream_file, producer, redactor=redactor)
-    yield instance
-    instance.close(5.0)
+    yield TelemetryWriter(stream_file, producer, redactor=redactor)
 
 
 MESSAGES_TABLE = (

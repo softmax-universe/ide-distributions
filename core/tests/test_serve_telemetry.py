@@ -1,4 +1,4 @@
-"""``research serve`` and its telemetry writer: what happens on a stop."""
+"""``research serve`` and its telemetry writer: what it records, and that a stop waits for none."""
 
 import json
 import os
@@ -10,21 +10,20 @@ from pathlib import Path
 
 import pytest
 
-from research_core import layout, serve
+from research_core import serve
 from research_core.agent_telemetry.stream import STREAM_VARIABLE
 from research_core.client import SeamError
-from research_core.plugin.executor import workspace_process_env
-from research_core.serve import SERVE_WRITER, TELEMETRY_STOP_FLUSH_S
-from research_core.store.db import Store
+from research_core.serve import SERVE_WRITER
 from tests.telemetry.conftest import stored_records
 from tests.telemetry.test_writer import StuckStream
 from tests.test_serve import start_seam
 
 
-def test_a_stop_writes_what_the_queue_holds(tmp_path, stream_file):
+def test_research_serve_names_itself_and_redacts_no_text(tmp_path, stream_file):
     seam = start_seam(tmp_path, coworld=False)
     seam.server.telemetry.capture_operation("admission", "accepted", session_id="ses_1")
     seam.server.shutdown()
+    assert seam.server.telemetry.flush(5.0)
     records = [r for r in stored_records(stream_file) if r["action"] == "admission"]
     assert [record["action"] for record in records] == ["admission"]
     assert records[0]["producer"] == SERVE_WRITER
@@ -47,6 +46,7 @@ def test_a_reply_that_cannot_be_written_records_one_outcome(tmp_path, stream_fil
     with pytest.raises(SeamError):  # The stand-in fails once, so the error reply does get through.
         seam.client.open()
     seam.server.shutdown()
+    assert seam.server.telemetry.flush(5.0)
     outcomes = [
         (record["stage"], record["details"]["status"])
         for record in stored_records(stream_file)
@@ -73,35 +73,12 @@ def _start_serve(tmp_path: Path) -> subprocess.Popen:
     )
 
 
-def test_a_stuck_stream_holds_no_process_past_its_flush_bound(tmp_path, monkeypatch):
-    """A tool that commits still answers, and ``research serve`` still dies on SIGTERM."""
+def test_a_stuck_stream_holds_up_no_stop_of_research_serve(tmp_path, monkeypatch):
+    """``research serve`` still dies at once on SIGTERM with its writer stuck on the stream. A short
+    command writes as it goes, as a process logs to stdout, so it would wait on such a stream."""
     stuck = StuckStream(tmp_path)
     monkeypatch.setenv(STREAM_VARIABLE, str(stuck.path))
     monkeypatch.setenv("PYTHONUNBUFFERED", "1")
-    env = {
-        **os.environ,
-        "IDE_WORKSPACE": str(tmp_path / "tool-workspace"),
-        "IDE_WORKSPACE_ENV": sys.prefix,
-        "IDE_PLATFORM": "fake",
-        "IDE_ROLE": "orchestrator",
-        "IDE_SESSION_ID": "ses_tool",
-    }
-    ws = layout.from_env(env)
-    Store.open(ws.store_path, kind="workspace").close()
-    args = {"action": "update", "key": "max_researchers", "value": 2, "cites": "a test"}
-    started = time.monotonic()
-    done = subprocess.run(
-        [str(ws.venv_python), "-m", "research_core.cli", "tool", "settings"]
-        + ["--args", json.dumps(args)],
-        env=workspace_process_env(env, ws),
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert done.returncode == 0, done.stderr
-    assert json.loads(done.stdout)["ok"] is True
-    assert time.monotonic() - started < 30
-
     process = _start_serve(tmp_path)
     try:
         while "research serve:" not in process.stdout.readline():
@@ -110,15 +87,13 @@ def test_a_stuck_stream_holds_no_process_past_its_flush_bound(tmp_path, monkeypa
         process.send_signal(signal.SIGTERM)
         started = time.monotonic()
         assert process.wait(timeout=30) == -signal.SIGTERM
-        assert time.monotonic() - started < TELEMETRY_STOP_FLUSH_S + 2
+        assert time.monotonic() - started < 2
     finally:
         process.kill()
         process.stdout.close()
 
 
-def test_sigterm_writes_what_the_queue_holds_and_still_ends_the_process_at_once(
-    tmp_path, stream_file
-):
+def test_sigterm_ends_research_serve_at_once_and_every_line_written_parses(tmp_path, stream_file):
     process = _start_serve(tmp_path)
     try:
         # A first line shows that the writer is alive in that process and can reach the stream.

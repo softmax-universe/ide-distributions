@@ -145,7 +145,8 @@ def text_of(gateway, record: dict, name: str) -> bytes:
     return objects_of(stored_records(gateway.stream))[digest]
 
 
-def test_every_record_names_its_own_run_while_runs_overlap(gateway):
+def test_every_record_names_its_own_turns_trace_while_turns_overlap(gateway):
+    """A turn that serves no client's message is a trace of its own."""
     session_id, other_session_id = open_session(gateway), open_session(gateway)
     run_id = start_run(gateway, session_id, "use the tools")
     other_run_id = start_run(gateway, other_session_id, "plain answer please")
@@ -161,19 +162,36 @@ def test_every_record_names_its_own_run_while_runs_overlap(gateway):
         ("tool", "result"),
         ("message", "committed"),
     ]:
-        found = operations(records, action, stage)
-        assert found and {r.get("run_id") for r in found} == {run_id}, (action, stage)
-    assert {r.get("run_id") for r in operations(others, "model_attempt")} == {other_run_id}
+        # A title can begin before the turn's span starts: see the test below.
+        found = [
+            r
+            for r in operations(records, action, stage)
+            if not str(r.get("model_attempt_id", "")).startswith("aux-")
+        ]
+        assert found and all("trace_id" in r for r in found), (action, stage)
+    (trace_id,) = {r["trace_id"] for r in operations(records, "turn", "ended")}
+    (other_trace_id,) = {r["trace_id"] for r in operations(others, "turn", "ended")}
+    assert trace_id != other_trace_id
+    # A title can begin before the turn's span: then it names none, never another trace.
+    assert {r["trace_id"] for r in records if "trace_id" in r} == {trace_id}
+    # A tool's records name its own span; its proposal names the reply that asked for it.
+    (tool_span,) = {r["span_id"] for r in operations(records, "tool", "completed")}
+    assert {r["span_id"] for r in operations(records, "tool", "result")} == {tool_span}
     # The result is the one the model got, joined to its committed row by native ID.
     result = operations(records, "tool", "result")[0]
     rows = {r["hermes_message_id"] for r in operations(records, "message", "committed")}
     assert result["tool_call_id"] == "call_read" and result["hermes_message_id"] in rows
-    # The workspace tool's own process got the run and the call from the plugin.
+    # The tool's handler ran in the native call's span, the turn's one open call of that tool.
     workspace = [r for r in stored_records(gateway.stream) if r.get("action") == "workspace_tool"]
-    assert {(r.get("run_id"), r.get("tool_call_id")) for r in workspace} >= {(run_id, "call_read")}
+    assert {(r.get("trace_id"), r.get("tool_call_id")) for r in workspace} >= {
+        (trace_id, "call_read")
+    }
 
 
-def test_a_title_that_ends_after_its_run_keeps_that_run_while_another_runs(gateway, stub):
+def test_a_title_that_ends_after_its_turn_names_that_turns_trace_or_none(gateway, stub):
+    """Hermes starts the title call at the turn's start, which can be before the turn's span starts
+    at its first model request. Then its records name no span rather than a guessed one; never
+    another turn's, even one running when the title ends."""
     session_id, other_session_id = open_session(gateway), open_session(gateway)
     run_id = start_run(gateway, session_id, "plain answer LATE_TITLE")
     wait_run(gateway, run_id)
@@ -191,7 +209,9 @@ def test_a_title_that_ends_after_its_run_keeps_that_run_while_another_runs(gatew
             break
         time.sleep(0.1)
     assert {r["stage"] for r in titles} >= {"request", "response"}
-    assert {r.get("run_id") for r in titles} == {run_id}
+    (turn_trace,) = {r["trace_id"] for r in operations(records_of(gateway, session_id), "turn")}
+    assert {r.get("trace_id") for r in titles} <= {turn_trace, None}
+    assert len({r.get("trace_id") for r in titles}) == 1  # Its end keeps what its start had.
 
 
 def test_a_dropped_stream_keeps_its_reasoning_and_the_retry_completes(gateway):

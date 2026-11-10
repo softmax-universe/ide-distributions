@@ -800,5 +800,4 @@ def run_tool(name: str, args: Mapping[str, Any], ctx: ToolContext) -> str:
                 duration_ms=round(duration_s * 1000, 3),
                 tool_call_id=ctx.env.get("IDE_TOOL_CALL_ID"),
                 turn_id=ctx.env.get("IDE_TURN_ID"),
-                run_id=ctx.env.get("IDE_RUN_ID"),
             )

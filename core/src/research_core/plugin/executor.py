@@ -13,10 +13,13 @@ import json
 import os
 import subprocess
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from research_core import layout
 from research_core.tools.catalog import Role
+
+if TYPE_CHECKING:
+    from research_core.plugin.tracing import Traces
 
 TOOL_TIMEOUT_S = 400  # under Hermes's 420 s tool deadline
 
@@ -54,28 +57,12 @@ def _profile_scope() -> dict[str, str]:
     }
 
 
-def hermes_call_ids() -> dict[str, str]:
-    """The run and native tool call being executed here, as Hermes bound them; empty outside it.
-
-    Hermes hands a handler no tool-call ID. It binds the call and its Session in context
-    variables for approvals, which have no public reader. ``core/tests/hermes`` holds this to the
-    pinned image. The run is the one that Session executes (``plugin/runs.py``).
-    """
-    try:
-        from tools.approval_context import _approval_session_id, _approval_tool_call_id
-    except ImportError:  # outside Hermes: tests and the CLI
-        return {}
-    from research_core.plugin.runs import run_of
-
-    known = {
-        "run_id": run_of(_approval_session_id.get()),
-        "tool_call_id": _approval_tool_call_id.get(),
-    }
-    return {name: value for name, value in known.items() if value}
-
-
 def tool_env(
-    role: Role, session_id: str, env: dict[str, str] | None = None, turn_id: str | None = None
+    role: Role,
+    session_id: str,
+    env: dict[str, str] | None = None,
+    turn_id: str | None = None,
+    tool_call_id: str | None = None,
 ) -> dict[str, str]:
     merged = profile_env() if env is None else dict(env)
     merged["IDE_ROLE"] = role
@@ -83,11 +70,8 @@ def tool_env(
         merged["IDE_SESSION_ID"] = session_id
     if turn_id:
         merged["IDE_TURN_ID"] = turn_id
-    call_ids = hermes_call_ids()
-    if "run_id" in call_ids:
-        merged["IDE_RUN_ID"] = call_ids["run_id"]
-    if "tool_call_id" in call_ids:
-        merged["IDE_TOOL_CALL_ID"] = call_ids["tool_call_id"]
+    if tool_call_id:
+        merged["IDE_TOOL_CALL_ID"] = tool_call_id
     return merged
 
 
@@ -162,15 +146,19 @@ def run_in_workspace(
     return stdout.splitlines()[-1]
 
 
-def make_handler(spec: Any, role: Role, session_turn: Callable) -> Callable[..., str]:
+def make_handler(spec: Any, role: Role, traces: Traces) -> Callable[..., str]:
     def handler(args: dict | None = None, session_id: str = "", **_: Any) -> str:
         args = dict(args or {})
-        turn = session_turn(session_id)
-        env = tool_env(role, session_id, turn_id=turn and turn.turn_id)
+        turn = traces.session_turn(session_id)
+        # The native call this serves, when the turn has only one open call of this tool.
+        call = traces.tool_call(session_id, spec.name)
+        env = tool_env(
+            role, session_id, turn_id=turn and turn.turn_id, tool_call_id=call and call[1]
+        )
         from opentelemetry import trace
 
         with trace.use_span(
-            trace.INVALID_SPAN if turn is None else turn.span,
+            call[0] if call else trace.INVALID_SPAN if turn is None else turn.span,
             end_on_exit=False,
             record_exception=False,
             set_status_on_exception=False,

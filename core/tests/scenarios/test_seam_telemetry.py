@@ -30,6 +30,7 @@ from research_core.coordinator import Coordinator
 from research_core.messages import UserMessage
 from research_core.plugin import executor
 from research_core.plugin.messages import record_native_message
+from research_core.plugin.tracing import make_instrumentation
 from research_core.serve import SeamServer
 from research_core.store import sessions
 from research_core.store.actors import Actor
@@ -141,7 +142,7 @@ def _assigned(seam: Seam) -> dict[str, Any]:
     )
 
 
-def test_one_chat_joins_from_admission_to_run_to_session(seam, monkeypatch):
+def test_one_chat_is_one_trace_from_admission_to_turn_to_tool(seam, monkeypatch, spans):
     monkeypatch.setenv("IDE_WORKSPACE", str(seam.ctx.ws.root))
     open_op_id, message_op_id = str(uuid4()), str(uuid4())
     opening = seam.post("/session-open", _open_body(open_op_id))
@@ -154,14 +155,17 @@ def test_one_chat_joins_from_admission_to_run_to_session(seam, monkeypatch):
         "SELECT run_id FROM client_admissions WHERE op_id=?", (message_op_id,)
     )[0]
 
-    # The gateway's side: the hook that names the admission's native row and its run.
+    # The gateway's side, in Hermes's order: the turn starts, its first model request binds the
+    # admission's native row, and the turn's span joins the message's trace.
+    hooks, traces = make_instrumentation("orchestrator")
+    hooks["pre_llm_call"](session_id=session_id, task_id="task", turn_id="turn-1")
     record_native_message(
-        span_for_session=lambda _: trace.INVALID_SPAN,
+        bind_origin=traces.bind_origin,
         session_id=session_id,
         conversation_history=[{"role": "user", "_row_id": 77}],
-        run_id=run_id,
     )
-    # A tool call inside that run, and the Task it leads to.
+    hooks["pre_api_request"](turn_id="turn-1", api_request_id="turn-1:api:1", retry_count=0)
+    # A tool call inside that turn, and the Task it leads to.
     tool_ctx = ToolContext(
         role="orchestrator",
         actor=Actor.session(session_id),
@@ -169,15 +173,17 @@ def test_one_chat_joins_from_admission_to_run_to_session(seam, monkeypatch):
         env={
             "IDE_SESSION_ID": session_id,
             "IDE_TOOL_CALL_ID": "call_1",
-            "IDE_RUN_ID": run_id,
             "IDE_COWORLD_ID": COWORLD,
         },
     )
-    created = json.loads(
-        run_tool(
-            "goal", {"action": "create", "title": "G", "end_state": "E", "reason": "R"}, tool_ctx
+    with trace.use_span(traces.session_turn(session_id).span, end_on_exit=False):
+        created = json.loads(
+            run_tool(
+                "goal",
+                {"action": "create", "title": "G", "end_state": "E", "reason": "R"},
+                tool_ctx,
+            )
         )
-    )
     assert created["ok"], created
     assignment = _assigned(seam)
     seam.dispatch()
@@ -201,17 +207,18 @@ def test_one_chat_joins_from_admission_to_run_to_session(seam, monkeypatch):
     assert (started["run_id"], started["session_id"]) == (run_id, session_id)
     (bound,) = _operations(records, action="admission", stage="bound")
     assert bound["admission_id"] == message_op_id
-    assert (bound["run_id"], bound["session_id"]) == (run_id, session_id)
+    assert bound["session_id"] == session_id
     assert bound["hermes_message_id"] == "77"
     (tool,) = _operations(records, action="workspace_tool")
     assert (tool["outcome"], tool["tool_name"]) == ("succeeded", "goal")
-    assert (tool["tool_call_id"], tool["run_id"], tool["session_id"]) == (
-        "call_1",
-        run_id,
-        session_id,
-    )
+    assert (tool["tool_call_id"], tool["session_id"]) == ("call_1", session_id)
     goal = _store_event(records, "goal.created")
     assert (goal["goal_id"], goal["session_id"]) == (created["record"]["id"], session_id)
+    # One message, one trace: its admission, the turn that served it and that turn's tool.
+    turn = traces.session_turn(session_id).span.get_span_context()
+    assert admitted["trace_id"] == bound["trace_id"] == f"{turn.trace_id:032x}"
+    assert bound["span_id"] == f"{turn.span_id:016x}"
+    assert tool["trace_id"] == goal["trace_id"] == admitted["trace_id"]
     finished = _store_event(records, "client.finished", admission_id=message_op_id)
     assert finished["outcome"] == "completed"
     chain = [opened, admitted, started, bound, goal, tool, finished]
@@ -372,7 +379,7 @@ def test_a_resumed_run_records_no_binding(tmp_path, monkeypatch):
         dispatch.tick()
         assert dispatch.admission(op_id)["status"] == "running"
         record_native_message(
-            span_for_session=lambda _: trace.INVALID_SPAN,
+            bind_origin=lambda *_: None,
             session_id=dispatch.session_id,
             conversation_history=[{"role": "user", "_row_id": 9}],
         )
@@ -543,6 +550,9 @@ def test_attachment_outcomes_are_recorded_and_only_the_message_goes_on(seam, mon
     assert (record["admission_id"], record["session_id"]) == ("op", "ses")
 
 
+TOOL_TRACE = "4bf92f3577b34da6a3ce929d0e0e4736"
+
+
 def test_a_workspace_tool_subprocess_records_its_work_and_stdout_stays_its_result(tmp_path, capfd):
     """``run_in_workspace`` takes the last stdout line of a real ``research tool`` process. The
     child writes one completion and its commits with the call IDs. It writes no span of its own:
@@ -557,7 +567,7 @@ def test_a_workspace_tool_subprocess_records_its_work_and_stdout_stays_its_resul
         "IDE_ROLE": "orchestrator",
         "IDE_SESSION_ID": "ses_1",
         "IDE_TOOL_CALL_ID": "call_7",
-        "IDE_RUN_ID": "run_7",
+        "TRACEPARENT": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
         STREAM_VARIABLE: str(stream),
     }
     ws = layout.from_env(env)
@@ -569,11 +579,11 @@ def test_a_workspace_tool_subprocess_records_its_work_and_stdout_stays_its_resul
     (record,) = _operations(records, action="workspace_tool", stage="completed")
     assert record["producer"] == observed.COMMAND_WRITER
     assert record["workspace_id"] == "wrk-tool"
-    assert (record["tool_call_id"], record["run_id"]) == ("call_7", "run_7")
+    assert (record["tool_call_id"], record["trace_id"]) == ("call_7", TOOL_TRACE)
     assert (record["tool_name"], record["session_id"]) == ("settings", "ses_1")
     committed = _operations(records, action="store_event")
     assert committed
-    assert {(r["tool_call_id"], r["run_id"]) for r in committed} == {("call_7", "run_7")}
+    assert {(r["tool_call_id"], r["trace_id"]) for r in committed} == {("call_7", TOOL_TRACE)}
 
     # The whole of its stdout, not only what ``run_in_workspace`` keeps of it.
     stdout = subprocess.run(
@@ -605,11 +615,15 @@ def _tools() -> dict[str, Any]:
     return TOOLS
 
 
-def test_the_handler_passes_the_native_call_ids_to_the_subprocess(monkeypatch):
-    monkeypatch.setattr(
-        executor, "hermes_call_ids", lambda: {"run_id": "run_9", "tool_call_id": "call_9"}
-    )
-    env = executor.tool_env("researcher", "ses_9", {})
-    assert (env["IDE_RUN_ID"], env["IDE_TOOL_CALL_ID"]) == ("run_9", "call_9")
-    monkeypatch.setattr(executor, "hermes_call_ids", dict)
+def test_the_handler_passes_the_one_open_native_call_to_the_subprocess(spans):
+    """Hermes hands a handler no call ID: the turn's one open call of that tool is the one."""
+    hooks, traces = make_instrumentation("researcher")
+    hooks["pre_llm_call"](session_id="ses_9", task_id="t", turn_id="turn-9")
+    hooks["pre_api_request"](turn_id="turn-9", api_request_id="a", retry_count=0)
+    hooks["pre_tool_call"](turn_id="turn-9", tool_call_id="call_9", tool_name="settings")
+    assert traces.tool_call("ses_9", "settings")[1] == "call_9"
+    hooks["pre_tool_call"](turn_id="turn-9", tool_call_id="call_10", tool_name="settings")
+    assert traces.tool_call("ses_9", "settings") is None  # Two open calls say nothing.
+    env = executor.tool_env("researcher", "ses_9", {}, tool_call_id="call_9")
+    assert env["IDE_TOOL_CALL_ID"] == "call_9"
     assert "IDE_TOOL_CALL_ID" not in executor.tool_env("researcher", "ses_9", {})
