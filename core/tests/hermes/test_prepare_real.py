@@ -343,12 +343,9 @@ finally:
     assert all(e["attributes"]["gen_ai.usage.cache_write.input_tokens"] == 0 for e in models[1:])
     admitted = [e for e in events if e["name"] == "intake.transaction"]
     assert len(admitted) == 2
-    assert [e["links"][0]["context"]["trace_id"] for e in turns] == [
-        e["context"]["trace_id"] for e in admitted
-    ]
-    assert [e["links"][0]["context"]["span_id"] for e in turns] == [
-        e["context"]["span_id"] for e in admitted
-    ]
+    # One message, one trace: each turn is a child of the admission of the message it served.
+    assert [e["context"]["trace_id"] for e in turns] == [e["context"]["trace_id"] for e in admitted]
+    assert [e["parent_id"] for e in turns] == [e["context"]["span_id"] for e in admitted]
     assert [e["attributes"]["retry.count"] for e in models] == [0, 1, 0]
     assert models[0]["attributes"]["http.response.status_code"] == 429
     assert models[0]["status"]["status_code"] == "ERROR"

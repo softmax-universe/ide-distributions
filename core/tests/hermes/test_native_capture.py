@@ -162,7 +162,12 @@ def test_every_record_names_its_own_turns_trace_while_turns_overlap(gateway):
         ("tool", "result"),
         ("message", "committed"),
     ]:
-        found = operations(records, action, stage)
+        # A title can begin before the turn's span starts: see the test below.
+        found = [
+            r
+            for r in operations(records, action, stage)
+            if not str(r.get("model_attempt_id", "")).startswith("aux-")
+        ]
         assert found and all("trace_id" in r for r in found), (action, stage)
     (trace_id,) = {r["trace_id"] for r in operations(records, "turn", "ended")}
     (other_trace_id,) = {r["trace_id"] for r in operations(others, "turn", "ended")}

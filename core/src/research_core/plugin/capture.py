@@ -845,6 +845,12 @@ class DiagnosticsHandler(logging.Handler):
     def __init__(self, writer: TelemetryWriter) -> None:
         super().__init__(logging.INFO)
         self._writer = writer
+        # Imported here, when the plugin registers, not on a logging thread's first record.
+        from opentelemetry import trace
+
+        from research_core.telemetry import correlation
+
+        self._span_ids = lambda: correlation(trace.get_current_span())
 
     def emit(self, record: logging.LogRecord) -> None:
         if (
@@ -854,10 +860,6 @@ class DiagnosticsHandler(logging.Handler):
         ):
             return
         try:
-            from opentelemetry import trace
-
-            from research_core.telemetry import correlation
-
             home = getattr(record, "hermes_home", "")
             session = getattr(record, "session_tag", "").strip(" []")
             self._writer.capture_operation(
@@ -870,7 +872,7 @@ class DiagnosticsHandler(logging.Handler):
                 session_id=session or None,
                 details=_numbers(line=record.lineno),
                 # The span the logging thread is in, as Datadog joins a log to its trace.
-                **correlation(trace.get_current_span()),
+                **self._span_ids(),
             )
         except Exception:  # The logging module's own way to report a handler's failure.
             self.handleError(record)
