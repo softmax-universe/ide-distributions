@@ -94,7 +94,8 @@ jobs:
         run: bash image/install-native-attachments.sh
       - name: Tests against the installed Hermes
         run: |
-          test -x "$HERMES_BIN" && test -x "$HERMES_PYTHON"
+          test -x "$HERMES_BIN"
+          test -x "$HERMES_PYTHON"
           uv run pytest -q -m hermes core/tests/hermes --hermes-shard "$HERMES_SHARD" --durations=20
 
   core:
