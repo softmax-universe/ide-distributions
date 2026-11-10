@@ -8,12 +8,13 @@ annotations; the profile supplies no file parser.
 
 import base64
 import json
+import os
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
 
 
-def main() -> None:
+def main() -> dict:
     from gateway.platforms.base import CachedMedia
     from tui_gateway import server
 
@@ -128,10 +129,15 @@ def main() -> None:
     finally:
         call("session.close", {"session_id": session})
     message = {**request["message"], "content": content}
-    sys.__stdout__.write(json.dumps({"message": message, "outcomes": outcomes}))
+    return {"message": message, "outcomes": outcomes}
 
 
 if __name__ == "__main__":
     # Native RPC notifications and tool progress belong on stderr, not the JSON result pipe.
     with redirect_stdout(sys.stderr):
-        main()
+        result = main()
+    print(json.dumps(result), flush=True)
+    sys.stderr.flush()
+    # The one-shot worker has closed its RPC session. Hermes's process-wide shutdown
+    # can wait on gateway threads that outlive that session.
+    os._exit(0)
