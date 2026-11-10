@@ -25,7 +25,7 @@ priority, depends_on, experiment}`.
   first; `maintenance` for a fix; never `ideation` from an ideation Task.
 - `depends_on` when one must finish first.
 
-An ideation Task delivers two to five proposals: `task.complete {task, proposed_tasks: ["T-7", "T-8"], result, merge: "no", merge_reason}`
+An ideation Task delivers two to five proposals: `task_complete {task, proposed_tasks: ["T-7", "T-8"], result, merge: "no", merge_reason}`
 with the ids `task_propose` returned. Ground every proposal in the Goal's claims and in what was
 tried: `claim.search {query, tags: ["G-n"], include_retired: true}`, `experiment.search` for
 the refuted and inconclusive Experiments too, then `platform.standings` and
@@ -46,7 +46,7 @@ Experiment (X-n).
 
 Do not propose a Version whose Experiment was inconclusive, whose arms differed in anything but
 the change, or that is not committed on your branch. In an improvement Task also answer
-`submission_candidate` and `submission_reason` in `task.complete`; the proposal and the answer
+`submission_candidate` and `submission_reason` in `task_complete`; the proposal and the answer
 must agree.
 
 The Orchestrator applies the user's settings and the quality bar (a merged Version whose

@@ -323,6 +323,9 @@ finally:
     models = [e for e in events if e["name"] == "chat"]
     turns = [e for e in events if e["name"] == "invoke_agent"]
     assert len(turns) == 2 and len(models) == 3, events
+    assert [e["attributes"]["gen_ai.turn.model_calls"] for e in turns] == [2, 1]
+    assert [e["attributes"]["gen_ai.usage.reported"] for e in models] == [False, True, True]
+    assert all(e["attributes"]["gen_ai.usage.cache_write.input_tokens"] == 0 for e in models[1:])
     admitted = [e for e in events if e["name"] == "intake.transaction"]
     assert len(admitted) == 2
     assert [e["links"][0]["context"]["trace_id"] for e in turns] == [

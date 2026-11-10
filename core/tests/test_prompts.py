@@ -162,7 +162,7 @@ def test_role_sections_carry_the_binding_rules():
     for needle in ("ui.notify", "ui.ask", "user_requested: true", "`mode`", "`command`"):
         assert needle in orchestrator
     researcher = build.render("researcher")
-    for needle in ("task.claim", "task_wait", "task.complete", "outcome: succeeded"):
+    for needle in ("task.claim", "task_wait", "task_complete", "outcome: succeeded"):
         assert needle in researcher
     assert "`what_failed`" in researcher and "`next_step`" in researcher
     assert "`ui`" not in researcher and "`submit`" not in researcher

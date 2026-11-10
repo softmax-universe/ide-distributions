@@ -21,7 +21,7 @@ A failing tool, command, install or call is work, not a wall. Capabilities are w
 
 - Make the change in your Task worktree and commit it: a mixin command, a toolchain declaration, a script, a dependency pin. Keep the same inputs and engine version.
 - Run the fixed command yourself until it passes; that is the evidence. The checks run at `main`, so a committed fix cannot turn the capability `ok` until it merges, and the watcher rechecks then. Only a fix outside the repository (an installed tool, a login) shows sooner: `workspace.capabilities {check: true}`, then one read on a later turn.
-- `task.complete {task, outcome: succeeded, commit, summary, capability: <name>, merge: yes, result}`. Tasks that wait on this one resume when it completes. A maintenance Task never makes a Version.
+- `task_complete {task, outcome: succeeded, commit, summary, capability: <name>, merge: yes, result}`. Tasks that wait on this one resume when it completes. A maintenance Task never makes a Version.
 
 ## When a repair Task is stuck
 
@@ -29,7 +29,7 @@ This section is for a repair Task, or a failure no capability covers. A Task tha
 
 ## Giving up well
 
-`task.complete {task, outcome: failed, failure}` with `what_failed`, `error`, `exit_code`, `tried` and a `next_step` someone can act on: not "try again" but what to change and where. A reported blocker beats an invented result: never present plausible output you did not get. A recurring platform error goes in the result for an upstream report.
+`task_complete {task, outcome: failed, failure}` with `what_failed`, `error`, `exit_code`, `tried` and a `next_step` someone can act on: not "try again" but what to change and where. A reported blocker beats an invented result: never present plausible output you did not get. A recurring platform error goes in the result for an upstream report.
 
 ## Common cases
 

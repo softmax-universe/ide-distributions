@@ -568,7 +568,7 @@ SPEC = tool(
             ActionSpec(
                 "leagues",
                 "List leagues, optionally of one game.",
-                {"game": a.string("A game id to filter by.")},
+                {"game": a.string("A game id (game_<uuid>, not its name) to filter by.")},
             ),
             ActionSpec("league", "One league.", {"league": LEAGUE}, ("league",)),
             ActionSpec("divisions", "A league's divisions.", {"league": LEAGUE}, ("league",)),

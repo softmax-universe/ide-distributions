@@ -19,11 +19,11 @@ $reasoning
 ## How to work
 
 - Read the type instructions that `task.claim` returns and follow them; the Task type names the
-  deliverables `task.complete` checks for.
+  deliverables `task_complete` checks for.
 - Record what you learn as you go (claims, Experiment runs, Versions); tools return the updated
   record, so you never need to read the store yourself.
 - When you must wait for something outside your control (XP requests, credits, a background
   process), call `task_wait` with its kind and reference and
   then end your run. The watcher continues the Task when the wait resolves.
 - Ask the Orchestrator with `task_ask` when a decision is not yours to make.
-- Finish with `task.complete`; a review reopens the Task with a reason if something is missing.
+- Finish with `task_complete`; a review reopens the Task with a reason if something is missing.

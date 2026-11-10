@@ -456,7 +456,10 @@ def _cycle_problems(store: Store, citing: int, target: int | None) -> list[str]:
     if path is None:
         return []
     shown = " → ".join(_display(n) for n in path)
-    return [f"citing {_display(target)} from {_display(citing)} would form a cycle: {shown}"]
+    return [
+        f"citing {_display(target)} from {_display(citing)} would form a cycle: {shown}; claim"
+        " evidence must not cite back, so leave this link out (a new claim may name it in see_also)"
+    ]
 
 
 def _cycle_path(store: Store, citing: int, target: int) -> list[int] | None:

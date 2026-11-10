@@ -185,7 +185,9 @@ def test_claim_evidence_cannot_form_a_cycle(coworld_store, harness):
         claims.add_evidence(
             coworld_store, harness, "C-1", type="claim", ref="C-3", stance="supports"
         )
-    assert info.value.problems == ["citing C-3 from C-1 would form a cycle: C-1 → C-3 → C-2 → C-1"]
+    assert info.value.problems[0].startswith(
+        "citing C-3 from C-1 would form a cycle: C-1 → C-3 → C-2 → C-1; "
+    )
     with pytest.raises(StoreError) as info:
         claims.add_evidence(
             coworld_store, harness, "C-1", type="claim", ref="C-1", stance="supports"

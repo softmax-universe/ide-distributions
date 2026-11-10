@@ -58,13 +58,13 @@ Never poll in a loop and never sleep. On resume, call the tool you were waiting 
 
 ## 6. Complete
 
-`task.complete {task, outcome: "succeeded", commit, merge, merge_reason, submission_candidate,
+`task_complete {task, outcome: "succeeded", commit, merge, merge_reason, submission_candidate,
 submission_reason, result, ...}`, plus the fields the type's checklist names (`claims`, `experiment`,
 `versions`, `proposed_tasks`, `commit`, `summary`, `capability`); the tool refuses with every missing item at once, so fix them all and call
 again. `commit` is the commit on your branch to merge; `merge: no` needs `merge_reason`. `result`
 is two or three sentences the Orchestrator reads first.
 
-`task.complete {task, outcome: "failed", failure: {what_failed, next_step, error, exit_code,
+`task_complete {task, outcome: "failed", failure: {what_failed, next_step, error, exit_code,
 tried}}` when the Task cannot succeed. Fill `tried` so
 nobody repeats it.
 

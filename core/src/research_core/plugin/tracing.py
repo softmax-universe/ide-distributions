@@ -27,16 +27,16 @@ class Turn:
     session_id: str
     turn_id: str
     complete: bool = True
+    model_attempts: int = 0
     attempts: dict[str, Span] = field(default_factory=dict)
     tools: dict[str, Span] = field(default_factory=dict)
-    model_calls: int = 0
     tool_calls: int = 0
     tool_failures: int = 0
 
     def count(self) -> None:
         self.span.set_attributes(
             {
-                "gen_ai.turn.model_calls": self.model_calls,
+                "gen_ai.turn.model_calls": self.model_attempts,
                 "gen_ai.turn.tool_calls": self.tool_calls,
                 "gen_ai.turn.tool_failures": self.tool_failures,
             }
@@ -117,6 +117,7 @@ def make_instrumentation(
                     "task.id": task_id,
                     "turn.id": turn_id,
                     "observation.boundary": "pre_llm_call_to_session_end",
+                    "gen_ai.turn.model_calls": 0,
                 },
             )
             turns[turn_id] = Turn(current, session_id, turn_id)
@@ -133,13 +134,15 @@ def make_instrumentation(
             if turn_id not in turns:
                 return
             turn = turns[turn_id]
-            turn.model_calls += 1
+            turn.model_attempts += 1
+            turn.span.set_attribute("gen_ai.turn.model_calls", turn.model_attempts)
             turn.attempts[api_request_id] = telemetry.tracer().start_span(
                 "chat",
                 kind=SpanKind.CLIENT,
                 context=trace.set_span_in_context(turn.span),
                 attributes={
                     "gen_ai.operation.name": "chat",
+                    "gen_ai.agent.name": role,
                     "request.id": api_request_id,
                     "retry.count": retry_count,
                 },
@@ -173,6 +176,7 @@ def make_instrumentation(
             )
             if status_code is not None:
                 current.set_attribute("http.response.status_code", status_code)
+            current.set_attribute("gen_ai.usage.reported", usage is not None)
             if usage is not None:
                 for source, target in (
                     ("prompt_tokens", "input_tokens"),
@@ -180,11 +184,11 @@ def make_instrumentation(
                     ("cache_read_tokens", "cache_read.input_tokens"),
                     ("cache_write_tokens", "cache_write.input_tokens"),
                 ):
-                    if usage[source] > 0:
-                        current.set_attribute(f"gen_ai.usage.{target}", usage[source])
+                    current.set_attribute(f"gen_ai.usage.{target}", usage[source])
             if first_chunk_at is not None:
                 current.add_event("response.first_chunk", timestamp=int(first_chunk_at * 1e9))
             current.set_attribute("outcome", "failed" if failed else "succeeded")
+            current.set_attribute("operation.success", 0 if failed else 1)
             if failed:
                 # Hermes's classification (``rate_limit``, ``server_error``, ``timeout``...) and the
                 # exception's class. A failure inside a stream that answered 200, such as
@@ -203,6 +207,7 @@ def make_instrumentation(
                     context=trace.set_span_in_context(turn.span),
                     attributes={
                         "gen_ai.operation.name": "execute_tool",
+                        "gen_ai.agent.name": role,
                         "gen_ai.tool.call.id": tool_call_id,
                         "tool.boundary": "native",
                         "session.id": turn.session_id,

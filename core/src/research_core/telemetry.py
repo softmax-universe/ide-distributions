@@ -242,6 +242,7 @@ def finish_tool_call(
         "outcome": outcome,
         "error.type": error_type,
     }
+    current.set_attribute("operation.success", 0 if error_type else 1)
     known = {key: value for key, value in attributes.items() if value}
     current.set_attributes(known)
     if error_type is not None:

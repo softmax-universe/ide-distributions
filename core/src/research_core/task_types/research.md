@@ -34,7 +34,7 @@ Ask (`task_ask`) when the question itself is unclear or the Goal would change; d
 scope and which claims to write yourself. After `task_wait`, end your run yourself; the
 watcher resumes you.
 
-End: `task.complete {task, claims: ["C-12", "C-13"], result, merge: "no", merge_reason}`; a
+End: `task_complete {task, claims: ["C-12", "C-13"], result, merge: "no", merge_reason}`; a
 research Task merges nothing unless it changed documents in the mixin. When nothing held up,
 `claims: "none: <reason>"` with a reason the Goal can act on ("the lever is already at the
 mixin's floor; see C-4").
