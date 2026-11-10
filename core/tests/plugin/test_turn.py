@@ -144,15 +144,6 @@ def test_session_context_section(tmp_path, monkeypatch):
     assert "[session context]" in session_context.make_section("researcher")(
         {"session_id": "chat1"}
     )
-    # A chat keeps Hermes's AGENTS.md prompt; a wake, or a delegated child with no record, has
-    # nobody to answer it.
-    sessions.register(
-        ctx.wstore, Actor.parse("harness"), session_id="wake1", profile="orchestrator", kind="wake"
-    )
-    audience = session_context.make_approval_audience("orchestrator")
-    assert audience(session_id="chat1") is None
-    assert audience(session_id="wake1") == "none"
-    assert audience(session_id="child-of-chat1") == "none"
 
 
 def test_only_a_chat_is_told_to_ask_in_chat(tmp_path):

@@ -111,20 +111,3 @@ def make_section(role: str):
             return f"[session context] unavailable: {type(error).__name__}"
 
     return section
-
-
-def make_approval_audience(role: str):
-    """Hermes's ``approval_audience`` hook (patch 0014): ``"none"`` unless a person's chat is the
-    session. Task and wake runs, and delegated children, which have no session record, have nobody
-    to answer a prompt, and every /v1/runs run looks attended to Hermes."""
-
-    def approval_audience(session_id: str = "", **_: Any) -> str | None:
-        from research_core.plugin.executor import profile_env
-        from research_core.store import sessions
-        from research_core.tools.base import ToolContext
-
-        ctx = ToolContext.from_env(role, profile_env(IDE_SESSION_ID=session_id))
-        session = sessions.read(ctx.wstore, session_id) if session_id else None
-        return None if session is not None and session["kind"] == "chat" else "none"
-
-    return approval_audience

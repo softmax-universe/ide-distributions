@@ -13,10 +13,6 @@ approvals:
   cron_mode: approve
   single_query_mode: approve
   unattended_mode: approve
-# A file-tool write to an AGENTS.md asks the user in a chat; in a Task, wake or delegated session
-# nobody can answer, so it goes ahead (Hermes patch 0014). prepare.py keeps this key (PROTECTED_KEYS).
-security:
-  protected_instruction_unattended: allow
 # Orchestrator chats are long: protect more of the head and tail and compact less aggressively,
 # so the user's instructions stay word for word (design F.5).
 compression:
@@ -38,10 +34,6 @@ platform_toolsets:
   cron: []
 known_plugin_toolsets:
   cron: [ide-orchestrator]
-# A delegated child has no Session, so no Coworld, which every ide-orchestrator tool needs.
-# prepare.py keeps this key (PROTECTED_KEYS).
-delegation:
-  disabled_toolsets: [ide-orchestrator]
 plugins:
   enabled: [orchestrator]
 # Keep every profile tool loaded instead of deferred behind tool_search (design §4).

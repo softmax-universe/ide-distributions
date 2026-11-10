@@ -77,12 +77,15 @@ def make_register(role: Role) -> Callable[[Any], None]:
 
         on_context = register_capture(ctx)
         ctx.register_hook("pre_llm_call", make_pre_llm_call(role, on_context))
-        from research_core.plugin.session_context import make_approval_audience, make_section
+        from research_core.plugin.session_context import make_section
 
         ctx.register_system_prompt_section(
             "ide-session-context", make_section(role), max_chars=SECTION_MAX_CHARS
         )
-        ctx.register_hook("approval_audience", make_approval_audience(role))
+        from research_core.plugin.native_tools import read_file_nearest_directory, skill_by_category
+
+        ctx.register_middleware("tool_request", skill_by_category)
+        ctx.register_middleware("tool_execution", read_file_nearest_directory)
 
     register.__name__ = f"register_{role}"
     return register

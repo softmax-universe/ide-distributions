@@ -13,10 +13,6 @@ approvals:
   cron_mode: approve
   single_query_mode: approve
   unattended_mode: approve
-# A file-tool write to an AGENTS.md asks the user in a chat; in a Task, wake or delegated session
-# nobody can answer, so it goes ahead (Hermes patch 0014). prepare.py keeps this key (PROTECTED_KEYS).
-security:
-  protected_instruction_unattended: allow
 # Above 64,000 tokens, use Hermes's existing deterministic prune without a model call:
 # prune results over 2,000 characters older than the protected tail; archive originals.
 compression:
@@ -32,10 +28,6 @@ platform_toolsets:
   cron: []
 known_plugin_toolsets:
   cron: [ide-researcher]
-# A delegated child has no Session, so no Coworld, which every ide-researcher tool needs.
-# prepare.py keeps this key (PROTECTED_KEYS).
-delegation:
-  disabled_toolsets: [ide-researcher]
 plugins:
   enabled: [researcher]
 # Keep every profile tool loaded instead of deferred behind tool_search (design §4).

@@ -586,3 +586,34 @@ def test_a_finished_legacy_admission_flagged_for_resolution_is_settled(dispatch)
     assert admissions.reserved_workers(dispatch.store) == 0
     status = dispatch.server.status()
     assert status["blocked_executions"] == [] and status["has_work"] is False
+
+
+# --- Hermes's AGENTS.md write prompt --------------------------------------------------------
+
+
+def _instruction_prompt(prompt_id: str) -> dict:
+    return {
+        "kind": "approval",
+        "prompt_id": prompt_id,
+        "execution_generation": 1,
+        "command": "<write to AGENTS.md>",
+        "description": f"{serve.PROTECTED_INSTRUCTION_PROMPT}AGENTS.md. These files steer ...",
+        "choices": ["once", "deny"],
+    }
+
+
+@pytest.mark.parametrize(("kind", "approved"), [("wake", True), ("chat", False)])
+def test_an_agents_md_prompt_is_approved_only_where_no_person_can_answer(dispatch, kind, approved):
+    """A wake or Task run approves Hermes's AGENTS.md prompt at the next poll; a chat leaves it
+    for the user, as it does every other approval."""
+    with dispatch.store.tx(Actor.harness()) as tx:
+        tx.execute("UPDATE sessions SET kind=? WHERE id=?", (kind, dispatch.session_id))
+    op_id = dispatch.say("set up the lab")
+    dispatch.tick()
+    run = dispatch.hermes.runs[dispatch.admission(op_id)["run_id"]]
+    other = {**_instruction_prompt("p2"), "description": "Run a dangerous command"}
+    run.pending_controls = [_instruction_prompt("p1"), other]
+    dispatch.tick()
+    answered = [c["prompt_id"] for m, c in dispatch.hermes.calls if m == "approve_once"]
+    assert answered == (["p1"] if approved else [])
+    assert [c["prompt_id"] for c in run.pending_controls] == (["p2"] if approved else ["p1", "p2"])

@@ -327,6 +327,21 @@ class HermesRuns:
         )
         return response.status != 409
 
+    def approve_once(self, run_id: str, control: dict, *, profile: str) -> None:
+        """``POST …/approval`` answering one pending approval ``once``. A 404 or 409 means the
+        prompt or the run is already gone, which leaves nothing to answer."""
+        self._request(
+            "POST",
+            profile,
+            f"/v1/runs/{run_id}/approval",
+            body={
+                "request_id": control["prompt_id"],
+                "execution_generation": control["execution_generation"],
+                "choice": "once",
+            },
+            accept=(404, 409),
+        )
+
     def stop(self, run_id: str, *, profile: str) -> RunStatus:
         """``POST …/stop``; the status after the request.
 
@@ -454,6 +469,7 @@ class FakeRun:
     error: str | None = None
     idempotency_key: str | None = None
     turn_exit_reason: str | None = None
+    pending_controls: list[dict] = field(default_factory=list)
 
     def to_status(self) -> RunStatus:
         raw = {
@@ -468,6 +484,9 @@ class FakeRun:
             raw["error"] = self.error
         if self.turn_exit_reason is not None:
             raw["turn_exit_reason"] = self.turn_exit_reason
+        if self.pending_controls:
+            raw["status"] = "waiting_for_approval"
+            raw["pending_controls"] = self.pending_controls
         return RunStatus.from_payload(raw)
 
 
@@ -611,6 +630,20 @@ class FakeHermesRuns(HermesRuns):
             run.status = "stopping"
             return run.to_status()
         return self._status(run_id)
+
+    def approve_once(self, run_id: str, control: dict, *, profile: str) -> None:
+        self.calls.append(
+            (
+                "approve_once",
+                {"run_id": run_id, "prompt_id": control["prompt_id"], "profile": profile},
+            )
+        )
+        run = self.runs[run_id]
+        run.pending_controls = [
+            pending
+            for pending in run.pending_controls
+            if pending["prompt_id"] != control["prompt_id"]
+        ]
 
     def session_messages(self, session_id: str, *, profile: str) -> list[dict]:
         self.calls.append(("session_messages", {"session_id": session_id, "profile": profile}))
