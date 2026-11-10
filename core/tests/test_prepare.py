@@ -135,7 +135,13 @@ def test_protected_keys_for_role_substitutes_the_role():
     assert orchestrator["tools.tool_search.enabled"] == "off"
     assert orchestrator["cron.catch_up_missed"] is True
     for keys in (orchestrator, researcher):
-        assert keys["agent.disabled_toolsets"] == ["browser", "connections", "cronjob", "todo"]
+        assert keys["agent.disabled_toolsets"] == [
+            "browser",
+            "connections",
+            "cronjob",
+            "todo",
+            "session_search",
+        ]
         assert keys["compression.proactive_prune_tokens"] == 64000
         assert keys["compression.proactive_prune_min_result_chars"] == 2000
     # Compression protection is Orchestrator only (design F.5).
