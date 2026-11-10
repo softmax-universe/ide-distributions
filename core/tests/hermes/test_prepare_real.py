@@ -47,8 +47,11 @@ def hermes_python(hermes_bin: Path) -> str:
     return str(sibling) if sibling.exists() else sys.executable
 
 
-def config_get(hermes_bin, host: Host, role, key):
-    result = run([hermes_bin, "config", "get", key, "--json"], host.env(role))
+def resolved_config(hermes_bin, host: Host, role):
+    code = (
+        "import json; from hermes_cli.config import load_config; print(json.dumps(load_config()))"
+    )
+    result = run([hermes_python(hermes_bin), "-c", code], host.env(role))
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(result.stdout)
 
@@ -80,8 +83,18 @@ def host(tmp_path_factory, hermes_bin) -> Host:
     return host
 
 
-def test_prepare_orchestrator_end_to_end(hermes_bin, host):
-    summary = prepare(hermes_bin, host, "orchestrator")
+@pytest.fixture(scope="module")
+def prepared_orchestrator(hermes_bin, host):
+    return prepare(hermes_bin, host, "orchestrator")
+
+
+@pytest.fixture(scope="module")
+def prepared_researcher(hermes_bin, host, prepared_orchestrator):
+    return prepare(hermes_bin, host, "researcher")
+
+
+def test_prepare_orchestrator_end_to_end(hermes_bin, host, prepared_orchestrator):
+    summary = prepared_orchestrator
     assert summary["role"] == "orchestrator"
     assert summary["workspace"] == str(host.workspace)
     profile = host.profile("orchestrator")
@@ -89,23 +102,20 @@ def test_prepare_orchestrator_end_to_end(hermes_bin, host):
     assert (profile / "local" / "core-path.txt").read_text().strip() == str(CORE_SRC)
     assert (profile / ".softmax-prepared").is_file()
 
-    assert config_get(hermes_bin, host, "orchestrator", "approvals.mode") == "off"
-    assert config_get(hermes_bin, host, "orchestrator", "approvals.deny") == []
-    assert config_get(hermes_bin, host, "orchestrator", "plugins.enabled") == ["orchestrator"]
-    assert config_get(hermes_bin, host, "orchestrator", "known_plugin_toolsets.cron") == [
-        "ide-orchestrator"
-    ]
-    assert config_get(hermes_bin, host, "orchestrator", "compression.protect_first_n") == 6
-    assert (
-        config_get(hermes_bin, host, "orchestrator", "compression.proactive_prune_tokens") == 64000
-    )
-    assert config_get(hermes_bin, host, "orchestrator", "agent.disabled_toolsets") == [
+    config = resolved_config(hermes_bin, host, "orchestrator")
+    assert config["approvals"]["mode"] == "off"
+    assert config["approvals"]["deny"] == []
+    assert config["plugins"]["enabled"] == ["orchestrator"]
+    assert config["known_plugin_toolsets"]["cron"] == ["ide-orchestrator"]
+    assert config["compression"]["protect_first_n"] == 6
+    assert config["compression"]["proactive_prune_tokens"] == 64000
+    assert config["agent"]["disabled_toolsets"] == [
         "browser",
         "connections",
         "cronjob",
         "todo",
     ]
-    assert config_get(hermes_bin, host, "orchestrator", "skills.external_dirs") == [
+    assert config["skills"]["external_dirs"] == [
         str(CORE_SRC / "research_core" / "skills" / "common"),
         str(CORE_SRC / "research_core" / "skills" / "orchestrator"),
     ]
@@ -131,8 +141,9 @@ def test_installed_script_finds_its_profile_and_reads_its_env(hermes_bin, host):
     assert json.loads(result.stdout.strip().splitlines()[-1])["workspace"] == str(workspace)
 
 
-def test_prepare_again_keeps_environment_without_observation_cron(hermes_bin, host):
-    prepare(hermes_bin, host, "orchestrator")
+def test_prepare_again_keeps_environment_without_observation_cron(
+    hermes_bin, host, prepared_orchestrator
+):
     stamp = host.workspace / "tools" / "venv" / ".lock-sha"
     stamp_before = stamp.read_text()
     summary = prepare(hermes_bin, host, "orchestrator")
@@ -141,18 +152,19 @@ def test_prepare_again_keeps_environment_without_observation_cron(hermes_bin, ho
     assert not watcher_job(host)
 
 
-def test_prepare_researcher_shares_the_environment(hermes_bin, host):
-    summary = prepare(hermes_bin, host, "researcher")
+def test_prepare_researcher_shares_the_environment(hermes_bin, host, prepared_researcher):
+    summary = prepared_researcher
     assert summary["role"] == "researcher"
     assert summary["venv"] == str(host.workspace / "tools" / "venv")
-    assert config_get(hermes_bin, host, "researcher", "plugins.enabled") == ["researcher"]
-    assert config_get(hermes_bin, host, "researcher", "platform_toolsets.api_server") == [
+    config = resolved_config(hermes_bin, host, "researcher")
+    assert config["plugins"]["enabled"] == ["researcher"]
+    assert config["platform_toolsets"]["api_server"] == [
         "hermes-api-server",
         "ide-researcher",
     ]
-    assert config_get(hermes_bin, host, "researcher", "compression.protect_first_n") != 6
-    assert config_get(hermes_bin, host, "researcher", "compression.proactive_prune_tokens") == 64000
-    assert config_get(hermes_bin, host, "researcher", "agent.disabled_toolsets") == [
+    assert config["compression"]["protect_first_n"] != 6
+    assert config["compression"]["proactive_prune_tokens"] == 64000
+    assert config["agent"]["disabled_toolsets"] == [
         "browser",
         "connections",
         "cronjob",
@@ -193,9 +205,10 @@ def test_the_kimi_pin_yields_exactly_where_hermes_applies_an_owner_entry(hermes_
 
 
 @pytest.mark.parametrize("existing_history", [False, True])
-def test_installed_agent_text_chat_and_resume(hermes_bin, host, existing_history):
+def test_installed_agent_text_chat_and_resume(
+    hermes_bin, host, prepared_orchestrator, existing_history
+):
     """Real pinned agent and persistence, with only the external model replaced by HTTP."""
-    prepare(hermes_bin, host, "orchestrator")
     script = """
 import json, sys, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -343,7 +356,7 @@ finally:
     assert all("Hello from the OpenAI message contract" not in json.dumps(e) for e in events)
 
 
-def test_installed_agent_reads_attachment_after_resume(hermes_bin, host):
+def test_installed_agent_reads_attachment_after_resume(hermes_bin, host, prepared_orchestrator):
     """A real native read_file call, repeated after rebuilding the agent on retained history."""
     import base64
 
@@ -351,7 +364,6 @@ def test_installed_agent_reads_attachment_after_resume(hermes_bin, host):
     from research_core.attachments import prepare as prepare_attachment
     from research_core.messages import UserMessage
 
-    prepare(hermes_bin, host, "orchestrator")
     message = prepare_attachment(
         UserMessage.model_validate(
             {
@@ -447,14 +459,15 @@ finally:
     assert all("cedar-7381-native-read" not in json.dumps(e) for e in events)
 
 
-def test_disabled_toolsets_remove_the_named_tools_and_keep_the_working_ones(hermes_bin, host):
+def test_disabled_toolsets_remove_the_named_tools_and_keep_the_working_ones(
+    hermes_bin, host, prepared_researcher
+):
     """Hermes ignores an unknown toolset name, so a rename would silently restore its tools."""
-    prepare(hermes_bin, host, "researcher")
     script = r"""
-import json, sys
 import model_tools
+from hermes_cli.config import load_config
 from toolsets import resolve_toolset
-disabled = json.loads(sys.argv[1])
+disabled = load_config()["agent"]["disabled_toolsets"]
 removed = {tool for name in disabled for tool in resolve_toolset(name)}
 assert {"browser_exec", "manage_connections", "cronjob_manage", "todo_list"} <= removed, removed
 kept = {"terminal", "read_file", "write_file", "patch", "search_files", "skill_view",
@@ -466,19 +479,17 @@ names = {tool["function"]["name"] for tool in model_tools.get_tool_definitions(
 assert not names & removed, names & removed
 print("PASS")
 """
-    disabled = config_get(hermes_bin, host, "researcher", "agent.disabled_toolsets")
-    result = run(
-        [hermes_python(hermes_bin), "-c", script, json.dumps(disabled)], host.env("researcher")
-    )
+    result = run([hermes_python(hermes_bin), "-c", script], host.env("researcher"))
     assert result.returncode == 0, result.stdout + result.stderr
     assert "PASS" in result.stdout
 
 
-def test_prepared_config_prunes_an_old_tool_result_during_one_turn(hermes_bin, host, tmp_path):
+def test_prepared_config_prunes_an_old_tool_result_during_one_turn(
+    hermes_bin, host, prepared_orchestrator, tmp_path
+):
     """A real agent on the prepared config, reporting 70,000 prompt tokens: an old large result
     leaves later requests within the same turn, its row stays in place, and the original survives
     in an archived row. A small result stays as it was."""
-    prepare(hermes_bin, host, "orchestrator")
     large = tmp_path / "large.txt"
     large.write_text("".join(f"large-file-line {line}\n" for line in range(300)))
     for index in range(22):

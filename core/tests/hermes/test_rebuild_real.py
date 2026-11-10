@@ -47,9 +47,9 @@ MAIN = ("stream", "request")
 
 
 @pytest.fixture(scope="module", params=["orchestrator", "researcher"])
-def proof(request, hermes_bin, tmp_path_factory) -> Proof:
+def proof(request, hermes_bin, tmp_path_factory):
     profile = request.param
-    return run_session(
+    session = run_session(
         tmp_path_factory.mktemp(f"rebuild-{profile}"),
         hermes_python(hermes_bin),
         profile,
@@ -58,10 +58,19 @@ def proof(request, hermes_bin, tmp_path_factory) -> Proof:
         result_chars=20000,
         first_text=FIRST_TEXT,
     )
+    try:
+        yield session
+    finally:
+        session.datadog.close()
 
 
 def rebuilt(proof: Proof) -> dict:
     return rebuild_session(LogsSearch(proof.datadog.url, "api-key", "app-key"), proof.session_id)
+
+
+@pytest.fixture(scope="module")
+def report(proof):
+    return rebuilt(proof)
 
 
 def main_requests(report: dict) -> list[dict]:
@@ -81,8 +90,7 @@ def state_rows(proof: Proof) -> list[dict]:
     return [dict(row) for row in rows if row["role"] != "session_meta"]
 
 
-def test_the_session_did_what_this_proof_claims(proof):
-    report = rebuilt(proof)
+def test_the_session_did_what_this_proof_claims(proof, report):
     main = main_requests(report)
     instances = [r["source_instance"] for r in main]
     assert len(set(instances)) == 2
@@ -104,7 +112,7 @@ def test_the_session_did_what_this_proof_claims(proof):
     assert operations.count("append") > operations.count("full")
 
 
-def test_every_line_on_the_stream_is_one_whole_record_within_the_limit(proof):
+def test_every_line_on_the_stream_is_one_whole_record_within_the_limit(proof, report):
     lines = raw_lines(proof.gateway.stream)
     # ``raw_lines`` leaves out each line's leading newline, which counts toward the limit.
     assert max(len(b"\n" + line) for line in lines) <= MAX_LINE_BYTES
@@ -114,7 +122,7 @@ def test_every_line_on_the_stream_is_one_whole_record_within_the_limit(proof):
     assert {record["producer"] for record in records} >= {"gateway", "research-serve"}
     assert not any("message" in record for record in records)
     assert USER_TOKEN.encode() not in b"".join(lines)
-    assert "[redacted-softmax-token]" in json.dumps(rebuilt(proof)["requests"][0]["request"])
+    assert "[redacted-softmax-token]" in json.dumps(report["requests"][0]["request"])
     # What every record says of where it came from, and what only the gateway writes.
     gateway = [record for record in records if record["producer"] == "gateway"]
     assert {record["image"] for record in gateway} == {"image-under-test"}
@@ -125,12 +133,11 @@ def test_every_line_on_the_stream_is_one_whole_record_within_the_limit(proof):
     assert logged
 
 
-def test_a_clean_session_has_nothing_missing(proof):
-    assert rebuilt(proof)["missing"] == []
+def test_a_clean_session_has_nothing_missing(report):
+    assert report["missing"] == []
 
 
-def test_each_request_equals_what_the_stub_received_in_wire_order(hermes_bin, proof):
-    report = rebuilt(proof)
+def test_each_request_equals_what_the_stub_received_in_wire_order(hermes_bin, proof, report):
     with proof.stub.lock:
         received = [json.loads(body) for body in proof.stub.bodies]
     expected = redacted_by_hermes(hermes_bin, received)
@@ -181,8 +188,7 @@ def _split_by_prune(proof: Proof) -> tuple[list[dict], dict[str, dict]]:
     )
 
 
-def test_each_committed_row_equals_state_db(hermes_bin, proof):
-    report = rebuilt(proof)
+def test_each_committed_row_equals_state_db(hermes_bin, proof, report):
     live, originals = _split_by_prune(proof)
     assert originals, "Hermes did not prune"
     got = {row["hermes_message_id"]: row for row in report["rows"]}
@@ -214,8 +220,7 @@ def test_each_committed_row_equals_state_db(hermes_bin, proof):
         assert _comparable(by_call[call]["message"]) == want
 
 
-def test_tool_results_equal_state_db_and_what_the_model_got(hermes_bin, proof):
-    report = rebuilt(proof)
+def test_tool_results_equal_state_db_and_what_the_model_got(hermes_bin, proof, report):
     live, originals = _split_by_prune(proof)
     tools = [originals.get(row["tool_call_id"], row) for row in live if row["role"] == "tool"]
     expected = redacted_by_hermes(hermes_bin, [row["content"] for row in tools])
@@ -240,8 +245,7 @@ def test_tool_results_equal_state_db_and_what_the_model_got(hermes_bin, proof):
     assert wire == expected
 
 
-def test_the_operation_chain_joins_admission_run_and_requests(proof):
-    report = rebuilt(proof)
+def test_the_operation_chain_joins_admission_run_and_requests(proof, report):
     admissions: dict[str, list[dict]] = {}
     for event in report["events"]:
         if "admission_id" in event:
@@ -258,9 +262,8 @@ def test_the_operation_chain_joins_admission_run_and_requests(proof):
     assert {row["run_id"] for row in report["rows"]} == set(proof.run_ids)
 
 
-def test_after_a_restart_prompt_sections_are_lost(proof):
+def test_after_a_restart_prompt_sections_are_lost(report):
     """A known hole: Hermes reuses a stored prompt, so nothing reports its sections again."""
-    report = rebuilt(proof)
     main = main_requests(report)
     before, after = main[0], main[-1]
     assert before["source_instance"] != after["source_instance"]
@@ -273,15 +276,15 @@ def test_after_a_restart_prompt_sections_are_lost(proof):
     assert before["request"]["messages"][0] == after["request"]["messages"][0]
 
 
-def test_token_estimates_add_up_to_the_providers_count(proof):
-    for request in rebuilt(proof)["requests"]:
+def test_token_estimates_add_up_to_the_providers_count(report):
+    for request in report["requests"]:
         estimates = [row["estimated_tokens"] for row in request["tokens_by_source"]]
         prompt_tokens = request["response"]["usage"]["input_tokens"]
         assert abs(sum(estimates) - prompt_tokens) <= len(estimates)
 
 
-def test_replies_keep_their_reasoning_usage_and_cost(proof):
-    first, second = main_requests(rebuilt(proof))[:2]
+def test_replies_keep_their_reasoning_usage_and_cost(report):
+    first, second = main_requests(report)[:2]
     message = first["response"]["message"]
     assert message["reasoning_content"] == STUB_REASONING
     assert [call["id"] for call in message["tool_calls"]] == ["call_read"]
@@ -295,10 +298,10 @@ def test_replies_keep_their_reasoning_usage_and_cost(proof):
     assert response["cost"] == {"usd": STUB_USAGE["cost"], "source": "provider_billed"}
 
 
-def test_a_reused_tool_call_id_joins_through_the_model_request(proof):
+def test_a_reused_tool_call_id_joins_through_the_model_request(report):
     """Kimi and this stub reuse IDs across turns. Hermes renames the repeat after the attempt ends,
     so a proposal holds the provider's ID and arguments as sent, and later records hold ``_d2``."""
-    asking = [r for r in main_requests(rebuilt(proof)) if r["tools"]]
+    asking = [r for r in main_requests(report) if r["tools"]]
     assert len(asking) > 2
     for request in asking:
         proposed, completed, result = request["tools"]
@@ -314,8 +317,7 @@ def test_a_reused_tool_call_id_joins_through_the_model_request(proof):
     assert asking[1]["tools"][1]["tool_call_id"] == "call_read_d2"
 
 
-def test_prompt_sources_and_context_parts_are_attributed(proof):
-    report = rebuilt(proof)
+def test_prompt_sources_and_context_parts_are_attributed(proof, report):
     objects = objects_of(stored_records(proof.gateway.stream))
     first = main_requests(report)[0]
     manifest = json.loads(objects[first["manifest_digest"]])
@@ -340,16 +342,16 @@ def test_prompt_sources_and_context_parts_are_attributed(proof):
     assert data[place["byte_offset"] :].decode().startswith("Turn 0")
 
 
-def test_an_auxiliary_call_is_captured_whole(proof):
-    auxiliary = [r for r in rebuilt(proof)["requests"] if r["native_event_type"] not in MAIN]
+def test_an_auxiliary_call_is_captured_whole(report):
+    auxiliary = [r for r in report["requests"] if r["native_event_type"] not in MAIN]
     assert auxiliary
     assert auxiliary[0]["response"]["message"]["content"] == "a title"
 
 
 @pytest.fixture(scope="module")
-def refusals(hermes_bin, tmp_path_factory) -> Proof:
+def refusals(hermes_bin, tmp_path_factory):
     """One refused call per turn, repeated, so that the middleware drops the earlier ones."""
-    return run_session(
+    session = run_session(
         tmp_path_factory.mktemp("refusals"),
         hermes_python(hermes_bin),
         "orchestrator",
@@ -358,6 +360,11 @@ def refusals(hermes_bin, tmp_path_factory) -> Proof:
         result_chars=0,
         tool_calls=[tool_call(0, "call_refused", "settings", '{"action": "no-such-action"}')],
     )
+
+    try:
+        yield session
+    finally:
+        session.datadog.close()
 
 
 def test_a_refused_call_the_middleware_drops_keeps_its_own_row(hermes_bin, refusals):

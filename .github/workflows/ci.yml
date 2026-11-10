@@ -5,10 +5,11 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  # Decides which test jobs a pull request can affect. Each filter starts from every file and
-  # excludes what cannot change that job's result; both jobs always run (a skipped required
-  # check counts as passing on main), and an unaffected job passes in about a minute.
   changes:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -29,12 +30,40 @@ jobs:
               - '!README.md'
               - '!.github/workflows/release-*.yml'
 
-  core:
+  unit:
     needs: changes
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.core != 'false') }}
     runs-on: ubuntu-latest
+    env:
+      GIT_AUTHOR_NAME: IDE CI
+      GIT_AUTHOR_EMAIL: ide-ci@example.invalid
+      GIT_COMMITTER_NAME: IDE CI
+      GIT_COMMITTER_EMAIL: ide-ci@example.invalid
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run python tools/build_prompts.py --check
+      - name: Prompt checks
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: uv run python tools/check_prompts.py --model
+      - name: Unit and scenario tests
+        run: uv run pytest -q -n 4 --dist=loadfile --durations=20
+
+  hermes:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.core != 'false') }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [prepare, rebuild-orchestrator, rebuild-researcher, gateway]
     container:
-      # The hosted Hermes runtime: its Python runs the plugin and prepare.py, exactly as hosting does.
+      # Match the pinned interpreter and patches used by the hosted image.
       image: nousresearch/hermes-agent@sha256:d27689bc6e8581ec884a7227c9101fdaebf6c853cff8859020dac14f21452b4d
       options: --user 0
     env:
@@ -44,48 +73,45 @@ jobs:
       GIT_COMMITTER_EMAIL: ide-ci@example.invalid
       HERMES_BIN: /opt/hermes/.venv/bin/hermes
       HERMES_PYTHON: /opt/hermes/.venv/bin/python
-      RUN_TESTS: ${{ github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.core == 'true' }}
+      HERMES_SHARD: ${{ matrix.shard }}
     steps:
-      - name: Skip when this change cannot affect the core
-        if: env.RUN_TESTS != 'true'
-        run: echo "No change in this pull request affects core/ or the profiles; skipping."
       - uses: actions/checkout@v4
-        if: env.RUN_TESTS == 'true'
       - name: Patch Hermes as image/Dockerfile does
-        if: env.RUN_TESTS == 'true'
         run: |
           for patch in "$GITHUB_WORKSPACE"/image/hermes-patches/*.patch; do
             git -C /opt/hermes apply --whitespace=nowarn "$patch"
           done
-      - name: Install the hosted image's native PDF dependency
-        if: env.RUN_TESTS == 'true'
+      - name: Install native PDF and audio utilities
+        if: matrix.shard == 'gateway'
         run: apt-get update && apt-get install -y --no-install-recommends poppler-utils ffmpeg
       - uses: astral-sh/setup-uv@v6
-        if: env.RUN_TESTS == 'true'
         with:
           python-version: "3.12"
-      - name: Mark the checkout safe for git
-        if: env.RUN_TESTS == 'true'
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - run: uv sync --frozen
-        if: env.RUN_TESTS == 'true'
       - name: Install the hosted native attachment dependencies and model
-        if: env.RUN_TESTS == 'true'
+        if: matrix.shard == 'gateway'
         run: bash image/install-native-attachments.sh
-      - name: Lint
-        if: env.RUN_TESTS == 'true'
-        run: uv run ruff check .
-      - name: Generated prompts and manifests are current
-        if: env.RUN_TESTS == 'true'
-        run: uv run python tools/build_prompts.py --check
-      - name: Prompt checks (the model check runs when OPENROUTER_API_KEY is set)
-        if: env.RUN_TESTS == 'true'
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        run: uv run python tools/check_prompts.py --model
       - name: Tests against the installed Hermes
-        if: env.RUN_TESTS == 'true'
-        run: uv run pytest -q -m hermes core/tests/hermes
-      - name: Unit and scenario tests
-        if: env.RUN_TESTS == 'true'
-        run: uv run pytest -q
+        run: |
+          test -x "$HERMES_BIN" && test -x "$HERMES_PYTHON"
+          uv run pytest -q -m hermes core/tests/hermes --hermes-shard "$HERMES_SHARD" --durations=20
+
+  core:
+    needs: [changes, unit, hermes]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful suites when tests apply
+        env:
+          EVENT: ${{ github.event_name }}
+          CHANGES: ${{ needs.changes.result }}
+          CORE_CHANGED: ${{ needs.changes.outputs.core }}
+          UNIT: ${{ needs.unit.result }}
+          HERMES: ${{ needs.hermes.result }}
+        run: |
+          if [[ "$EVENT" == pull_request && "$CHANGES" == success && "$CORE_CHANGED" == false ]]; then
+            [[ "$UNIT" == skipped && "$HERMES" == skipped ]]
+          else
+            [[ "$UNIT" == success && "$HERMES" == success ]]
+          fi
