@@ -14,7 +14,12 @@ expected = {
     ),
     *(
         (f"workspace.{phase}", "")
-        for phase in ("gateway_ready", "application_wake", "application_ready")
+        for phase in (
+            "gateway_ready",
+            "application_startup",
+            "application_wake",
+            "application_ready",
+        )
     ),
 }
 boots: dict[str, list[dict]] = {}
@@ -39,6 +44,10 @@ for index, (boot_id, spans) in enumerate(boots.items()):
     assert len(spans) == len(expected), spans
     assert {(s["name"], s["attributes"].get("role", "")) for s in spans} == expected, spans
     root = next(s for s in spans if s["name"] == "workspace.startup")
+    application = next(s for s in spans if s["name"] == "workspace.application_startup")
+    wake = next(s for s in spans if s["name"] == "workspace.application_wake")
+    ready = next(s for s in spans if s["name"] == "workspace.application_ready")
+    assert wake["end_time"] <= ready["start_time"], (wake, ready)
     state = "fresh" if index == 0 else "retained"
     assert root["attributes"] == {"workspace.state": state, "startup.complete": True}, root
     for span in spans:
@@ -47,7 +56,11 @@ for index, (boot_id, spans) in enumerate(boots.items()):
             assert span["attributes"]["profile.updated"] is (index == 0), span
         if span is not root:
             assert span["context"]["trace_id"] == root["context"]["trace_id"], span
-            assert span["parent_id"] == root["context"]["span_id"], span
+            parent = application if span in (wake, ready) else root
+            assert span["parent_id"] == parent["context"]["span_id"], span
+            assert (
+                parent["start_time"] <= span["start_time"] <= span["end_time"] <= parent["end_time"]
+            ), span
         seconds = (
             datetime.fromisoformat(span["end_time"]) - datetime.fromisoformat(span["start_time"])
         ).total_seconds()

@@ -224,12 +224,16 @@ async def run(stack: AsyncExitStack) -> None:
                 )
                 # One contract check after the listener's notification, never a readiness poll.
                 (await client.get("/v1/capabilities")).raise_for_status()
-            with telemetry.span("workspace.application_wake", context=startup_context):
-                await command(RESEARCH, "workspace", "wake", env=profile_env)
-            with telemetry.span("workspace.application_ready", context=startup_context):
+            with telemetry.span("workspace.application_startup", context=startup_context):
                 seam = await stack.enter_async_context(
                     ready_process(
-                        RESEARCH, "serve", "--host", "0.0.0.0", env=profile_env, timeout=30
+                        RESEARCH,
+                        "serve",
+                        "--host",
+                        "0.0.0.0",
+                        "--wake",
+                        env=telemetry.process_env(profile_env),
+                        timeout=30,
                     )
                 )
                 async with httpx.AsyncClient(base_url="http://127.0.0.1:8650") as seam_client:

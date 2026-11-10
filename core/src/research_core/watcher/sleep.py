@@ -280,6 +280,18 @@ def volatile(running: list[str], flushed: Mapping[str, Any]) -> list[str]:
 # --- wake -------------------------------------------------------------------------------------
 
 
+def wake_from_env(env: Mapping[str, str]) -> dict[str, Any]:
+    from research_core.watcher.context import build
+
+    ctx = build(env)
+    try:
+        return wake_up(ctx)
+    finally:
+        ctx.wstore.close()
+        if ctx.store is not None:
+            ctx.store.close()
+
+
 def wake_up(ctx: TickContext) -> dict[str, Any]:
     """End the sleep: clear sleep's own pause; the next tick resumes the drained Sessions."""
     slept_since = ctx.meta(SLEEP_STARTED_KEY)
