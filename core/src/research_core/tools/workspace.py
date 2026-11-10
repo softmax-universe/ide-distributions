@@ -211,7 +211,7 @@ def doctor(ctx: ToolContext) -> dict[str, Any]:
             "workspace": _schema(ctx.wstore),
             "coworld": None if coworld is None else _coworld_schema(ctx),
         },
-        "capabilities": [] if coworld is None else capabilities.status(ctx.store),
+        "capabilities": [] if coworld is None else _capability_rows(ctx.store),
         "clis": _clis(ws.venv, checkout),
         "skill_overrides": [] if coworld is None else coworld_setup.skill_overrides(coworld.code),
         "core_path": None
@@ -327,10 +327,25 @@ def _problems(report: dict[str, Any]) -> list[str]:
 # --- capabilities -----------------------------------------------------------------------------
 
 
+def _capability_rows(store: Store) -> list[dict[str, Any]]:
+    """Every capability, with the end of its last check's output only when it is not ok.
+
+    A passing check's output (a CLI's whole ``--help``) was 92-95% of these results, 17k-37k
+    characters each. The row keeps all of it.
+    """
+    rows = []
+    for row in capabilities.status(store):
+        output = row.pop("output")
+        if row["status"] != "ok":
+            row["output_tail"] = output[-capabilities.OUTPUT_TAIL_CHARS :]
+        rows.append(row)
+    return rows
+
+
 def list_capabilities(ctx: ToolContext, *, check: bool) -> dict[str, Any]:
     store = ctx.store
     result: dict[str, Any] = {
-        "capabilities": capabilities.status(store),
+        "capabilities": _capability_rows(store),
         "broken": capabilities.broken(store),
     }
     if check:

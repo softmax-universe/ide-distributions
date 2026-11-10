@@ -15,7 +15,7 @@ from __future__ import annotations
 from research_core.platform.wait import call_platform, identity_for
 from research_core.store import notices
 from research_core.tools import _args as a
-from research_core.tools.base import ToolCall, ToolError, ToolSpec, tool
+from research_core.tools.base import INLINE_CHARS, ToolCall, ToolError, ToolSpec, tool
 
 BOTH = frozenset({"orchestrator", "researcher"})
 METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE")
@@ -110,5 +110,10 @@ SPEC = tool(
         },
         required=("method", "path"),
         orchestrator_fields=("identity",),
+        inline_chars=INLINE_CHARS,
+        spill_hint=(
+            "Routes that page take params.limit for fewer items and params.cursor (the "
+            "next_cursor in the outline) for the next page."
+        ),
     )
 )
