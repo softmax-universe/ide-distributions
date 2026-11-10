@@ -36,6 +36,7 @@ class DroppingStub:
         self.lock = threading.Lock()
         self.dropped: set[str] = set()
         self.hang = threading.Event()
+        self.title_gate = threading.Event()
         self.server = stub_server(self.answer)
         self.url = f"http://openrouter.ai:{self.server.server_address[1]}/api/v1"
 
@@ -46,6 +47,8 @@ class DroppingStub:
             handler.send_error(404)
             return
         if not body.get("tools"):
+            if b"LATE_TITLE" in raw:
+                self.title_gate.wait(60)
             stream_reply(handler, [chunk({"content": "a title"}), chunk({}, "stop", USAGE)])
             return
         script = str([m for m in messages if m["role"] == "user"][-1]["content"])
@@ -81,6 +84,7 @@ def stub():
     model = DroppingStub()
     yield model
     model.hang.set()
+    model.title_gate.set()
     model.server.shutdown()
 
 
@@ -129,14 +133,10 @@ def records_of(gateway, session_id: str, *, wait_for: tuple[str, str] | None = N
 
 
 def operations(records: list, action: str, stage: str | None = None) -> list:
-    """The Session's own operations. Its title call can end after the run has, so it is left out."""
     return [
         r
         for r in records
-        if r["family"] == "operation"
-        and r["action"] == action
-        and stage in (None, r["stage"])
-        and not str(r.get("model_attempt_id", "")).startswith("aux-")
+        if r["family"] == "operation" and r["action"] == action and stage in (None, r["stage"])
     ]
 
 
@@ -171,6 +171,27 @@ def test_every_record_names_its_own_run_while_runs_overlap(gateway):
     # The workspace tool's own process got the run and the call from the plugin.
     workspace = [r for r in stored_records(gateway.stream) if r.get("action") == "workspace_tool"]
     assert {(r.get("run_id"), r.get("tool_call_id")) for r in workspace} >= {(run_id, "call_read")}
+
+
+def test_a_title_that_ends_after_its_run_keeps_that_run_while_another_runs(gateway, stub):
+    session_id, other_session_id = open_session(gateway), open_session(gateway)
+    run_id = start_run(gateway, session_id, "plain answer LATE_TITLE")
+    wait_run(gateway, run_id)
+    other_run_id = start_run(gateway, other_session_id, "plain answer two")
+    wait_run(gateway, other_run_id)
+    stub.title_gate.set()
+    deadline = time.monotonic() + 20
+    while True:
+        titles = [
+            r
+            for r in operations(records_of(gateway, session_id), "model_attempt")
+            if str(r.get("model_attempt_id", "")).startswith("aux-")
+        ]
+        if "response" in {r["stage"] for r in titles} or time.monotonic() > deadline:
+            break
+        time.sleep(0.1)
+    assert {r["stage"] for r in titles} >= {"request", "response"}
+    assert {r.get("run_id") for r in titles} == {run_id}
 
 
 def test_a_dropped_stream_keeps_its_reasoning_and_the_retry_completes(gateway):

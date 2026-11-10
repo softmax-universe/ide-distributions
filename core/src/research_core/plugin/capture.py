@@ -230,11 +230,16 @@ class GatewayCapture:
         # The run a Session's current turn belongs to, as its requests found it: the admission can
         # leave ``started`` before ``on_session_end`` reads the turn's committed rows.
         self._turn_run: dict[str, str | None] = {}
+        # The run each Session's latest turn belongs to, bound when the turn starts: the title call
+        # Hermes starts then can end after the run does. And the run each auxiliary call is in.
+        self._spawn_run: dict[str, str | None] = {}
+        self._call_run: dict[str, str | None] = {}
         # Compaction moves a Session to a new live ID; records keep naming the one it started with.
         self._first_session: dict[str, str] = {}
 
     def hooks(self) -> dict[str, Callable[..., None]]:
         return {
+            "pre_llm_call": self.pre_llm_call,
             "pre_api_request": self.pre_api_request,
             "post_api_request": self.post_api_request,
             "api_request_error": self.api_request_error,
@@ -301,6 +306,10 @@ class GatewayCapture:
         """``llm_request`` middleware that changes nothing: the whole request, for the hook."""
         self._requests[session_id] = request
 
+    def pre_llm_call(self, session_id: str = "", **_: Any) -> None:
+        """A turn starts, before Hermes starts the calls (title, compression) that belong to it."""
+        self._spawn_run[session_id] = run_of(session_id or None)
+
     def pre_api_request(
         self,
         session_id: str = "",
@@ -320,6 +329,7 @@ class GatewayCapture:
             session_id, turn_id=turn_id, hermes_task_id=task_id, api_request_id=api_request_id
         )
         self._turn_run[session_id] = ids.get("run_id")
+        self._spawn_run[session_id] = ids.get("run_id")
         self._writer.capture_operation(
             "model_request",
             "started",
@@ -514,12 +524,18 @@ class GatewayCapture:
     # Hermes hands plugins these bodies capped (``HERMES_PLUGIN_PAYLOAD_MAX_CHARS``, 50,000).
 
     def _auxiliary_ids(
-        self, aux_task: str, started_at: Any, session_id: str
+        self, aux_task: str, started_at: Any, session_id: str, *, starting: bool
     ) -> tuple[dict[str, Any], str, str]:
-        """The pair shares a start time and nothing else that identifies one attempt."""
+        """The pair shares a start time and nothing else that identifies one attempt. A call is in
+        the run its Session's turn was in when the call began, even if it ends after that run."""
         task = _name(aux_task) or "unknown"
         attempt_id = f"aux-{task}-{int((started_at or 0) * 1_000_000)}"
-        ids = self._ids(session_id, native_event_type=task)
+        if starting:
+            self._call_run[attempt_id] = self._spawn_run.get(session_id)
+            run_id = self._call_run[attempt_id]
+        else:
+            run_id = self._call_run.pop(attempt_id, None)
+        ids = self._ids(session_id, native_event_type=task, run_id=run_id)
         return ids, attempt_id, ids.get("session_id", NO_SESSION)
 
     def pre_auxiliary_call(
@@ -532,7 +548,9 @@ class GatewayCapture:
         api_request_id: str | None = None,
         **_: Any,
     ) -> None:
-        ids, attempt_id, session = self._auxiliary_ids(aux_task, started_at, session_id)
+        ids, attempt_id, session = self._auxiliary_ids(
+            aux_task, started_at, session_id, starting=True
+        )
         identity = {key: value for key, value in ids.items() if key != "session_id"}
         self._writer.capture_request(
             wire_request((request or {}).get("body") or {}),
@@ -559,7 +577,9 @@ class GatewayCapture:
         usage: Any = None,
         **_: Any,
     ) -> None:
-        ids, attempt_id, session = self._auxiliary_ids(aux_task, started_at, session_id)
+        ids, attempt_id, session = self._auxiliary_ids(
+            aux_task, started_at, session_id, starting=False
+        )
         identity = {key: value for key, value in ids.items() if key != "session_id"}
         duration_ms = _milliseconds(started_at, ended_at)
         message = (response or {}).get("assistant_message") if not error else None
