@@ -328,7 +328,7 @@ class ToolContext:
         if not coworld_id:
             raise ToolError(
                 "this session has no Coworld; the client must open a session for one, so tell "
-                "the user. A delegated child never has one: return your findings to the parent"
+                "the user"
             )
         return self.workspace.coworld(coworld_id)
 

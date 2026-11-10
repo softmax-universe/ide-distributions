@@ -18,8 +18,9 @@ they mean what they say. Nobody is reading a chat: use `ui.notify`, or `ui.ask` 
 3. `experiment.read {experiment: X-n}`: the hypothesis and methods as locked at start, the runs,
    the verdict and its reason codes. The decision rule was pre-registered: check that the verdict
    follows from the stored rows, that both arms met the mixin's minimum episodes, and that
-   nothing differed between arms except the candidate. Game-specific metrics and floors: see the
-   mixin's `<coworld>-ab` and `<coworld>-eval-design` skills or docs.
+   nothing differed between arms except the candidate. Game-specific metrics and floors: see
+   `code/mixin/skills/<coworld>-ab/SKILL.md` and `code/mixin/skills/<coworld>-eval-design/SKILL.md`
+   or the mixin docs.
 4. `claim.read` on each new claim: a summary of at most 40 words, evidence whose stance supports
    it, no duplicate of what `claim.search` already finds. `claim.inspect_evidence` when a claim
    rests on one measurement or one replay.

@@ -25,8 +25,8 @@ include_retired: true}`, and `experiment.search {query: "G-n"}` and by lever for
 whatever its verdict. A refuted claim or a failed Experiment is a lead: what changed since, what
 was not controlled. Read the league
 now: `platform.standings`, `platform.active_policies {league, exclude_player: true}`, the champion.
-Game-specific levers and failure vocabulary: see the mixin's `<coworld>-diagnosis` and
-`<coworld>-ab` skills or docs.
+Game-specific levers and failure vocabulary: see `code/mixin/skills/<coworld>-diagnosis/SKILL.md`
+and `code/mixin/skills/<coworld>-ab/SKILL.md` or the mixin docs.
 
 Work: for each idea, `task_propose {goal, type, title, description, reasoning, for_human,
 end_condition, end_detail, priority}`.

@@ -19,7 +19,7 @@ An Experiment compares two Versions and ends in the verdict its pre-registered d
 - `summary`: at most 40 words.
 - `hypothesis {statement, if_true, if_false, motivation}`: a mechanism ("X because Y, so Z"), not a tweak. `if_true` and `if_false` say what we do in each case and must differ.
 - `methods {baseline, candidate, procedure, metrics, decision_rule}`: Versions as `V-n`; leave `candidate` empty until it is built, the one Version built for the Experiment fills it. `metrics`: `[{name, direction, role, min_effect?, tolerance?}]` with roles `primary`, `guardrail`, `performance`; a guardrail or performance metric with no `tolerance` refutes on any drop. Every behavioural primary metric gets an anti-gaming guardrail; a rate metric needs its volume counterparts. `decision_rule {text, n_min}`: `n_min` pairs from the noise record (`calibrate-noise`) or the mixin's floors.
-- Metric names, directions, rosters and floors are game-specific: see the mixin's `<coworld>-eval-design` and `<coworld>-ab` skills or docs. Without them, say so and treat the result as directional.
+- Metric names, directions, rosters and floors are game-specific: see `code/mixin/skills/<coworld>-eval-design/SKILL.md` and `code/mixin/skills/<coworld>-ab/SKILL.md` or the mixin docs. Without them, say so and treat the result as directional.
 - `tags`: the lever and the Goal (`G-n`).
 
 Attack the design before starting: does the metric measure the mechanism or a correlate; can this shape show the effect; what else produces the signal; does `n_min` support the effect you expect? Redesign while it is proposed (`experiment.update`).

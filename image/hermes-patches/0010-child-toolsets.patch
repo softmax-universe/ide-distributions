@@ -1,0 +1,54 @@
+diff --git a/hermes_cli/config_defaults.py b/hermes_cli/config_defaults.py
+index dd17e453..8076135b 100644
+--- a/hermes_cli/config_defaults.py
++++ b/hermes_cli/config_defaults.py
+@@ -1344,6 +1344,9 @@ DEFAULT_CONFIG = {
+         # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
+         # toolsets=["web"] doesn't strip MCP). false = strict intersection.
+         "inherit_mcp_toolsets": True,
++        # Toolsets a child never gets, on top of the parent's disabled_toolsets: tools that only
++        # work in the parent's session (a plugin's session-bound tools, say).
++        "disabled_toolsets": [],
+         # Per-subagent iteration cap (own budget, independent of the parent's).
+         "max_iterations": 250,
+         # Hard per-summary char ceiling on subagent results, layered on the dynamic budget (each
+diff --git a/tools/delegate_tool_config.py b/tools/delegate_tool_config.py
+index 7e55c0b1..d36a9dcf 100644
+--- a/tools/delegate_tool_config.py
++++ b/tools/delegate_tool_config.py
+@@ -220,6 +220,11 @@ def _get_inherit_mcp_toolsets() -> bool:
+     """Whether narrowed child toolsets should keep the parent's MCP toolsets."""
+     return is_truthy_value(_cfg().get("inherit_mcp_toolsets"), default=True)
+ 
++def _get_child_disabled_toolsets() -> list[str]:
++    """``delegation.disabled_toolsets``: toolsets a child never gets, on top of the parent's own
++    disabled ones, for tools that only work in the parent's session."""
++    return [str(name) for name in _cfg().get("disabled_toolsets") or []]
++
+ def _normalized_runtime_url(value: Any) -> str:
+     return str(value or "").strip().rstrip("/")
+ 
+diff --git a/tools/delegate_tool_toolsets.py b/tools/delegate_tool_toolsets.py
+index 25ec6331..de266ac5 100644
+--- a/tools/delegate_tool_toolsets.py
++++ b/tools/delegate_tool_toolsets.py
+@@ -6,7 +6,7 @@ import logging
+ from typing import List, Optional
+ 
+ from toolsets import TOOLSETS, resolve_toolset
+-from tools.delegate_tool_config import _get_inherit_mcp_toolsets
++from tools.delegate_tool_config import _get_child_disabled_toolsets, _get_inherit_mcp_toolsets
+ 
+ logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+ 
+@@ -118,6 +118,9 @@ def _resolve_child_toolsets(
+         if "delegation" not in child_toolsets:
+             child_toolsets.append("delegation")
+     child_disabled_toolsets = list(
+-        dict.fromkeys(inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"])
++        dict.fromkeys(
++            inherited_disabled + _get_child_disabled_toolsets() + _blocked_toolsets_for_role(effective_role)
++            + ["kanban"]
++        )
+     )
+     return child_toolsets, child_disabled_toolsets

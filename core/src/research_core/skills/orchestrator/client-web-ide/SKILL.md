@@ -45,8 +45,8 @@ adopted Version with `version.adopt {policy_version, summary}`.
 `replay_moment` says the user has a replay open at a step and a seat, with a note. Treat it as
 the subject of the message: fetch the replay with `platform.replay {episode}` when you need the
 data, answer about that moment, and when you find something worth keeping, record a claim with
-`replay` evidence naming the episode and the step (how to read it: see the mixin's
-`<coworld>-replay-inspection` skill or docs).
+`replay` evidence naming the episode and the step (how to read it: see
+`code/mixin/skills/<coworld>-replay-inspection/SKILL.md` or the mixin docs).
 
 ## Opening goal and discovery
 

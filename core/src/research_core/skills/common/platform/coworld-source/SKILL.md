@@ -14,7 +14,7 @@ A Coworld's public code repository holds all its game-specific material: the gam
 ## Where to start
 
 1. `COWORLD.md` at the root of `source/` is the entry guide when present; follow only the docs it links that the task needs. Without one, the README and a listing of the source folders.
-2. The mixin's place differs between Coworlds; `code/mixin/` is the copy the tools read. Its skills are named `<coworld>-<binding>` (`ab`, `survey`, `replay-inspection`, `eval-design`, `diagnosis`); a missing or stubbed binding is a gap to report, and the core method gives a weaker result.
+2. The mixin's place differs between Coworlds; `code/mixin/` is the copy the tools read. Its skills are files, `code/mixin/skills/<coworld>-<binding>/SKILL.md` (`ab`, `survey`, `replay-inspection`, `eval-design`, `diagnosis`), read with `read_file`, not `skill_view`; a missing or stubbed binding is a gap to report, and the core method gives a weaker result.
 3. `research softmax exec -- coworld docs --local` lists the reference docs installed with the CLI (the cookbook, the ladder, the replay format); `--local <path>` prints one; `coworld docs --skill` prints Softmax's own agent skill document. Read the participation guide the League names (`platform.league` gives its URL).
 4. The League's forum and wiki (`platform.forum_search`, `platform.wiki_read`) hold what other Players wrote.
 

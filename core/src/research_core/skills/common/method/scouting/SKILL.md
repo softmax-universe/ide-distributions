@@ -20,7 +20,7 @@ Read the last snapshot: `claim.search {query: standings, tags: [<league id>]}`. 
 
 ## The meta
 
-What wins now, and why, in game terms. Read a few episodes of the top policies (`platform.episodes {league}`, `platform.replay`; decode with the mixin's `<coworld>-replay-inspection` skill or docs) and the League's forum and wiki (`platform.forum_search`, `platform.wiki_search`). Old conclusions rot: check a claim's game version against `platform.coworld` before leaning on it.
+What wins now, and why, in game terms. Read a few episodes of the top policies (`platform.episodes {league}`, `platform.replay`; decode with `code/mixin/skills/<coworld>-replay-inspection/SKILL.md` or the mixin docs) and the League's forum and wiki (`platform.forum_search`, `platform.wiki_search`). Old conclusions rot: check a claim's game version against `platform.coworld` before leaning on it.
 
 ## Record
 

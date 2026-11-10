@@ -27,4 +27,4 @@ Not when the answer is in the mixin's docs, the Coworld's source (`coworld-sourc
 - Read the answer as advice. Inspect any proposed change against the actual game and policy source, then run the mixin's `check` and the relevant tests yourself. A consultation cannot establish that code compiled, uploaded, submitted or played.
 - Continue the original Task yourself; keep the advice and what you verified. Record what the check established as a claim (`writing-claims`) with the real evidence (`code`, `measurement`, `experiment`); the consultation itself is at most a `transcript` link.
 - Do not repeat the same consultation without new evidence; a second opinion is a different question or a different model.
-- Game-specific advice is checked against the game: see the mixin's `<coworld>-diagnosis` skill or docs before you accept a mechanism it names.
+- Game-specific advice is checked against the game: see `code/mixin/skills/<coworld>-diagnosis/SKILL.md` or the mixin docs before you accept a mechanism it names.

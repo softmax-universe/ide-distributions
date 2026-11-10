@@ -67,6 +67,12 @@ def render(ctx: Any, session_id: str, max_chars: int = MAX_CHARS) -> str:
             f"Work only in {coworld.root}. "
             f"This session belongs to {coworld.coworld_id}; do not change its Coworld."
         )
+        # 10 terminal misses in two days looked for code/ or documents/ inside a worktree.
+        parts.append(
+            "Its folders: code/ (the policy repository on main), source/, documents/ and "
+            "worktrees/task-<n>/ or worktrees/orch-<n>/. A worktree is a checkout of code/, so "
+            "its top holds mixin/ (not code/mixin/), and documents/ is only in the Coworld folder."
+        )
         parts.append(
             "Native terminal commands inherit this session ID. Named store reads can use: "
             f"research store snapshot --store coworld --coworld {coworld.coworld_id}. "

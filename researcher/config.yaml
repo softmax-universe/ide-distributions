@@ -13,6 +13,11 @@ approvals:
   cron_mode: approve
   single_query_mode: approve
   unattended_mode: approve
+# Hermes asks a human before each file-tool write to an AGENTS.md even with approvals off, and
+# nobody can answer through the api_server, so the write waits 300 s and fails. prepare.py keeps
+# this key (PROTECTED_KEYS).
+security:
+  protected_instruction_files: false
 # Above 64,000 tokens, use Hermes's existing deterministic prune without a model call:
 # prune results over 2,000 characters older than the protected tail; archive originals.
 compression:
@@ -28,6 +33,10 @@ platform_toolsets:
   cron: []
 known_plugin_toolsets:
   cron: [ide-researcher]
+# A delegated child has no Session, so no Coworld, which every ide-researcher tool needs.
+# prepare.py keeps this key (PROTECTED_KEYS).
+delegation:
+  disabled_toolsets: [ide-researcher]
 plugins:
   enabled: [researcher]
 # Keep every profile tool loaded instead of deferred behind tool_search (design §4).

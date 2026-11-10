@@ -23,7 +23,7 @@ an unset repository, an unfinished dependency): end your run without writing any
 - `task.read {task}` for the full record, `goal.read {goal}` for the end state the work is judged
   by, `directive.list` for standing instructions on the workspace and the Goal.
 - The type's instructions (returned by the claim) and the skills they name; the mixin's
-  `<coworld>-<binding>` skills for every game-specific step.
+  `code/mixin/skills/<coworld>-<binding>/SKILL.md` files (`read_file`) for every game-specific step.
 - `claim.search` and `experiment.search` for what is known or was tried: a refuted claim or an
   abandoned Experiment is a lead, not a gap.
 

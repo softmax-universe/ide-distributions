@@ -68,6 +68,11 @@ PROTECTED_KEYS: dict[str, Any] = {
     "approvals.cron_mode": "approve",
     "approvals.single_query_mode": "approve",
     "approvals.unattended_mode": "approve",
+    # Hermes asks a human before every write_file or patch to an AGENTS.md, even with approvals
+    # off, and nobody can answer through the api_server: each such write waited 300 s and failed
+    # (7 times, 2026-11-06 to 11-09). Setup and mixin-from-scratch write the lab AGENTS.md, and the
+    # terminal can write it with approvals off anyway, so the gate only blocked the file tools.
+    "security.protected_instruction_files": False,
     "memory.memory_enabled": False,
     "memory.user_profile_enabled": False,
     "tools.tool_search.enabled": "off",
@@ -89,8 +94,12 @@ PROTECTED_KEYS: dict[str, Any] = {
     # Hermes tools these agents never called, each sent on every model call (JAME-178). Hermes
     # disables whole toolsets: `browser` also takes browser_vault, browser_cdp and browser_dialog.
     # `todo`: the plan is Goals and Tasks, and no call in 1,981 used it. `delegation` stays: the
-    # expert-consultation skill needs it, and a child without a Coworld is told so when it tries.
+    # expert-consultation skill needs it.
     "agent.disabled_toolsets": ["browser", "connections", "cronjob", "todo"],
+    # A delegate_task child has no Session record, so it has no Coworld, and the profile's tools
+    # need one: 13 `platform` calls by one child failed on it (2026-11-09). The child gets the
+    # Hermes tools only and returns its findings to the parent (patch 0010).
+    "delegation.disabled_toolsets": ["ide-<role>"],
     # Reclaim stale results below Hermes's 8,000-character default cutoff as well. The existing
     # deterministic prune protects recent results and archives originals without a model call.
     "compression.proactive_prune_tokens": 64000,

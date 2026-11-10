@@ -1,6 +1,6 @@
 # Hermes patches
 
-Our own small changes to Hermes for telemetry hooks and hosted listener readiness. They apply to the Hermes in the image that `image/Dockerfile` pins (v0.22.6, upstream commit
+Our own small changes to Hermes for telemetry hooks, hosted listener readiness and three tool behaviours. They apply to the Hermes in the image that `image/Dockerfile` pins (v0.22.6, upstream commit
 `f0d94882e89ab8d4098b5bb2f166adfb9ee0a0ab`). We do not propose them upstream. A Hermes update means
 reapplying them, rebuilding the image and rerunning `core/tests/hermes/test_hermes_patches.py`.
 
@@ -16,6 +16,9 @@ uses the unpatched image.
 | `0004-run-binding.patch` | Tell a callback which run it belongs to, so that it never has to look up the session's latest run. |
 | `0005-gateway-exit-flush.patch` | Give plugins one call before the gateway's `os._exit`, which skips every `atexit` step. |
 | `0006-api-listener-ready.patch` | Notify the hosted supervisor when the API listener has bound and registered its routes, replacing readiness polling. |
+| `0009-skill-category-names.patch` | `skill_view` also takes `<category>.<name>` (`method.experiment`), the form the skill index suggests. A name that reads as more than one skill is refused with the candidates. |
+| `0010-child-toolsets.patch` | `delegation.disabled_toolsets`: toolsets a `delegate_task` child never gets. The profiles name their own, whose tools need the parent's Session. |
+| `0011-read-missing-directory.patch` | When `read_file` is given a path whose directory is missing, the not-found result names the deepest directory that exists and lists it. |
 
 `core/src/research_core/plugin/capture.py` is what uses them.
 
