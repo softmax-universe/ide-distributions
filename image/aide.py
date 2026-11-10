@@ -49,7 +49,9 @@ MAX_BYTES = 1048576
 ACTIVE = frozenset({"queued", "running", "waiting"})
 TERMINAL = frozenset({"completed", "cancelled", "failed", "interrupted"})
 CONTROLS = frozenset({"approval.request", "approval.settled", "clarify.request", "clarify.settled"})
-COMMANDS = frozenset({"session.open", "chat.send", "chat.cancel", "task.cancel", "input.respond"})
+COMMANDS = frozenset(
+    {"session.open", "session.page", "chat.send", "chat.cancel", "task.cancel", "input.respond"}
+)
 RECENT_TERMINAL = 10  # terminal requests a Session embeds beside its open ones
 EMBEDDED_ACTIVE = 1000  # open requests a Session embeds at most
 ERROR_CHARS = 4000  # RequestError.message
@@ -108,6 +110,20 @@ class Client(Closed):
 class Open(Closed):
     scope: Scope
     client: Client | None = None
+
+
+class PageScope(Scope):
+    scope: Literal["coworld"]
+    coworld: str = Field(min_length=1, max_length=120)
+    league: str = Field(min_length=1, max_length=120)
+
+
+class SessionPage(Closed):
+    session_id: str
+    scope: Scope
+    page: PageScope
+    related_uploads: list[str] = Field(max_length=1000)
+    target_session_id: str | None = None
 
 
 class Send(Closed):
@@ -1472,6 +1488,52 @@ class Backend:
         session = await self.project(row, snapshot.records.requests)
         return {"session": session.model_dump(mode="json")}
 
+    async def session_page(self, frontend_id: UUID, request_id: str, params: SessionPage) -> dict:
+        await self.touch(params.session_id, params.scope, frontend_id)
+        # Related uploads are page context for grouping. Every session keeps its own checked scope.
+        uploads = {params.page.coworld, *params.related_uploads}
+        if params.scope.coworld is None or (
+            params.scope.coworld in uploads and params.scope.league == params.page.league
+        ):
+            return {"kind": "stay"}
+        confirmed = "target_session_id" in params.model_fields_set
+        if confirmed and params.target_session_id is None:
+            # Confirmations for an empty target converge on one creation, even after a lost reply.
+            scope = Scope.model_validate(params.page.model_dump())
+            open_id = str(uuid5(NAMESPACE_URL, f"aide:session.page:{scope.model_dump_json()}"))
+            opened = await self.open(
+                frontend_id, open_id, Open(scope=scope, client=Client(id="softmax", kind="web"))
+            )
+            return {"kind": "switched", **opened}
+        snapshot = await self.snapshot()
+        candidates = [
+            row
+            for row in snapshot.records.sessions
+            if row.parent is None
+            and row.coworld_id in uploads
+            and (scope := row.scope()) is not None
+            and scope.league == params.page.league
+        ]
+        if confirmed:
+            target = next((row for row in candidates if row.id == params.target_session_id), None)
+            if target is None:
+                raise Refusal("not_found", "No such session for the viewed Coworld")
+            session = await self.project(target, snapshot.records.requests)
+            return {"kind": "switched", "session": session.model_dump(mode="json")}
+
+        activity = {}
+        for request in snapshot.records.requests:
+            if request.input is not None:
+                activity[request.session_id] = max(
+                    activity.get(request.session_id, ""), request.created_at
+                )
+        target = max(
+            candidates,
+            key=lambda row: (max(row.started, activity.get(row.id, "")), row.started, row.id),
+            default=None,
+        )
+        return {"kind": "offer", "target_session_id": target.id if target else None}
+
     async def send_chat(self, frontend_id: UUID, request_id: str, params: Send) -> dict:
         await self.touch(params.session_id, params.scope, frontend_id)
         if len(params.messages) != 1 or params.messages[0]["role"] != "user":
@@ -1735,6 +1797,7 @@ class Backend:
             request_id, method = str(message["id"]), str(message["method"])
             handlers = {
                 "session.open": (Open, self.open),
+                "session.page": (SessionPage, self.session_page),
                 "chat.send": (Send, self.send_chat),
                 "chat.history": (History, self.history),
                 "chat.events": (Events, self.read_events),
