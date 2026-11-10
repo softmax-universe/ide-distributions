@@ -21,7 +21,6 @@ import pytest
 from research_core.agent_telemetry import TelemetryWriter
 from research_core.plugin.capture import (
     ACCESS_LOGGER,
-    FLUSH_S,
     NO_SESSION,
     DiagnosticsHandler,
     GatewayCapture,
@@ -55,7 +54,7 @@ CALL = "turn-1:api:1"
 
 @pytest.fixture
 def capture(writer, home) -> GatewayCapture:
-    return GatewayCapture(writer, "orchestrator", lambda: False)
+    return GatewayCapture(writer, "orchestrator")
 
 
 def _start_run(home: Path, session_id: str, run_id: str) -> None:
@@ -541,23 +540,17 @@ def stalled_writer(tmp_path, producer, redactor):
     os.close(reader)
 
 
-def test_a_turn_end_waits_for_a_stalled_stream_only_while_the_gateway_stops(stalled_writer, home):
-    """Telemetry never delays the agent: with the pipe full, a turn's end returns at once. Only a
-    gateway that is stopping waits, for at most ``FLUSH_S``."""
-    stopping = False
-    capture = GatewayCapture(stalled_writer, "orchestrator", lambda: stopping)
+def test_a_turn_end_never_waits_for_a_stalled_stream(stalled_writer, home):
+    """Telemetry never delays the agent: with the pipe full and the writer's thread stuck on it,
+    a turn's end still only enqueues."""
+    capture = GatewayCapture(stalled_writer, "orchestrator")
     big = {**REQUEST, "messages": [*REQUEST["messages"], {"role": "user", "content": "x" * 2**20}]}
     _request(capture, request=big)
     _reply(capture)
     started = time.monotonic()
     capture.on_session_end(session_id="ses_1", turn_id="turn-1", completed=True)
-    capture.on_session_finalize(session_id="ses_1")
-    # Far under ``FLUSH_S``: it measures a few milliseconds alone, more on a loaded CI runner.
+    # A few milliseconds alone, more on a loaded CI runner; a wait on the writer would never end.
     assert time.monotonic() - started < 1.0
-    stopping = True
-    started = time.monotonic()
-    capture.on_session_end(session_id="ses_1", turn_id="turn-2", completed=False)
-    assert time.monotonic() - started >= FLUSH_S
 
 
 def test_a_turns_calls_are_forgotten_at_its_end_and_its_failures_stay_attributed(

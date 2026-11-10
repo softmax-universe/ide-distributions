@@ -34,9 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 COMMAND_WRITER = "research-command"
-# A tool call waits for its command to exit, so the exit waits this long at most for the writer: a
-# command's few records take under 4 ms with a stream that keeps up, and a stalled one loses them.
-COMMAND_EXIT_FLUSH_S = 0.02
+COMMAND_EXIT_FLUSH_S = 2.0
 _DISPLAY_ID = re.compile(r"^([A-Z])-(\d+)$")
 _DETAIL_NAME = re.compile(r"[^a-z0-9_.-]")
 

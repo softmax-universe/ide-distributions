@@ -17,11 +17,8 @@ no agent; Hermes logs it.
   An auxiliary call keeps the run its Session's turn was in when the call began.
 
 Telemetry never waits on the agent's path: a hook only enqueues. The writer's thread is a daemon,
-and Hermes ends the gateway with ``os._exit``, so what it still has queued at exit is lost unless
-flushed first. Only while the gateway stops does a turn's end (``on_session_end``) or a Session's
-finalization (``on_session_finalize``) wait, up to ``FLUSH_S``, for the writer: a graceful stop
-interrupts each running turn and the turn's end keeps its records. A hard exit loses what the
-writer still had queued. One writer serves the whole gateway process,
+and Hermes ends the gateway with ``os._exit``, so any exit loses what the writer still had queued.
+One writer serves the whole gateway process,
 because a multiplexed gateway registers this plugin once per profile. Each profile has its own
 ``GatewayCapture``, for its name and per-session state.
 
@@ -59,9 +56,6 @@ from research_core.plugin.repeats import refusal_of
 from research_core.plugin.runs import parents, run_of
 
 GATEWAY_WRITER = "gateway"
-# How long a turn's end or a Session's finalization waits for the writer while the gateway stops.
-# Hermes abandons an ``on_session_end`` callback after 30 seconds and a finalization after 10.
-FLUSH_S = 5.0
 # Auxiliary calls outside a turn belong to no Session, and a manifest must name one.
 NO_SESSION = "no-session"
 _NOT_A_NAME = re.compile(r"[^a-z0-9_.-]+")
@@ -222,11 +216,9 @@ def _milliseconds(start: Any, end: Any) -> float | None:
 class GatewayCapture:
     """The hooks of one profile, writing through the gateway's one writer."""
 
-    def __init__(self, writer: TelemetryWriter, profile: str, stopping: Callable[[], bool]) -> None:
-        """``stopping`` says, without waiting, whether the gateway is shutting down."""
+    def __init__(self, writer: TelemetryWriter, profile: str) -> None:
         self._writer = writer
         self._profile = profile
-        self._stopping = stopping
         self._started = time.time()
         # All by live Hermes Session. One dict operation at a time needs no lock here.
         self._requests: dict[str, Mapping[str, Any]] = {}
@@ -268,7 +260,6 @@ class GatewayCapture:
             "post_compaction": self.post_compaction,
             "on_session_start": self.on_session_start,
             "on_session_end": self.on_session_end,
-            "on_session_finalize": self.on_session_finalize,
             "subagent_start": self.subagent_start,
             "subagent_stop": self.subagent_stop,
         }
@@ -755,13 +746,6 @@ class GatewayCapture:
             details={"completed": completed} if isinstance(completed, bool) else None,
             **self._ids(session_id, turn_id=turn_id, hermes_task_id=task_id),
         )
-        if self._stopping():
-            self._writer.flush(FLUSH_S)
-
-    def on_session_finalize(self, **_: Any) -> None:
-        """A Session ends. Hermes also finalizes one on ``/new``, which must not wait."""
-        if self._stopping():
-            self._writer.flush(FLUSH_S)
 
     def _capture_commits(self, session_id: str, run_id: str | None) -> None:
         """Each row of the Session that Hermes committed since the last turn's end, or since this
@@ -903,15 +887,6 @@ def _gateway_writer() -> TelemetryWriter:
         return _writer
 
 
-def gateway_stopping() -> bool:
-    """Whether Hermes's gateway has begun to stop: ``GatewayRunner.stop`` clears ``_running`` before
-    it drains and interrupts running turns. Outside a gateway there is no runner."""
-    from gateway.run import _gateway_runner_ref
-
-    runner = _gateway_runner_ref()
-    return runner is not None and not runner._running
-
-
 def register_capture(ctx: Any) -> Callable[[str, Any, Sequence[tuple[str, str]]], None] | None:
     """Register every hook and the request middleware, and return where ``plugin/turn.py``
     reports what it adds to a turn.
@@ -923,7 +898,7 @@ def register_capture(ctx: Any) -> Callable[[str, Any, Sequence[tuple[str, str]]]
         writer = _gateway_writer()
     except ImportError:
         return None
-    capture = GatewayCapture(writer, ctx.profile_name, gateway_stopping)
+    capture = GatewayCapture(writer, ctx.profile_name)
     for hook_name, callback in capture.hooks().items():
         ctx.register_hook(hook_name, callback)
     # Last of the plugin's llm_request middleware (``register.py`` calls this after the others), so
