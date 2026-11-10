@@ -277,8 +277,8 @@ class GoalRow(BaseModel):
 
 
 class BoardRecords(BaseModel):
-    tasks: list[TaskRow]
-    goals: list[GoalRow]
+    tasks: list[TaskRow] = []
+    goals: list[GoalRow] = []
 
 
 class Board(BaseModel):
@@ -734,6 +734,15 @@ class Subscription:
         self.frontends: set[UUID] = set()
 
 
+class BoardFeed:
+    """One Coworld event stream, with an independent cursor per frontend and resource."""
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.readers: dict[tuple[UUID, str], int | None] = {}
+        self.watcher: asyncio.Task[None] | None = None
+
+
 class Backend:
     def __init__(
         self,
@@ -746,6 +755,7 @@ class Backend:
         self.epoch, self.revision = str(uuid4()), 0
         self.socket: ClientConnection | None = None
         self.subscribers: dict[str, Subscription] = {}
+        self.boards: dict[str, BoardFeed] = {}
         self.requests: dict[str, str] = {}  # admission op id -> session id
         self.wakes: dict[str, asyncio.Event] = {}
         self.consumers: dict[str, asyncio.Task[None]] = {}
@@ -888,11 +898,14 @@ class Backend:
             requests=[chat_request(r, scope) for r in mine if r.op_id in embedded],
         )
 
-    async def board(self, coworld: str, resource: str) -> tuple[int, list[BaseModel]]:
+    async def board(
+        self, coworld: str, resource: str, item_id: str | None = None
+    ) -> tuple[int, list[BaseModel]]:
+        params = {"store": "coworld", "coworld": coworld, "board": resource}
+        if item_id is not None:
+            params["item"] = item_id
         board = Board.model_validate_json(
-            await self.call(
-                self.seam, "GET", "/snapshot", params={"store": "coworld", "coworld": coworld}
-            )
+            await self.call(self.seam, "GET", "/snapshot", params=params)
         )
         if resource == "goals":
             return board.seq, [
@@ -922,6 +935,98 @@ class Backend:
             )
             for row in board.records.tasks
         ]
+
+    async def subscribe_board(
+        self, frontend_id: UUID, coworld: str, resource: str
+    ) -> tuple[int, list[BaseModel]]:
+        """Install the list cursor before the feed can pass it."""
+        feed = self.boards.setdefault(coworld, BoardFeed())
+        reader = (frontend_id, resource)
+        feed.readers.setdefault(reader, None)
+        try:
+            async with feed.lock:
+                revision, rows = await self.board(coworld, resource)
+                if reader in feed.readers:  # the frontend can close during the snapshot
+                    feed.readers[reader] = revision
+                    if feed.watcher is None:
+                        feed.watcher = self.work.create_task(
+                            self.watch_board(coworld, feed, revision)
+                        )
+                return revision, rows
+        finally:
+            if reader in feed.readers and feed.readers[reader] is None:
+                del feed.readers[reader]
+                if not feed.readers:
+                    del self.boards[coworld]
+
+    async def watch_board(self, coworld: str, feed: BoardFeed, after: int) -> None:
+        """Follow durable board events while at least one frontend has a scoped inventory."""
+        while True:
+            try:
+                async with self.seam.stream(
+                    "GET",
+                    "/stream",
+                    params={"store": "coworld", "coworld": coworld, "after": after},
+                    timeout=httpx.Timeout(10, read=None),
+                ) as response:
+                    if response.status_code < 500:
+                        response.raise_for_status()
+                        async for data in events(response):
+                            event = SeamEvent.model_validate_json(data)
+                            await self.publish_board(coworld, feed, event)
+                            after = event.seq
+            except (httpx.TransportError, Refusal) as error:
+                if isinstance(error, Refusal) and error.code != "unavailable":
+                    raise
+                log.info("Coworld board stream dropped; resuming after %s", after)
+            await asyncio.sleep(1)
+
+    async def publish_board(self, coworld: str, feed: BoardFeed, event: SeamEvent) -> None:
+        kind = event.kind.partition(".")[0]
+        prefix = {"task": "T-", "goal": "G-"}.get(kind)
+        if prefix is None or not event.subject.startswith(prefix):
+            return
+        resource = kind + "s"
+        async with feed.lock:
+            readers = {
+                reader: revision
+                for reader, revision in feed.readers.items()
+                if reader[1] == resource and revision is not None and revision < event.seq
+            }
+            if not readers:
+                return
+            _, items = await self.board(coworld, resource, event.subject)
+            socket = self.socket
+            if socket is None:
+                return
+            # A frontend may close during the projection. Do not send to it or restore its cursor.
+            readers = {
+                reader: previous for reader, previous in readers.items() if reader in feed.readers
+            }
+            for reader in readers:
+                feed.readers[reader] = event.seq
+
+        change = (
+            {"change": "upsert", "item": items[0].model_dump(mode="json")}
+            if items
+            else {"change": "delete", "id": f"{coworld}:{event.subject}"}
+        )
+        for (frontend_id, _), previous in readers.items():
+            await self.send(
+                socket,
+                frontend_id,
+                {
+                    "jsonrpc": "2.0",
+                    "method": "state.changed",
+                    "params": {
+                        "resource": resource,
+                        "epoch": "coworld",
+                        "revision": event.seq,
+                        "previous_revision": previous,
+                        **change,
+                    },
+                },
+            )
 
     # --- notifications ----------------------------------------------------------------------
 
@@ -1383,7 +1488,10 @@ class Backend:
             coworld = params.scope.coworld if params.scope else params.scope_id
             if coworld is None:
                 raise Refusal("unsupported", "Tasks and goals are listed per Coworld")
-            revision, rows = await self.board(coworld, params.resource)
+            if params.cursor is None:
+                revision, rows = await self.subscribe_board(frontend_id, coworld, params.resource)
+            else:
+                revision, rows = await self.board(coworld, params.resource)
         selection = params.model_dump_json(include={"resource", "scope_id", "scope", "session_id"})
         key = hashlib.sha256(selection.encode()).hexdigest()[:16]
         offset = 0
@@ -1555,6 +1663,14 @@ class Backend:
         """The relay reports a frontend connection ended: its subscriptions end with it."""
         for subscription in self.subscribers.values():
             subscription.frontends.discard(frontend_id)
+        for coworld, feed in list(self.boards.items()):
+            for reader in list(feed.readers):
+                if reader[0] == frontend_id:
+                    del feed.readers[reader]
+            if not feed.readers:
+                if feed.watcher is not None:
+                    feed.watcher.cancel()
+                del self.boards[coworld]
 
     async def connect(self, url: str, credential: str) -> None:
         async with connect(
@@ -1582,6 +1698,10 @@ class Backend:
                         log.info("AIDE relay closed the connection")
             finally:
                 self.socket = None
+                for feed in self.boards.values():
+                    if feed.watcher is not None:
+                        feed.watcher.cancel()
+                self.boards.clear()
 
 
 async def serve(
