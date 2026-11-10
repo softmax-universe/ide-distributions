@@ -484,7 +484,8 @@ def test_close_requirements_are_reported_together(coworld_store, session_actor):
             reason_codes="n_short",
         )
     assert exc_info.value.problems == [
-        "X-1 has no runs; an Experiment closes only after at least one run",
+        "X-1 has no runs; an Experiment closes only after at least one run: record runs with"
+        " xp.request, or experiment.abandon {experiment: X-1, reason} when none will run",
         "verdict must be confirmed, refuted or inconclusive",
         "measurements must be a non-empty list of {metric, baseline, candidate, n, effect}",
         "interpretation is required",

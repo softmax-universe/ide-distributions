@@ -40,4 +40,4 @@ Attack the design before starting: does the metric measure the mechanism or a co
 ## Record
 
 - Claims from the verdict (`writing-claims`): evidence `{type: experiment, ref: X-n, stance}`. A refuted or inconclusive result is a claim too, with what would reopen the lever in the body. Retire what it supersedes.
-- `task.complete`: `experiment`, `versions`, `claims`, `submission_candidate` with `submission_reason`. Confirmed against the champion at or above the margin: `task_propose_submission {task, version, reason}` (`submission` skill).
+- `task_complete`: `experiment`, `versions`, `claims`, `submission_candidate` with `submission_reason`. Confirmed against the champion at or above the margin: `task_propose_submission {task, version, reason}` (`submission` skill).

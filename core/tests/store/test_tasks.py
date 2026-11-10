@@ -581,7 +581,7 @@ def test_complete_requires_holder_and_checklist(coworld_store, harness, research
     assert any(p.startswith("checklist: claims") for p in problems)
     assert any("merge yes needs the commit" in p for p in problems)
     assert any("result" in p for p in problems)
-    assert len(problems) == 3
+    assert len(problems) == 4  # with the outcome failed way out
     assert tasks.read(coworld_store, task["id"])["status"] == "in-progress"
 
 

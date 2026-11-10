@@ -208,7 +208,7 @@ def test_every_call_in_prose_uses_a_real_tool_and_its_real_fields(path):
 def test_task_type_body_teaches_the_loop(type):
     body = task_types.load(type).body
     assert words(body) <= TASK_TYPE_WORD_LIMIT, f"{type}: {words(body)} words"
-    for needle in ("task.complete", "task_ask"):
+    for needle in ("task_complete", "task_ask"):
         assert needle in body, f"{type}: body must name {needle}"
     lowered = body.lower()
     assert not [w for w in FORBIDDEN if w in lowered], f"{type}: forbidden vocabulary"

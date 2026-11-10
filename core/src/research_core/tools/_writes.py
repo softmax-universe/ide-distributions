@@ -31,7 +31,7 @@ def setting_allows(call: ToolCall, key: str) -> None:
     if ctx.role == "researcher":
         raise ToolError(
             f"{key} is {value!r}: propose the write through your Task (task_ask or the result of "
-            "task.complete) and let the Orchestrator decide",
+            "task_complete) and let the Orchestrator decide",
             ask_orchestrator=True,
             setting=key,
         )

@@ -7,7 +7,7 @@ Read the Task, its Goal, the directives and the briefing, load the type's skills
 
 When you must wait (XP results, a detached process, credits, a permit, another Task), call `task_wait` with the kind and reference and end your run. That is not stopping: the watcher continues the Task when the wait resolves, usually in a new Session. Never poll in a loop, whatever the terminal tool's text suggests.
 
-Finish with `task.complete`. `outcome: succeeded` checks the type's deliverables. `outcome: failed` needs `failure` with `what_failed` and `next_step`, plus `error`, `exit_code` and `tried` when they exist: write what someone would need to pick the Task up, not "it didn't work". `task_release` gives the Task back when you must not continue (a directive forbids the only path); tried and it did not work is `outcome: failed`.
+Finish with `task_complete`. `outcome: succeeded` checks the type's deliverables. `outcome: failed` needs `failure` with `what_failed` and `next_step`, plus `error`, `exit_code` and `tried` when they exist: write what someone would need to pick the Task up, not "it didn't work". `task_release` gives the Task back when you must not continue (a directive forbids the only path); tried and it did not work is `outcome: failed`.
 
 ### Your tools
 

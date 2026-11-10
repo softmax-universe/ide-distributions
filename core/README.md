@@ -109,7 +109,7 @@ nowhere.
 
 - **Tool:** a module under `tools/` with `SPEC = tool(ToolSpec(...))`, listed in
   `catalog.TOOL_MODULES`; in-process tools import only what Hermes's interpreter has; `core/tests/test_tool_budget.py`
-  pins the role sets (24 Orchestrator, 22 Researcher) and the executor table; run
+  pins the role sets (24 Orchestrator, 23 Researcher) and the executor table; run
   `uv run python tools/build_prompts.py --write --manifests`. Describe the tool, every field
   and every key, shortly: every request carries the whole list. Build field schemas with
   `tools/_args.py`: an object field lists its keys (`obj`, `objects`; `free_object` only for
@@ -124,7 +124,7 @@ nowhere.
   The grouped tool stops offering the action and still runs a call that names it, because stored
   chats show that shape; refusing such a call, it shows the flat tool. Prompts and skills name the
   flat tool (`test_tool_signatures.py` checks), and telemetry reports the grouped tool and action.
-  Twelve actions have one: the ones weak models got wrong and `claim_write`. It costs prompt size
+  Thirteen actions have one: the ones weak models got wrong and `claim_write`. It costs prompt size
   and counts against `catalog.TOOL_BUDGET`, so add one only for a measured failure. Measured on
   2026-11-05 against the grouped form, 6 to 10 repeats per case: Kimi K3 first try 81/216 against
   185/216, Kimi K3.1 Pro no difference (160/162 against 161/162, findability 91/100 against 94/100),

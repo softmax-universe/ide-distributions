@@ -63,6 +63,6 @@ Ask (`task_ask`) when the lever or the baseline is ambiguous, or the Experiment 
 more credits than the Task implied; decide seeds, episodes above the mixin's floor and
 implementation details yourself.
 
-End: `task.complete {task, claims, experiment, versions, submission_candidate: "yes" or "no",
+End: `task_complete {task, claims, experiment, versions, submission_candidate: "yes" or "no",
 submission_reason, commit, merge: "yes" or "no", merge_reason, result}`. Merge yes only for a
 confirmed Version; `submission_candidate` and its reason must agree with the verdict.

@@ -537,7 +537,8 @@ SPEC = durable_tool(
                     "detail": a.string("What exactly it waits for."),
                     "ref": a.any_of(
                         "What to watch: a pid (process), request ids (xp), a policy version id "
-                        "(submission), a route (permit), a setting or Task (user).",
+                        "(submission), a route (permit), a setting key or Task (user; required: "
+                        "nothing else ends a user wait).",
                         a.STRING,
                         a.INTEGER,
                         a.STRINGS,
@@ -579,12 +580,15 @@ SPEC = durable_tool(
                 example_fields=("commit", "merge", "result"),
                 # A command accepted before the release that removed it replays with it.
                 hidden_params={"checklist": {"type": "object"}},
+                # In the grouped schema 102 of 280 calls in a week (2026-11) were refused: they
+                # sent task.list's fields (held_by, status, type, goal) and left out task.
+                own_tool=True,
             ),
             ActionSpec(
                 "release",
                 "Give the Task back unfinished because you must not continue, such as when a "
                 "directive forbids the only path; your run is stopped, then it goes back to "
-                "scheduling. If you tried and it did not work, use task.complete with outcome "
+                "scheduling. If you tried and it did not work, use task_complete with outcome "
                 "failed.",
                 {"task": TASK, "reason": a.string("Why you must not continue.")},
                 ("task", "reason"),

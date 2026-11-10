@@ -37,6 +37,6 @@ weak ones; five is the ceiling, not the target.
 
 Ask (`task_ask`) only when the Goal's end state cannot be read; the choice of ideas is yours.
 
-End: `task.complete {task, proposed_tasks: ["T-7", "T-8"], result, merge: "no", merge_reason:
+End: `task_complete {task, proposed_tasks: ["T-7", "T-8"], result, merge: "no", merge_reason:
 "ideation changes no code"}`. `result` says in two sentences what the Goal should try first and
 why.

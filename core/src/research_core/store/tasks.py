@@ -1437,6 +1437,11 @@ def _completion_problems(
     if isinstance(checklist, Mapping):
         missing = task_types.check(row["type"], accepted, task_fields=dict(row))
         problems.extend(f"checklist: {item}" for item in missing)
+        if missing:
+            problems.append(
+                "give each missing deliverable; if the Task could not produce one, finish with"
+                " outcome failed and failure {what_failed, next_step} instead"
+            )
         experiment_n = _reference_problems(store, row, accepted, problems)
     return problems, accepted, experiment_n
 
