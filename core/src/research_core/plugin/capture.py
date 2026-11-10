@@ -78,11 +78,9 @@ def remember_section(name: str, render: Callable[..., str]) -> Callable[..., str
     """``render`` for ``register_system_prompt_section``, keeping what it gave each Session, so
     that its stretch of the system prompt can be attributed to it."""
 
-    def section(info: Any = None, **kwargs: Any) -> str:
+    def section(info: Mapping[str, Any], **kwargs: Any) -> str:
         text = render(info, **kwargs)
-        # Hermes passes a read-only mapping, not a dict.
-        session_id = str(info.get("session_id") or "") if isinstance(info, Mapping) else ""
-        _plugin_sections[session_id][name] = text
+        _plugin_sections[info["session_id"]][name] = text
         return text
 
     return section
