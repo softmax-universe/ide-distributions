@@ -22,10 +22,6 @@ RUN uv sync --frozen --no-dev --compile-bytecode --project /opt/distribution \
 COPY orchestrator /opt/distribution/orchestrator
 COPY researcher /opt/distribution/researcher
 COPY image /opt/distribution/image
-# Our changes to Hermes, one patch per observation point: image/hermes-patches/README.md.
-RUN for patch in /opt/distribution/image/hermes-patches/*.patch; do \
-      git -C /opt/hermes apply --whitespace=nowarn "$patch" || exit 1; \
-    done
 RUN bash /opt/distribution/image/install-native-attachments.sh \
     && /opt/hermes/.venv/bin/python -m compileall -q -l /opt/hermes \
     && /opt/hermes/.venv/bin/python -m compileall -q -x '/(tests|node_modules)/' \

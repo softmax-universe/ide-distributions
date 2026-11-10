@@ -1,8 +1,0 @@
-name: recorder
-version: 1.0.0
-description: Records the patched Hermes hooks for test_hermes_patches.py.
-author: ide-distributions
-kind: standalone
-provides_tools:
-  - big_tool
-  - small_tool

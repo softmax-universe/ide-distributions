@@ -1,19 +1,24 @@
-"""What the gateway records about the agent's work, as telemetry lines. Capture is always on.
+"""What the gateway records about the agent's work, as telemetry lines, from Hermes's own hooks.
 
-Each callback here only renders what Hermes hands it into the plain data the writer takes. Hermes
-isolates plugin hooks, so a failure here reaches no agent. ``image/hermes-patches/README.md`` says
-when each new hook fires.
+Hermes is not patched. Each callback renders what a native hook or middleware hands it into the
+plain data the writer takes. Hermes isolates plugin hooks and middleware, so a failure here reaches
+no agent; Hermes logs it.
 
-One writer serves the whole gateway process, because a multiplexed gateway registers this plugin
-once per profile. Each profile has its own ``GatewayCapture``, for its name and per-session state.
+- A model request: the ``llm_request`` middleware sees the whole request, after every other plugin
+  middleware, and keeps it; ``pre_api_request`` (fired next, on the same thread) records it with the
+  native row IDs of its history. Hermes's own ``request`` field on the hooks is capped, so it is not
+  used. One record per outer attempt: a stream that Hermes retries inside one attempt is one record.
+- A reply: ``post_api_request`` hands over the assistant message object itself. A failure is
+  ``api_request_error``; what a broken stream had shown is ``on_stream_end``'s ``final_text``.
+- A tool result: as the model got it, from the next request that carries it. A tool row's own
+  text is on its commit too, for a turn that ends before a request carries it (a guard halt).
+- Committed rows: read from ``state.db`` at the end of each turn (``on_session_end``).
+- The run: ``plugin/runs.py``, from the Session's started admission.
+  An auxiliary call keeps the run its Session's turn was in when the call began.
 
-``on_model_attempt`` is the one source of request and response bodies. It holds the exact arguments
-of each physical call, which request middleware does not: the stream options come later, and retries
-run below it. So this registers no middleware, which also saves a copy of each request.
-
-What Hermes runs for a tool (``post_tool_call``) is captured as metadata and arguments only. The
-result comes from ``on_tool_results_final``, in the form the model got, not the original a spill
-moved to a file that nobody read.
+A hard exit loses what the writer still had queued. One writer serves the whole gateway process,
+because a multiplexed gateway registers this plugin once per profile. Each profile has its own
+``GatewayCapture``, for its name and per-session state.
 
 This writer is also the process's ``agent_telemetry.observed`` writer, so a store-only tool's
 commits reach it with the run and tool call they happened in.
@@ -21,11 +26,16 @@ commits reach it with the run and tool call they happened in.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import sqlite3
 import threading
+import time
 import uuid
+from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -40,17 +50,16 @@ from research_core.agent_telemetry import (
 )
 from research_core.agent_telemetry.encoder import message_text
 from research_core.plugin.executor import hermes_call_ids
-from research_core.plugin.hermes_prompt import drop_mandatory_tool_use
 from research_core.plugin.repeats import refusal_of
+from research_core.plugin.runs import parents, run_of
 
 GATEWAY_WRITER = "gateway"
-# ``image/processes.py`` gives the gateway ten seconds to exit, and this runs once per profile.
-EXIT_FLUSH_S = 2.0
 # Auxiliary calls outside a turn belong to no Session, and a manifest must name one.
 NO_SESSION = "no-session"
 _NOT_A_NAME = re.compile(r"[^a-z0-9_.-]+")
-_WIRE_ONLY_FIELDS = ("extra_body", "extra_headers", "extra_query")
-_ROW_TEXT_FIELDS = ("role", "content", "tool_calls", "reasoning_content")
+# SDK keyword arguments that are not part of the JSON body.
+_WIRE_ONLY_FIELDS = ("extra_body", "extra_headers", "extra_query", "timeout", "http_client")
+_ROW_TEXT_FIELDS = ("role", "content", "tool_call_id", "tool_calls", "reasoning_content")
 # What aiohttp logs each HTTP request under, as Hermes's ``web.AppRunner(app)`` leaves it.
 ACCESS_LOGGER = "aiohttp.access"
 # The whole of a successful poll by the seam's urllib client, in aiohttp's default format.
@@ -61,6 +70,22 @@ _SEAM_POLL = re.compile(
 
 _writer_lock = threading.Lock()
 _writer: TelemetryWriter | None = None
+# What each plugin prompt section last rendered, by Session and section name: ``remember_section``.
+_plugin_sections: dict[str, dict[str, str]] = defaultdict(dict)
+
+
+def remember_section(name: str, render: Callable[..., str]) -> Callable[..., str]:
+    """``render`` for ``register_system_prompt_section``, keeping what it gave each Session, so
+    that its stretch of the system prompt can be attributed to it."""
+
+    def section(info: Any = None, **kwargs: Any) -> str:
+        text = render(info, **kwargs)
+        # Hermes passes a read-only mapping, not a dict.
+        session_id = str(info.get("session_id") or "") if isinstance(info, Mapping) else ""
+        _plugin_sections[session_id][name] = text
+        return text
+
+    return section
 
 
 def _name(value: Any) -> str | None:
@@ -129,69 +154,57 @@ def with_row_ids(
 def wire_request(request: Mapping[str, Any]) -> dict[str, Any]:
     """The JSON body the SDK makes of these keyword arguments: ``extra_body`` joins the top level.
 
-    Headers and query parameters are not part of the body, so a rebuild would not have them.
+    Headers and query parameters are not part of the body, so a rebuild would not have them. Hermes
+    adds ``stream`` and ``stream_options`` after the middleware, so they are not here either.
     """
     wire = {name: value for name, value in request.items() if name not in _WIRE_ONLY_FIELDS}
     wire.update(request.get("extra_body") or {})
     return wire
 
 
-def _assistant_message(response: Any) -> Any:
-    """The reply as a JSON object. A 200 of plain text makes the SDK return a string."""
-    choices = getattr(response, "choices", None)
-    message = _plain(choices[0].message if choices else response)
-    if message is None or isinstance(message, Mapping):
-        return message
-    return {"unparsed_reply": message}
-
-
-def _message_from_parts(parts: Mapping[str, Any]) -> dict[str, Any] | None:
-    """What a stream delivered before it ended, as an assistant message, or ``None`` if nothing.
-
-    Reasoning is ``reasoning_content`` here as on the message Hermes assembles from a whole stream.
-    """
-    message: dict[str, Any] = {
-        wire_name: parts[name]
-        for name, wire_name in (
-            ("content", "content"),
-            ("reasoning", "reasoning_content"),
-            ("refusal", "refusal"),
-            ("reasoning_details", "reasoning_details"),
-        )
-        if parts.get(name)
-    }
-    if parts.get("tool_calls"):
-        message["tool_calls"] = [
-            {
-                "id": call["id"],
-                "type": "function",
-                "function": {"name": call["name"], "arguments": call["arguments"]},
-            }
-            for call in parts["tool_calls"]
+def to_native_message(message: Any) -> dict[str, Any] | None:
+    """Hermes's assistant message object as the record format's native message."""
+    if message is None:
+        return None
+    reasoning = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
+    plain = {
+        "role": "assistant",
+        "content": getattr(message, "content", None),
+        "reasoning_content": reasoning,
+        "tool_calls": [
+            _wire_tool_call(call) for call in _plain(getattr(message, "tool_calls", None)) or ()
         ]
-    return {"role": "assistant", **message} if message else None
+        or None,
+    }
+    return {name: value for name, value in plain.items() if value is not None}
 
 
-def _usage_fields(response: Any) -> dict[str, Any]:
-    """``usage`` and ``cost`` from a provider's raw usage, in the record format's names."""
-    raw = _plain(getattr(response, "usage", None))
-    if not isinstance(raw, Mapping):
+def _wire_tool_call(call: Mapping[str, Any]) -> dict[str, Any]:
+    """A tool call in the provider's shape. Hermes's assembled message keeps its own flat one."""
+    if "function" in call:
+        return dict(call)
+    function = {"name": call.get("name"), "arguments": call.get("arguments") or ""}
+    return {"id": call.get("id"), "type": "function", "function": function}
+
+
+def usage_fields(summary: Any) -> dict[str, Any]:
+    """``usage`` from ``post_api_request``'s summary, in the record format's names. Hermes keeps the
+    provider's raw usage out of it, so the billed cost is not here."""
+    if not isinstance(summary, Mapping):
         return {}
-    prompt_details = raw.get("prompt_tokens_details") or {}
-    completion_details = raw.get("completion_tokens_details") or {}
     usage = {
-        "input_tokens": raw.get("prompt_tokens"),
-        "output_tokens": raw.get("completion_tokens"),
-        "cache_read_input_tokens": prompt_details.get("cached_tokens"),
-        "cache_creation_input_tokens": prompt_details.get("cache_write_tokens"),
-        "reasoning_tokens": completion_details.get("reasoning_tokens"),
+        "input_tokens": summary.get("prompt_tokens"),
+        "output_tokens": summary.get("output_tokens"),
+        "cache_read_input_tokens": summary.get("cache_read_tokens"),
+        "cache_creation_input_tokens": summary.get("cache_write_tokens"),
+        "reasoning_tokens": summary.get("reasoning_tokens"),
     }
-    fields: dict[str, Any] = {
-        "usage": {name: count for name, count in usage.items() if isinstance(count, int)} or None
-    }
-    if isinstance(raw.get("cost"), int | float):
-        fields["cost"] = {"usd": raw["cost"], "source": "provider_billed"}
-    return fields
+    return {"usage": {name: n for name, n in usage.items() if isinstance(n, int)} or None}
+
+
+def prompt_sections(system: str, sources: Sequence[tuple[str, str]]) -> list[PromptSection]:
+    """Each source whose text is in the system prompt as sent. Others are left out."""
+    return [PromptSection(name, text.strip()) for name, text in sources if text.strip() in system]
 
 
 def _milliseconds(start: Any, end: Any) -> float | None:
@@ -206,24 +219,37 @@ class GatewayCapture:
     def __init__(self, writer: TelemetryWriter, profile: str) -> None:
         self._writer = writer
         self._profile = profile
+        self._started = time.time()
         # All by live Hermes Session. One dict operation at a time needs no lock here.
-        self._row_keys: dict[str, list[Any]] = {}
-        self._sections: dict[str, list[PromptSection]] = {}
+        self._requests: dict[str, Mapping[str, Any]] = {}
+        self._attempts: dict[str, int] = defaultdict(int)
+        self._attempt: dict[str, str] = {}
+        self._results_seen: dict[str, set[str]] = defaultdict(set)
         self._turn_parts: dict[str, list[ContextPart]] = {}
+        self._reasoning: dict[str, list[str]] = defaultdict(list)
+        self._committed: dict[str, int] = {}
+        # The run a Session's current turn belongs to, as its requests found it: the admission can
+        # leave ``started`` before ``on_session_end`` reads the turn's committed rows.
+        self._turn_run: dict[str, str | None] = {}
+        # The run each Session's latest turn belongs to, bound when the turn starts: the title call
+        # Hermes starts then can end after the run does. And the run each auxiliary call is in.
+        self._spawn_run: dict[str, str | None] = {}
+        self._call_run: dict[str, str | None] = {}
         # Compaction moves a Session to a new live ID; records keep naming the one it started with.
         self._first_session: dict[str, str] = {}
 
     def hooks(self) -> dict[str, Callable[..., None]]:
         return {
-            "on_system_prompt_built": self.on_system_prompt_built,
+            "pre_llm_call": self.pre_llm_call,
             "pre_api_request": self.pre_api_request,
-            "on_model_attempt": self.on_model_attempt,
+            "post_api_request": self.post_api_request,
             "api_request_error": self.api_request_error,
+            "on_stream_start": self.on_stream_start,
+            "on_stream_delta": self.on_stream_delta,
+            "on_stream_end": self.on_stream_end,
             "pre_auxiliary_call": self.pre_auxiliary_call,
             "post_auxiliary_call": self.post_auxiliary_call,
             "post_tool_call": self.post_tool_call,
-            "on_tool_results_final": self.on_tool_results_final,
-            "on_messages_committed": self.on_messages_committed,
             "pre_approval_request": self.pre_approval_request,
             "post_approval_response": self.post_approval_response,
             "post_compaction": self.post_compaction,
@@ -231,51 +257,21 @@ class GatewayCapture:
             "on_session_end": self.on_session_end,
             "subagent_start": self.subagent_start,
             "subagent_stop": self.subagent_stop,
-            "on_gateway_exit": self.on_gateway_exit,
         }
 
-    def _ids(self, session_id: str | None, run_id: str | None, **fields: Any) -> dict[str, Any]:
+    def _ids(self, session_id: str | None, **fields: Any) -> dict[str, Any]:
         """The fields every record of a Session shares. ``None`` and empty ones are left out."""
         live = session_id or None
         known = {
             "profile": self._profile,
             "session_id": self._first_session.get(live, live) if live else None,
             "hermes_session_id": live,
-            "run_id": run_id,
+            "run_id": run_of(live),
             **fields,
         }
         return {name: value for name, value in known.items() if value not in (None, "")}
 
     # Rendered context.
-
-    def on_system_prompt_built(
-        self,
-        session_id: str = "",
-        system_prompt: str = "",
-        sections: Sequence[Mapping[str, Any]] = (),
-        model: str | None = None,
-        provider: str | None = None,
-        run_id: str | None = None,
-        **_: Any,
-    ) -> None:
-        # As sent: ``hermes_prompt``'s middleware drops a block from the request, not from this
-        # prompt, and a section is found by its text in the request. Dropped text has no source.
-        self._sections[session_id] = [
-            PromptSection(
-                section["source"],
-                drop_mandatory_tool_use(system_prompt[section["start"] : section["end"]]),
-            )
-            for section in sections
-        ]
-        self._writer.capture_operation(
-            "system_prompt",
-            "built",
-            model=model,
-            provider=provider,
-            size_bytes=len(system_prompt.encode("utf-8", "replace")),
-            details=_numbers(sections=len(sections)),
-            **self._ids(session_id, run_id),
-        )
 
     def turn_context(
         self, session_id: str, user_message: Any, parts: Sequence[tuple[str, str]]
@@ -291,7 +287,29 @@ class GatewayCapture:
             *(ContextPart(source, text) for source, text in parts),
         ]
 
+    def _sections(self, session_id: str, messages: Sequence[Mapping[str, Any]]) -> list:
+        """SOUL and this plugin's sections, which are text the distribution ships. The rest of the
+        prompt (Hermes's guidance, the project's rules, the skill index) is in no section."""
+        if not messages or messages[0].get("role") != "system":
+            return []
+        from hermes_constants import get_hermes_home
+
+        soul = Path(get_hermes_home()) / "SOUL.md"
+        sources = [
+            ("soul", soul.read_text(encoding="utf-8") if soul.exists() else ""),
+            *(("plugin_sections", text) for text in _plugin_sections[session_id].values()),
+        ]
+        return prompt_sections(message_text(messages[0]) or "", sources)
+
     # Model requests and replies.
+
+    def keep_request(self, request: Mapping[str, Any], session_id: str = "", **_: Any) -> None:
+        """``llm_request`` middleware that changes nothing: the whole request, for the hook."""
+        self._requests[session_id] = request
+
+    def pre_llm_call(self, session_id: str = "", **_: Any) -> None:
+        """A turn starts, before Hermes starts the calls (title, compression) that belong to it."""
+        self._spawn_run[session_id] = run_of(session_id or None)
 
     def pre_api_request(
         self,
@@ -304,12 +322,15 @@ class GatewayCapture:
         retry_count: int | None = None,
         model: str | None = None,
         provider: str | None = None,
-        run_id: str | None = None,
+        started_at: float | None = None,
         **_: Any,
     ) -> None:
-        """Keeps the native message IDs for the attempt, and says a call is on its way: a process
-        killed during the call leaves this record and not the attempt's."""
-        self._row_keys[session_id] = row_keys(conversation_history)
+        """One attempt is on its way: the request as sent, with its history's native row IDs."""
+        ids = self._ids(
+            session_id, turn_id=turn_id, hermes_task_id=task_id, api_request_id=api_request_id
+        )
+        self._turn_run[session_id] = ids.get("run_id")
+        self._spawn_run[session_id] = ids.get("run_id")
         self._writer.capture_operation(
             "model_request",
             "started",
@@ -320,13 +341,32 @@ class GatewayCapture:
                 retry_count=retry_count,
                 history_messages=len(conversation_history),
             ),
-            **self._ids(
-                session_id,
-                run_id,
-                turn_id=turn_id,
-                hermes_task_id=task_id,
-                api_request_id=api_request_id,
-            ),
+            **ids,
+        )
+        request = self._requests.pop(session_id, None)
+        if request is None:
+            return
+        call = api_request_id or str(uuid.uuid4())
+        self._attempts[call] += 1
+        attempt_id = f"{call}#{self._attempts[call]}"
+        self._attempt[session_id] = attempt_id
+        wire = wire_request(request)
+        wire["messages"] = with_row_ids(wire.get("messages", ()), row_keys(conversation_history))
+        identity = {key: value for key, value in ids.items() if key != "session_id"}
+        self._capture_context_parts(
+            session_id, wire["messages"], {**ids, "model_attempt_id": attempt_id}
+        )
+        self._capture_results(session_id, wire["messages"], ids)
+        self._writer.capture_request(
+            wire,
+            session_id=ids.get("session_id", NO_SESSION),
+            model_attempt_id=attempt_id,
+            provider=provider or "unknown",
+            prompt_sections=self._sections(session_id, wire["messages"]),
+            occurred_at=started_at,
+            native_event_type="request",
+            details=_numbers(attempt=self._attempts[call]),
+            **identity,
         )
 
     def _capture_context_parts(
@@ -342,113 +382,74 @@ class GatewayCapture:
                     self._writer.capture_context_parts(text, parts, **ids)
                 return
 
-    def on_model_attempt(
+    def _capture_results(
+        self, session_id: str, messages: Sequence[Mapping[str, Any]], ids: Mapping[str, Any]
+    ) -> None:
+        """Each tool result of the current turn the first time a request carries it: the form the
+        model got, after Hermes's transforms, spill, turn budget and ``/steer`` text. Results of
+        earlier turns, which every request sends again, are not this turn's, even after a
+        restart."""
+        seen = self._results_seen[session_id]
+        users = [index for index, message in enumerate(messages) if message.get("role") == "user"]
+        for message in messages[users[-1] + 1 if users else 0 :]:
+            call = message.get("tool_call_id")
+            if message.get("role") != "tool" or not call or call in seen:
+                continue
+            seen.add(call)
+            row_id = message.get("_row_id")
+            self._writer.capture_operation(
+                "tool",
+                "result",
+                content={"result": message_text(message) or ""},
+                tool_name=message.get("name"),
+                tool_call_id=call,
+                hermes_message_id=None if row_id is None else str(row_id),
+                **{key: value for key, value in ids.items() if key != "api_request_id"},
+            )
+
+    def post_api_request(
         self,
         session_id: str = "",
-        request: Mapping[str, Any] | None = None,
-        response: Any = None,
-        stream_parts: Mapping[str, Any] | None = None,
-        outcome: str = "",
-        kind: str | None = None,
-        attempt: int | None = None,
+        assistant_message: Any = None,
+        finish_reason: str | None = None,
+        response_model: str | None = None,
+        usage: Any = None,
         started_at: float | None = None,
         ended_at: float | None = None,
         first_chunk_at: float | None = None,
-        error: str | None = None,
-        error_type: str | None = None,
-        status_code: int | None = None,
-        provider: str | None = None,
         api_request_id: str | None = None,
-        call_role: str | None = None,
-        run_id: str | None = None,
         **_: Any,
     ) -> None:
-        attempt_id = str(uuid.uuid4())
-        wire = wire_request(request or {})
-        wire["messages"] = with_row_ids(
-            wire.get("messages", ()), self._row_keys.get(session_id, ())
-        )
-        ids = self._ids(
-            session_id,
-            run_id,
-            api_request_id=api_request_id,
-            delegated=True if call_role == "delegated" else None,
-        )
-        session = ids.get("session_id", NO_SESSION)
-        identity = {key: value for key, value in ids.items() if key != "session_id"}
-        self._capture_context_parts(
-            session_id, wire["messages"], {**ids, "model_attempt_id": attempt_id}
-        )
-        self._writer.capture_request(
-            wire,
-            session_id=session,
+        attempt_id = self._attempt.get(session_id)
+        self._reasoning.pop(session_id, None)
+        message = to_native_message(assistant_message)
+        if attempt_id is None or message is None:
+            return
+        ids = self._ids(session_id, api_request_id=api_request_id)
+        fields = {key: value for key, value in ids.items() if key != "session_id"}
+        self._writer.capture_response(
+            message,
+            session_id=ids.get("session_id", NO_SESSION),
             model_attempt_id=attempt_id,
-            provider=provider or "unknown",
-            prompt_sections=self._sections.get(session_id, ()),
-            occurred_at=started_at,
-            native_event_type=kind,
-            **identity,
+            occurred_at=ended_at,
+            outcome="completed",
+            finish_reason=finish_reason,
+            responded_model=response_model,
+            duration_ms=_milliseconds(started_at, ended_at),
+            time_to_first_token_ms=_milliseconds(started_at, first_chunk_at),
+            native_event_type="request",
+            **usage_fields(usage),
+            **fields,
         )
-
-        message = (
-            _assistant_message(response)
-            if outcome == "completed"
-            else _message_from_parts(stream_parts or {})
-        )
-        result = {
-            **ids,
-            "model_attempt_id": attempt_id,
-            "native_event_type": kind,
-            "outcome": _name(outcome),
-            "reason": _name(error_type),
-            "duration_ms": _milliseconds(started_at, ended_at),
-            "time_to_first_token_ms": _milliseconds(started_at, first_chunk_at),
-            "details": _numbers(attempt=attempt, status_code=status_code),
-        }
-        if message is not None:
-            fields = {
-                k: v for k, v in result.items() if k not in ("session_id", "model_attempt_id")
-            }
-            choices = getattr(response, "choices", None)
-            self._writer.capture_response(
-                message,
-                session_id=session,
-                model_attempt_id=attempt_id,
-                partial=outcome != "completed",
-                occurred_at=ended_at,
-                finish_reason=getattr(choices[0], "finish_reason", None) if choices else None,
-                responded_model=getattr(response, "model", None),
-                **_usage_fields(response),
-                **fields,
-            )
-        if outcome == "failed":
-            self._writer.capture_operation(
-                "model_attempt",
-                "failed",
-                occurred_at=ended_at,
-                content={"error": error} if error else None,
-                **result,
-            )
-        if outcome == "completed":
-            self._capture_proposals(stream_parts, message, {**ids, "model_attempt_id": attempt_id})
-
-    def _capture_proposals(
-        self, stream_parts: Mapping[str, Any] | None, message: Any, ids: Mapping[str, Any]
-    ) -> None:
-        """Each tool call the model asked for. A stream's arguments come before Hermes's repair."""
-        calls = (stream_parts or {}).get("tool_calls")
-        if not calls:
-            listed = message.get("tool_calls") if isinstance(message, Mapping) else None
-            calls = [
-                {"id": call.get("id"), **(call.get("function") or {})} for call in listed or ()
-            ]
-        for call in calls:
+        for call in message.get("tool_calls") or ():
+            function = call.get("function") or {}
             self._writer.capture_operation(
                 "tool",
                 "proposed",
-                content={"arguments": call.get("arguments") or ""},
+                content={"arguments": function.get("arguments") or ""},
                 tool_call_id=call.get("id"),
-                tool_name=call.get("name"),
+                tool_name=function.get("name"),
+                model_attempt_id=attempt_id,
                 **ids,
             )
 
@@ -458,44 +459,102 @@ class GatewayCapture:
         reason: Any = None,
         status_code: int | None = None,
         api_request_id: str | None = None,
-        run_id: str | None = None,
+        error: Mapping[str, Any] | None = None,
+        started_at: float | None = None,
+        ended_at: float | None = None,
         **_: Any,
     ) -> None:
-        """Hermes's own verdict on a failed call. Its text is on the attempt's failed record."""
+        """Hermes's verdict on a failed attempt, with its error text."""
+        ids = self._ids(session_id, api_request_id=api_request_id)
+        error = error or {}
         self._writer.capture_operation(
-            "model_request",
-            "error",
-            reason=_name(reason),
+            "model_attempt",
+            "failed",
+            occurred_at=ended_at,
+            content={"error": error.get("message")} if error.get("message") else None,
+            model_attempt_id=self._attempt.get(session_id),
+            reason=_name(reason) or _name(error.get("type")),
+            duration_ms=_milliseconds(started_at, ended_at),
             details=_numbers(status_code=status_code),
-            **self._ids(session_id, run_id, api_request_id=api_request_id),
+            **ids,
+        )
+
+    def on_stream_start(self, session_id: str = "", **_: Any) -> None:
+        self._reasoning.pop(session_id, None)
+
+    def on_stream_delta(
+        self, session_id: str = "", delta: str = "", kind: str = "text", **_: Any
+    ) -> None:
+        """Reasoning as it streams, kept for a stream that breaks. It reaches plugins only with
+        ``plugins.stream_reasoning_deltas``. Text comes whole at the stream's end."""
+        if kind == "reasoning":
+            self._reasoning[session_id].append(delta)
+
+    def on_stream_end(
+        self,
+        session_id: str = "",
+        final_text: str = "",
+        finished: bool = True,
+        error: str | None = None,
+        **_: Any,
+    ) -> None:
+        """A stream that broke: what it had shown, as a partial reply of the current attempt.
+        Partial tool-call arguments are not handed to plugins."""
+        reasoning = "".join(self._reasoning.pop(session_id, ()))
+        attempt_id = self._attempt.get(session_id)
+        if (finished and error is None) or attempt_id is None:
+            return
+        message = {
+            name: value
+            for name, value in (("content", final_text), ("reasoning_content", reasoning))
+            if value
+        }
+        if not message:
+            return
+        ids = self._ids(session_id)
+        self._writer.capture_response(
+            {"role": "assistant", **message},
+            session_id=ids.get("session_id", NO_SESSION),
+            model_attempt_id=attempt_id,
+            partial=True,
+            outcome="failed",
+            **{key: value for key, value in ids.items() if key != "session_id"},
         )
 
     # Auxiliary calls: titles, compaction summaries and so on. One pair of hooks per attempt.
+    # Hermes hands plugins these bodies capped (``HERMES_PLUGIN_PAYLOAD_MAX_CHARS``, 50,000).
 
     def _auxiliary_ids(
-        self, aux_task: str, started_at: Any, session_id: str, run_id: str | None
+        self, aux_task: str, started_at: Any, session_id: str, *, starting: bool
     ) -> tuple[dict[str, Any], str, str]:
-        """The pair shares a start time and nothing else that identifies one attempt."""
+        """The pair shares a start time and nothing else that identifies one attempt. A call is in
+        the run its Session's turn was in when the call began, even if it ends after that run."""
         task = _name(aux_task) or "unknown"
         attempt_id = f"aux-{task}-{int((started_at or 0) * 1_000_000)}"
-        ids = self._ids(session_id, run_id, native_event_type=task)
+        if starting:
+            self._call_run[attempt_id] = self._spawn_run.get(session_id)
+            run_id = self._call_run[attempt_id]
+        else:
+            run_id = self._call_run.pop(attempt_id, None)
+        ids = self._ids(session_id, native_event_type=task, run_id=run_id)
         return ids, attempt_id, ids.get("session_id", NO_SESSION)
 
     def pre_auxiliary_call(
         self,
         aux_task: str = "",
         session_id: str = "",
-        request_body: Mapping[str, Any] | None = None,
+        request: Mapping[str, Any] | None = None,
         provider: str | None = None,
         started_at: float | None = None,
         api_request_id: str | None = None,
-        run_id: str | None = None,
         **_: Any,
     ) -> None:
-        ids, attempt_id, session = self._auxiliary_ids(aux_task, started_at, session_id, run_id)
+        ids, attempt_id, session = self._auxiliary_ids(
+            aux_task, started_at, session_id, starting=True
+        )
         identity = {key: value for key, value in ids.items() if key != "session_id"}
         self._writer.capture_request(
-            wire_request(request_body or {}),
+            wire_request((request or {}).get("body") or {}),
             session_id=session,
             model_attempt_id=attempt_id,
             provider=provider or "unknown",
@@ -509,23 +568,25 @@ class GatewayCapture:
         self,
         aux_task: str = "",
         session_id: str = "",
-        raw_response: Any = None,
+        response: Mapping[str, Any] | None = None,
         started_at: float | None = None,
         ended_at: float | None = None,
         error: str | None = None,
         error_type: str | None = None,
         finish_reason: str | None = None,
         response_model: str | None = None,
-        streaming: bool = False,
-        run_id: str | None = None,
+        usage: Any = None,
         **_: Any,
     ) -> None:
-        ids, attempt_id, session = self._auxiliary_ids(aux_task, started_at, session_id, run_id)
+        ids, attempt_id, session = self._auxiliary_ids(
+            aux_task, started_at, session_id, starting=False
+        )
         identity = {key: value for key, value in ids.items() if key != "session_id"}
         duration_ms = _milliseconds(started_at, ended_at)
-        if raw_response is not None:
+        message = (response or {}).get("assistant_message") if not error else None
+        if message:
             self._writer.capture_response(
-                _assistant_message(raw_response),
+                {key: value for key, value in message.items() if value is not None},
                 session_id=session,
                 model_attempt_id=attempt_id,
                 occurred_at=ended_at,
@@ -533,7 +594,7 @@ class GatewayCapture:
                 finish_reason=finish_reason,
                 responded_model=response_model,
                 duration_ms=duration_ms,
-                **_usage_fields(raw_response),
+                **usage_fields(usage),
                 **identity,
             )
             return
@@ -564,7 +625,6 @@ class GatewayCapture:
         duration_ms: float | None = None,
         status: str | None = None,
         error_type: str | None = None,
-        run_id: str | None = None,
         **_: Any,
     ) -> None:
         refused = status == "blocked" or (status == "error" and refusal_of(result) is not None)
@@ -578,7 +638,6 @@ class GatewayCapture:
             duration_ms=duration_ms,
             **self._ids(
                 session_id,
-                run_id,
                 tool_call_id=tool_call_id,
                 turn_id=turn_id,
                 api_request_id=api_request_id,
@@ -586,68 +645,12 @@ class GatewayCapture:
             ),
         )
 
-    def on_tool_results_final(
-        self,
-        session_id: str = "",
-        task_id: str | None = None,
-        results: Sequence[Mapping[str, Any]] = (),
-        run_id: str | None = None,
-        **_: Any,
-    ) -> None:
-        for result in results:
-            row_id = result.get("row_id")
-            self._writer.capture_operation(
-                "tool",
-                "result",
-                content={"result": result.get("content") or ""},
-                tool_name=result.get("tool_name"),
-                **self._ids(
-                    session_id,
-                    run_id,
-                    tool_call_id=result.get("tool_call_id"),
-                    hermes_task_id=task_id,
-                    hermes_message_id=None if row_id is None else str(row_id),
-                ),
-            )
-
-    def on_messages_committed(
-        self,
-        session_id: str = "",
-        rows: Sequence[Mapping[str, Any]] = (),
-        committed_at: float | None = None,
-        run_id: str | None = None,
-        **_: Any,
-    ) -> None:
-        """Metadata, and each row's own text. The last rows of a turn reach no later request,
-        Hermes's tool guard writes its text with no model call at all, and a user's message is on no
-        finished request if the process dies during that turn's first call. A tool row's text is on
-        its ``tool`` / ``result`` record. This runs with the session's persistence lock held, and
-        only enqueues."""
-        for row in rows:
-            row_id = row.get("_row_id")
-            message = {name: row[name] for name in _ROW_TEXT_FIELDS if row.get(name)}
-            self._writer.capture_operation(
-                "message",
-                "committed",
-                occurred_at=committed_at,
-                content={"message": message} if row.get("role") != "tool" else None,
-                kind=row.get("role"),
-                tool_name=row.get("tool_name"),
-                finish_reason=row.get("finish_reason"),
-                **self._ids(
-                    session_id,
-                    run_id,
-                    tool_call_id=row.get("tool_call_id"),
-                    hermes_message_id=None if row_id is None else str(row_id),
-                ),
-            )
-
     def pre_approval_request(
         self,
         command: str = "",
         description: str = "",
         surface: str | None = None,
-        run_id: str | None = None,
+        session_id: str = "",
         **_: Any,
     ) -> None:
         self._writer.capture_operation(
@@ -655,7 +658,7 @@ class GatewayCapture:
             "requested",
             content={"command": command, "description": description},
             native_event_type=_name(surface),
-            **self._ids(None, run_id),
+            **self._ids(session_id),
         )
 
     def post_approval_response(
@@ -664,7 +667,7 @@ class GatewayCapture:
         choice: str | None = None,
         decided_by: str | None = None,
         surface: str | None = None,
-        run_id: str | None = None,
+        session_id: str = "",
         **_: Any,
     ) -> None:
         self._writer.capture_operation(
@@ -674,7 +677,7 @@ class GatewayCapture:
             outcome=_name(choice),
             reason=_name(decided_by),
             native_event_type=_name(surface),
-            **self._ids(None, run_id),
+            **self._ids(session_id),
         )
 
     # Lifecycle.
@@ -688,16 +691,14 @@ class GatewayCapture:
         before_tokens: int | None = None,
         after_tokens: int | None = None,
         messages_removed: int | None = None,
-        run_id: str | None = None,
         **_: Any,
     ) -> None:
         if old_session_id:
             self._first_session[session_id] = self._first_session.get(
                 old_session_id, old_session_id
             )
-            # Hermes rebuilds the prompt under the old ID and then moves to the new one.
-            if old_session_id in self._sections:
-                self._sections[session_id] = self._sections.pop(old_session_id)
+            if old_session_id in _plugin_sections:
+                _plugin_sections[session_id] = _plugin_sections.pop(old_session_id)
         self._writer.capture_operation(
             "compaction",
             "committed",
@@ -707,15 +708,11 @@ class GatewayCapture:
                 after_tokens=after_tokens,
                 messages_removed=messages_removed,
             ),
-            **self._ids(session_id, run_id, kind=kind, parent_session_id=old_session_id),
+            **self._ids(session_id, kind=kind, parent_session_id=old_session_id),
         )
 
-    def on_session_start(
-        self, session_id: str = "", model: str | None = None, run_id: str | None = None, **_: Any
-    ) -> None:
-        self._writer.capture_operation(
-            "session", "started", model=model, **self._ids(session_id, run_id)
-        )
+    def on_session_start(self, session_id: str = "", model: str | None = None, **_: Any) -> None:
+        self._writer.capture_operation("session", "started", model=model, **self._ids(session_id))
 
     def on_session_end(
         self,
@@ -724,31 +721,70 @@ class GatewayCapture:
         turn_id: str | None = None,
         turn_exit_reason: str | None = None,
         completed: bool | None = None,
-        run_id: str | None = None,
         **_: Any,
     ) -> None:
         """In Hermes this ends a turn, not a Session."""
-        self._row_keys.pop(session_id, None)
         self._turn_parts.pop(session_id, None)
+        self._capture_commits(session_id, self._turn_run.pop(session_id, None))
         self._writer.capture_operation(
             "turn",
             "ended",
             reason=_name(turn_exit_reason),
             details={"completed": completed} if isinstance(completed, bool) else None,
-            **self._ids(session_id, run_id, turn_id=turn_id, hermes_task_id=task_id),
+            **self._ids(session_id, turn_id=turn_id, hermes_task_id=task_id),
         )
+
+    def _capture_commits(self, session_id: str, run_id: str | None) -> None:
+        """Each row of the Session that Hermes committed since the last turn's end, or since this
+        process started. ``occurred_at`` is the row's own timestamp. The copy Hermes keeps of a row
+        it prunes (``compacted``) and its ``session_meta`` notes are no messages of the Session."""
+        from hermes_constants import get_hermes_home
+
+        db = Path(get_hermes_home()) / "state.db"
+        if not session_id or not db.exists():
+            return
+        with closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.5)) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                "SELECT id, role, content, tool_call_id, tool_calls, tool_name, timestamp, "
+                "finish_reason, reasoning_content FROM messages "
+                "WHERE session_id = ? AND id > ? AND timestamp >= ? AND NOT compacted "
+                "AND role != 'session_meta' ORDER BY id",
+                (session_id, self._committed.get(session_id, 0), self._started),
+            ).fetchall()
+        ids = self._ids(session_id)
+        if run_id is not None:
+            ids["run_id"] = run_id
+        for row in rows:
+            self._committed[session_id] = row["id"]
+            message = {name: row[name] for name in _ROW_TEXT_FIELDS if row[name]}
+            if "tool_calls" in message:
+                message["tool_calls"] = json.loads(message["tool_calls"])
+            self._writer.capture_operation(
+                "message",
+                "committed",
+                occurred_at=row["timestamp"],
+                content={"message": message},
+                kind=row["role"],
+                tool_name=row["tool_name"],
+                finish_reason=row["finish_reason"],
+                tool_call_id=row["tool_call_id"],
+                hermes_message_id=str(row["id"]),
+                **ids,
+            )
 
     def subagent_start(
         self,
         parent_session_id: str | None = None,
         child_session_id: str | None = None,
-        run_id: str | None = None,
         **_: Any,
     ) -> None:
+        if parent_session_id and child_session_id:
+            parents[child_session_id] = parent_session_id
         self._writer.capture_operation(
             "subagent",
             "started",
-            **self._ids(child_session_id, run_id, parent_session_id=parent_session_id),
+            **self._ids(child_session_id, parent_session_id=parent_session_id),
         )
 
     def subagent_stop(
@@ -757,7 +793,6 @@ class GatewayCapture:
         child_session_id: str | None = None,
         child_status: str | None = None,
         duration_ms: float | None = None,
-        run_id: str | None = None,
         **_: Any,
     ) -> None:
         self._writer.capture_operation(
@@ -765,15 +800,9 @@ class GatewayCapture:
             "stopped",
             outcome=_name(child_status),
             duration_ms=duration_ms,
-            **self._ids(child_session_id, run_id, parent_session_id=parent_session_id),
+            **self._ids(child_session_id, parent_session_id=parent_session_id),
         )
-
-    def on_gateway_exit(self, exit_code: int | None = None, **_: Any) -> None:
-        """Hermes calls this once per profile, with no profile scope, just before ``os._exit``."""
-        self._writer.capture_operation(
-            "gateway", "exit", details=_numbers(exit_code=exit_code), **self._ids(None, None)
-        )
-        self._writer.flush(EXIT_FLUSH_S)
+        parents.pop(child_session_id or "", None)
 
 
 class DiagnosticsHandler(logging.Handler):
@@ -843,7 +872,8 @@ def _gateway_writer() -> TelemetryWriter:
 
 
 def register_capture(ctx: Any) -> Callable[[str, Any, Sequence[tuple[str, str]]], None] | None:
-    """Register every hook, and return where ``plugin/turn.py`` reports what it adds to a turn.
+    """Register every hook and the request middleware, and return where ``plugin/turn.py``
+    reports what it adds to a turn.
 
     Outside Hermes (tests with a stand-in context, the CLI) there is no scanner, so nothing is
     captured.
@@ -855,4 +885,7 @@ def register_capture(ctx: Any) -> Callable[[str, Any, Sequence[tuple[str, str]]]
     capture = GatewayCapture(writer, ctx.profile_name)
     for hook_name, callback in capture.hooks().items():
         ctx.register_hook(hook_name, callback)
+    # Last of the plugin's llm_request middleware (``register.py`` calls this after the others), so
+    # it sees the request as sent.
+    ctx.register_middleware("llm_request", capture.keep_request)
     return capture.turn_context

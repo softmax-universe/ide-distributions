@@ -35,7 +35,8 @@ platform_toolsets:
 known_plugin_toolsets:
   cron: [ide-orchestrator]
 # Hermes hands the plugin each reasoning delta, which it relays to the AIDE backend so a
-# client sees the model think (core/src/research_core/plugin/reasoning_relay.py). prepare.py keeps
+# client sees the model think (core/src/research_core/plugin/reasoning_relay.py), and capture.py
+# records a broken stream's partial reasoning from it. prepare.py keeps
 # this key (PROTECTED_KEYS).
 plugins:
   enabled: [orchestrator]

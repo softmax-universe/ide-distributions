@@ -1,6 +1,6 @@
 name: hermes-patch-guard
-# Hermes patches are a fork tax re-paid on every Hermes bump (image/hermes-patches/README.md). A PR
-# that adds or changes one needs the hermes-patch-approved label; deleting one never does.
+# The image runs the pinned Hermes unpatched. Hermes patches are a fork tax re-paid on every Hermes
+# bump, so a PR that adds or changes one needs the hermes-patch-approved label; deleting one never does.
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
@@ -36,7 +36,7 @@ jobs:
               echo
               echo "To pass anyway, add the hermes-patch-approved label to this PR."
               echo "Policy: this requires Rohit's approval, even though anyone with write access can apply the label."
-              echo "Deleting a patch never needs the label. See image/hermes-patches/README.md, 'Adding a patch'."
+              echo "Deleting a patch never needs the label."
             } | sed 's/^/::error::/'
             exit 1
           fi

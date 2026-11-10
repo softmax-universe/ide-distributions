@@ -17,8 +17,8 @@ Build from the repository root:
 docker build --platform linux/amd64 -f image/Dockerfile -t ide-distribution:local .
 ```
 
-The build applies our patches to the pinned Hermes; [`hermes-patches/README.md`](hermes-patches/README.md)
-lists them and the plugin hooks they add.
+The image runs the pinned Hermes unpatched. Agent telemetry uses Hermes's own hooks and middleware
+(`core/src/research_core/plugin/capture.py`).
 
 The host supplies a durable `/workspace`, writable `/tmp`, and a read-only
 `/run/workspace/bootstrap.json` containing `workspace_id`, `platform_url`, and
