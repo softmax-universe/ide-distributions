@@ -91,6 +91,9 @@ jobs:
       - run: uv sync --frozen
       - name: Install the hosted native attachment dependencies and model
         if: matrix.shard == 'gateway'
+        timeout-minutes: 2
+        env:
+          HF_HUB_DISABLE_XET: "1"
         run: bash image/install-native-attachments.sh
       - name: Tests against the installed Hermes
         run: |
