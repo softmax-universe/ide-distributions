@@ -63,6 +63,16 @@ Every hook also receives `telemetry_schema_version` and `run_id`.
   so a callback needs its own shorter limit. It does not fire on the shutdown watchdog's exit, a
   downgraded-checkout exit or SIGKILL.
 
+## Adding a patch
+
+Hermes source patches are not allowed by default. Each is a fork tax re-paid on every Hermes bump. Try these first:
+Hermes config, plugin hooks or middleware in `core/src/research_core/plugin/`, our own tools, logging config, or
+out-of-process capture.
+
+If none works, a PR that adds or changes a `.patch` file fails `hermes-patch-guard` until it carries the
+`hermes-patch-approved` label. Policy: the label requires Rohit's approval, though anyone with write access can apply it.
+Deleting a patch never needs the label.
+
 ## Changing a patch
 
 Each patch is a plain `git diff` against the previous one, so a change to an earlier patch can

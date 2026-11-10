@@ -21,6 +21,22 @@ jobs:
         run: |
           grown=$(git diff --name-only --diff-filter=AMR "$BASE"...HEAD -- 'image/hermes-patches/*.patch')
           if [ -n "$grown" ]; then
-            echo "::error::Hermes patches added or changed without the hermes-patch-approved label: $grown"
+            {
+              echo "Hermes source patches are not allowed by default."
+              echo
+              echo "Added or changed under image/hermes-patches/:"
+              echo "$grown"
+              echo
+              echo "Each patch is a fork tax re-paid on every Hermes bump. Try these first:"
+              echo "  - Hermes config (config.yaml / hermes config set)"
+              echo "  - plugin hooks or middleware in core/src/research_core/plugin/"
+              echo "  - our own tools"
+              echo "  - logging config (filters and handlers)"
+              echo "  - out-of-process capture"
+              echo
+              echo "To pass anyway, add the hermes-patch-approved label to this PR."
+              echo "Policy: this requires Rohit's approval, even though anyone with write access can apply the label."
+              echo "Deleting a patch never needs the label. See image/hermes-patches/README.md, 'Adding a patch'."
+            } | sed 's/^/::error::/'
             exit 1
           fi
