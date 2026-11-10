@@ -7,7 +7,7 @@ description: Use when calling softmax_api for a route no tool covers.
 
 `softmax_api {method, path, params?, json?, identity?}` calls any Observatory route with authentication handled. Paths are relative to `/observatory`. The default identity is the Player; the Orchestrator may pass `identity: user` (a notice is sent for every call but GET and HEAD). Prefer the tool that covers a route; the tables mark them. Every call is logged; a route you use often is a tool request: say so in your result.
 
-Paging: list routes take `limit` and `cursor` and return the next cursor in the `X-Next-Cursor` header or `next_cursor`. Ids: `league_…`, `div_…`, `ply_…`, `cow_…`, `xreq_…`, `ereq_…`; policy versions are UUIDs, labels `name:vN`.
+Paging: list routes take `limit` and `cursor` and return the next cursor in the `X-Next-Cursor` header or `next_cursor`. A read without `params.limit` sends `limit: 20`. Undeclared query parameters are ignored: Coworld episode lists filter only by `source`; use `platform.episodes` for one policy. Over 8,000 characters, a response becomes an outline plus a file to read with `read_file` or `jq`. Ids: `league_…`, `div_…`, `ply_…`, `cow_…`, `xreq_…`, `ereq_…`; policy versions are UUIDs, labels `name:vN`.
 
 ## Leagues and standings
 
