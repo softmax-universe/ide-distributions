@@ -268,6 +268,35 @@ def test_a_refusal_is_told_from_a_failure(capture, writer, stream_file, status, 
     assert _operations(_flushed(writer, stream_file), "tool")[0]["stage"] == stage
 
 
+def test_a_turns_dropped_read_leaves_its_rows_out_of_the_next_turn(
+    home, writer, stream_file, monkeypatch
+):
+    """A full queue can drop a turn's read of its rows. The next turn's read starts at that turn's
+    end, so it never names the earlier rows with its own span."""
+    spans_of = {"ses_1": {"trace_id": "a" * 32, "span_id": "1" * 16}}
+    capture = GatewayCapture(writer, "orchestrator", lambda session, *_: spans_of[session])
+
+    def commit(content: str) -> None:
+        with sqlite3.connect(home / "state.db") as db:
+            db.execute(
+                "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                ("ses_1", "assistant", content, time.time()),
+            )
+
+    deferred = writer.defer
+    monkeypatch.setattr(writer, "defer", lambda job: None)  # The queue is full.
+    commit("turn A")
+    capture.on_session_end(session_id="ses_1", turn_id="a", completed=True)
+    monkeypatch.setattr(writer, "defer", deferred)
+    spans_of["ses_1"] = {"trace_id": "b" * 32, "span_id": "2" * 16}
+    commit("turn B")
+    capture.on_session_end(session_id="ses_1", turn_id="b", completed=True)
+    records = _flushed(writer, stream_file)
+    (row,) = _operations(records, "message", "committed")
+    assert json.loads(objects_of(records)[_digest(row, "message")])["content"] == "turn B"
+    assert row["trace_id"] == "b" * 32
+
+
 def test_commits_are_read_from_state_db_at_the_end_of_a_turn(capture, home, writer, stream_file):
     call = {"id": "c", "type": "function", "function": {"name": "goal", "arguments": "{}"}}
     with sqlite3.connect(home / "state.db") as db:

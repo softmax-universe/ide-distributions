@@ -244,6 +244,9 @@ records nothing.
   `invoke_agent` span is a child of the admission's context. A delegated subagent's turn is a child of its parent's turn,
   so its records are in the parent message's trace. `subagent` / `started` names the child Session and its
   `parent_session_id`. A turn with no admission (background work) is a trace of its own.
+- **Records from before traces:** a record written before records named their trace names its Hermes run in `run_id`,
+  and Datadog keeps it for 15 days. The rebuild follows `run_id` as it follows `trace_id`, and a tool call ID is unique
+  within the trace, or within the run on such a record.
 - **A record to its step:** `span_id` names the model attempt (`chat`), tool call (`execute_tool`) or turn
   (`invoke_agent`) span it belongs to. A record written before its turn's span starts, at the turn's first model request,
   has no `trace_id`: an auxiliary call that begins then, such as a title, is one. Order across processes only by these

@@ -360,6 +360,22 @@ def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
     assert any(e.get("command") == "ls" for e in report["events"])
 
 
+def test_a_retained_record_from_before_traces_still_joins_by_its_run(writer, stream_file, datadog):
+    """Records written before they named their trace named their run, and Datadog keeps them for
+    15 days: an approval with only its run is still found through that run."""
+    writer.capture_operation(
+        "store_event",
+        "committed",
+        native_event_type="client.started",
+        session_id="ses_1",
+        run_id="run_old",
+    )
+    writer.capture_operation("approval", "requested", run_id="run_old", content={"command": "ls"})
+    sent(writer, stream_file, datadog)
+    report = rebuild_session(search_of(datadog), "ses_1")
+    assert any(e.get("command") == "ls" for e in report["events"])
+
+
 def test_a_call_with_no_attempt_is_named(writer, stream_file, datadog):
     """What a process killed during a call leaves."""
     writer.capture_operation(

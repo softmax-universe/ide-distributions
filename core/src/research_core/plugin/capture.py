@@ -243,6 +243,8 @@ class GatewayCapture:
         self._turn_parts: dict[str, list[ContextPart]] = {}
         self._reasoning: dict[str, list[str]] = defaultdict(list)
         self._committed: dict[str, int] = {}
+        # When each Session's last turn ended, as its hook saw it: the next turn's rows come after.
+        self._turn_ended: dict[str, float] = {}
         # The span each auxiliary call began in: a title call can end after its turn does.
         self._call_trace: dict[str, dict[str, str]] = {}
         # Compaction moves a Session to a new live ID; records keep naming the one it started with.
@@ -756,8 +758,12 @@ class GatewayCapture:
 
             ids = self._ids(session_id)
             db = Path(get_hermes_home()) / "state.db"
-            # Hermes stamps a row when it commits it, so the turn's rows are those up to now.
-            self._writer.defer(partial(self._capture_commits, db, session_id, ids, time.time()))
+            # Hermes stamps a row when it commits it, so the turn's rows are those since the last
+            # turn's end, up to now. Bounding both ends here means a read the full queue dropped
+            # leaves those rows out, and never hands them to the next turn's span.
+            after = self._turn_ended.get(session_id, self._started)
+            self._turn_ended[session_id] = until = time.time()
+            self._writer.defer(partial(self._capture_commits, db, session_id, ids, after, until))
         self._writer.capture_operation(
             "turn",
             "ended",
@@ -767,10 +773,10 @@ class GatewayCapture:
         )
 
     def _capture_commits(
-        self, db: Path, session_id: str, ids: dict[str, Any], ended_at: float
+        self, db: Path, session_id: str, ids: dict[str, Any], after: float, until: float
     ) -> None:
         """On the writer's thread: each row of the Session that Hermes committed after the last
-        turn's end, or after this process started, until this turn's end at ``ended_at``.
+        turn's end, or after this process started (``after``), until this turn's end (``until``).
         ``occurred_at`` is the row's own timestamp. The copy Hermes keeps of a row it prunes
         (``compacted``) and its ``session_meta`` notes are no messages of the Session."""
         if not db.exists():
@@ -782,7 +788,7 @@ class GatewayCapture:
                 "finish_reason, reasoning_content FROM messages "
                 "WHERE session_id = ? AND id > ? AND timestamp >= ? AND timestamp <= ? "
                 "AND NOT compacted AND role != 'session_meta' ORDER BY id",
-                (session_id, self._committed.get(session_id, 0), self._started, ended_at),
+                (session_id, self._committed.get(session_id, 0), after, until),
             ).fetchall()
         for row in rows:
             self._committed[session_id] = row["id"]
