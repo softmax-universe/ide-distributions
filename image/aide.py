@@ -38,7 +38,7 @@ from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from research_core.run_failures import CONTINUATION_PREFIX
 from research_core.store.db import DEFAULT_MAX_HOLD_S
 from research_core.store.migrate import BUSY_TIMEOUT_MS
-from research_core.telemetry import propagator, span
+from research_core.telemetry import propagator, span, tracer
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ EMBEDDED_ACTIVE = 1000  # open requests a Session embeds at most
 ERROR_CHARS = 4000  # RequestError.message
 TEXT_CHARS = 65536  # reasoning, interim text and tool arguments in one event
 MERGE_SECONDS = 0.25  # consecutive text deltas share one logged event for this long
+REASONING_MERGE_SECONDS = 1.0  # and consecutive relayed reasoning chunks this long
 DEFAULT_CLIENT = {"id": "aide", "kind": "ide"}
 TASK_STATUSES = {
     "proposed": "proposed",
@@ -330,6 +331,24 @@ class RunEvent(BaseModel):
     tool: str | None = None
     preview: str | None = None
     tool_call_id: str | None = None
+
+
+class RunSession(BaseModel):
+    """The native Session a gateway run executes in: the live one compaction last moved to."""
+
+    session_id: str
+
+
+class Thought(BaseModel):
+    """One reasoning delta the gateway plugin relays (``plugin/reasoning_relay.py``).
+
+    ``sessions`` is the agent's Session id, then each id compaction moved it from; ``n`` counts the
+    plugin's lines since its gateway started, so a gap is lines lost on the way.
+    """
+
+    sessions: list[str]
+    n: int
+    text: str
 
 
 class SeamEvent(BaseModel):
@@ -657,14 +676,16 @@ class Progress:
     Each placed event takes the next ``seq``, so seqs are contiguous within the attempt. Text
     deltas between boundaries (a tool call, interim text) share one completion, and consecutive
     deltas merge into one event until another kind arrives or ``MERGE_SECONDS`` pass, which
-    bounds the log's writes. ``consumed`` is the last gateway seq read from each run, where a
-    reconnected stream resumes; a pending merge holds the gateway seq it has folded in.
+    bounds the log's writes. Relayed reasoning merges the same way for ``REASONING_MERGE_SECONDS``
+    and takes its place in the log where it arrives among the run's events. ``consumed`` is the
+    last gateway seq read from each run, where a reconnected stream resumes; a pending merge holds
+    the gateway seq it has folded in.
     """
 
     def __init__(self, attempt: int, seq: int = 0, completion: str | None = None):
         self.attempt, self.seq, self.completion = attempt, seq, completion
         self.consumed: dict[str, int] = {}  # run id -> the last gateway seq read from it
-        self.pending: tuple[TextDelta, int] | None = None
+        self.pending: tuple[TextDelta | Reasoning, int] | None = None
         self.deadline = 0.0
 
     @classmethod
@@ -686,10 +707,11 @@ class Progress:
     def place(self, run_id: str, event: RunEvent) -> list[tuple[ChatEvent, int]]:
         """The events due for the log after ``event``, each with its last gateway seq."""
         if event.event == "message.delta" and event.delta:
-            if self.pending is not None:
+            if self.pending is not None and isinstance(self.pending[0], TextDelta):
                 self.pending[0].delta += event.delta
                 self.pending = (self.pending[0], event.seq)
                 return []
+            flushed = self.flush()
             if self.completion is None:
                 self.completion = f"{run_id}:{self.seq + 1}"
             self.seq += 1
@@ -701,7 +723,7 @@ class Progress:
                 delta=event.delta,
             )
             self.pending, self.deadline = (delta, event.seq), time.monotonic() + MERGE_SECONDS
-            return []
+            return flushed
         at = {"attempt": self.attempt, "seq": self.seq + 1, "at": moment(event.timestamp)}
         placed: ChatEvent | None = None
         if event.event == "message.interim" and event.text:
@@ -723,9 +745,31 @@ class Progress:
             )
         if placed is None:
             return []
+        flushed = self.flush()
         self.completion = None
         self.seq += 1
-        return self.flush() + [(placed, event.seq)]
+        return flushed + [(placed, event.seq)]
+
+    def think(self, text: str, source_seq: int) -> list[tuple[ChatEvent, int]]:
+        """The events due for the log after a relayed reasoning chunk, read at gateway
+        ``source_seq``: a reasoning event pending its merge, which ends the text's completion."""
+        if (
+            self.pending is not None
+            and isinstance(self.pending[0], Reasoning)
+            and len(self.pending[0].text) + len(text) <= TEXT_CHARS
+        ):
+            self.pending[0].text += text
+            self.pending = (self.pending[0], source_seq)
+            return []
+        flushed = self.flush()
+        self.completion = None
+        self.seq += 1
+        thought = Reasoning(
+            attempt=self.attempt, seq=self.seq, at=moment(time.time()), **capped(text)
+        )
+        self.pending = (thought, source_seq)
+        self.deadline = time.monotonic() + REASONING_MERGE_SECONDS
+        return flushed
 
 
 class Subscription:
@@ -760,6 +804,9 @@ class Backend:
         self.wakes: dict[str, asyncio.Event] = {}
         self.consumers: dict[str, asyncio.Task[None]] = {}
         self.finished: set[str] = set()  # requests whose log this backend closed
+        # Native Session id -> the relayed reasoning (text, lines lost before it) its follower logs.
+        self.thinking: dict[str, asyncio.Queue[tuple[str, int]]] = {}
+        self.relayed = 0  # the newest relay line's ``n``
         self.start: asyncio.Future[int] = asyncio.get_running_loop().create_future()
 
     # --- native calls -----------------------------------------------------------------------
@@ -1185,75 +1232,138 @@ class Backend:
                 }
                 await self.notify(request.session_id, "chat.chunk", params)
 
+    async def relay(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """The gateway plugin's reasoning lines, each to the follower of the run that serves its
+        Session. A Session runs one request at a time, so this is that request's. A line for no
+        followed run (a subagent's, a wake's, or one that arrived after its run ended) is dropped.
+        """
+        try:
+            async for line in reader:
+                thought = Thought.model_validate_json(line)
+                # ``n`` starts again from one with a new gateway, which loses nothing here.
+                lost = max(0, thought.n - self.relayed - 1)
+                self.relayed = thought.n
+                for session in thought.sessions:
+                    if session in self.thinking:
+                        self.thinking[session].put_nowait((thought.text, lost))
+                        break
+        finally:
+            writer.close()
+
     async def follow(
         self, request: Admission, run: Run, progress: Progress, after: int
     ) -> tuple[bool, int]:
         """Log and push one run's events after those already consumed, until its stream ends.
 
         Returns whether the run is done here (terminal, or gone from the gateway) and the newest
-        announced message id. A pending text merge is logged when it is due and whenever the
-        stream ends; a failure that ends the consumer loses it.
+        announced message id. A pending merge is logged when it is due and whenever the stream
+        ends; a failure that ends the consumer loses it. Reasoning the plugin relays for the run's
+        Session is logged where it arrives; each follow records how much as a
+        ``workspace.aide.reasoning`` span, without the text.
         """
         session_id, request_id = request.session_id, request.op_id
         last_seq = progress.consumed.setdefault(run.run_id, -1)
-        while True:
-            try:
-                async with self.gateway.stream(
-                    "GET",
-                    f"v1/runs/{quote(run.run_id, safe='')}/events",
-                    params={"last_seq": last_seq},
-                    timeout=httpx.Timeout(30, read=None),
-                ) as response:
-                    if response.status_code == 404:
+        thoughts: asyncio.Queue[tuple[str, int]] = asyncio.Queue()
+        native: str | None = None  # the run's Session, once the gateway named it
+        relayed = lost = reasoned = 0
+
+        async def record(placed: list[tuple[ChatEvent, int]]) -> None:
+            nonlocal reasoned
+            reasoned += sum(isinstance(event, Reasoning) for event, _ in placed)
+            await self.record(request, run.run_id, placed)
+
+        try:
+            while True:
+                try:
+                    state = await self.gateway.get(
+                        f"v1/runs/{quote(run.run_id, safe='')}", timeout=30
+                    )
+                    if state.status_code == 404:
                         # Gone with its gateway: the seam settles the request as interrupted.
-                        await self.record(request, run.run_id, progress.flush())
+                        await record(progress.flush())
                         return True, after
-                    response.raise_for_status()
-                    progressed = False
-                    lines = events(response)
-                    following: asyncio.Task[str | None] | None = None
-                    try:
-                        while True:
-                            if following is None:
-                                following = asyncio.ensure_future(anext(lines, None))
-                            ready, _ = await asyncio.wait({following}, timeout=progress.patience())
-                            if not ready:  # a merged delta is due
-                                await self.record(request, run.run_id, progress.flush())
-                                continue
-                            data, following = following.result(), None
-                            if data is None:
-                                break
-                            event = RunEvent.model_validate_json(data)
-                            if event.event == "replay.truncated":
-                                # The consumer fell behind the gateway's buffer: those events
-                                # were never logged, and the log continues after them.
-                                log.warning("Run %s events lost before logging", run.run_id)
-                                continue
-                            if event.seq is None or event.seq <= last_seq:
-                                continue
-                            last_seq, progressed = event.seq, True
-                            progress.consumed[run.run_id] = last_seq
-                            await self.record(
-                                request, run.run_id, progress.place(run.run_id, event)
-                            )
-                            if event.event == "tool.completed":
-                                after = await self.publish(request_id, session_id, after)
-                            elif event.event in CONTROLS:
-                                await self.changed(session_id)
-                            elif event.event.removeprefix("run.") in TERMINAL:
-                                await self.record(request, run.run_id, progress.flush())
-                                return True, after
-                    finally:  # the pending read ends before its stream closes
-                        if following is not None:
-                            following.cancel()
-                            await asyncio.wait({following})
-                    await self.record(request, run.run_id, progress.flush())
-                    if not progressed:
-                        return False, after  # a quiet closed stream; the consumer follows again
-            # The run stream dropped, or a read for a push failed; ``record`` lets no failed append
-            # reach here. Resume after last_seq.
-            except httpx.TransportError:
-                await asyncio.sleep(1)
+                    state.raise_for_status()
+                    native = RunSession.model_validate_json(state.content).session_id
+                    self.thinking[native] = thoughts
+                    async with self.gateway.stream(
+                        "GET",
+                        f"v1/runs/{quote(run.run_id, safe='')}/events",
+                        params={"last_seq": last_seq},
+                        timeout=httpx.Timeout(30, read=None),
+                    ) as response:
+                        if response.status_code == 404:
+                            await record(progress.flush())
+                            return True, after
+                        response.raise_for_status()
+                        progressed = False
+                        lines = events(response)
+                        following: asyncio.Task[str | None] | None = None
+                        thought: asyncio.Task[tuple[str, int]] | None = None
+                        try:
+                            while True:
+                                if following is None:
+                                    following = asyncio.ensure_future(anext(lines, None))
+                                if thought is None:
+                                    thought = asyncio.ensure_future(thoughts.get())
+                                ready, _ = await asyncio.wait(
+                                    {following, thought},
+                                    timeout=progress.patience(),
+                                    return_when=asyncio.FIRST_COMPLETED,
+                                )
+                                if not ready:  # a merged event is due
+                                    await record(progress.flush())
+                                    continue
+                                if thought in ready:
+                                    (text, gap), thought = thought.result(), None
+                                    relayed, lost = relayed + 1, lost + gap
+                                    await record(progress.think(text, last_seq))
+                                if following not in ready:
+                                    continue
+                                data, following = following.result(), None
+                                if data is None:
+                                    break
+                                event = RunEvent.model_validate_json(data)
+                                if event.event == "replay.truncated":
+                                    # The consumer fell behind the gateway's buffer: those events
+                                    # were never logged, and the log continues after them.
+                                    log.warning("Run %s events lost before logging", run.run_id)
+                                    continue
+                                if event.seq is None or event.seq <= last_seq:
+                                    continue
+                                last_seq, progressed = event.seq, True
+                                progress.consumed[run.run_id] = last_seq
+                                await record(progress.place(run.run_id, event))
+                                if event.event == "tool.completed":
+                                    after = await self.publish(request_id, session_id, after)
+                                elif event.event in CONTROLS:
+                                    await self.changed(session_id)
+                                elif event.event.removeprefix("run.") in TERMINAL:
+                                    await record(progress.flush())
+                                    return True, after
+                        finally:  # the pending reads end before their stream closes
+                            pending = {task for task in (following, thought) if task is not None}
+                            for task in pending:
+                                task.cancel()
+                            if pending:
+                                await asyncio.wait(pending)
+                        await record(progress.flush())
+                        if not progressed:
+                            return False, after  # a quiet closed stream; the consumer follows again
+                # The run stream dropped, or a read for a push failed; ``record`` lets no failed
+                # append reach here. Resume after last_seq.
+                except httpx.TransportError:
+                    await asyncio.sleep(1)
+        finally:
+            # Reasoning relayed after this, the run's end among it, has no place in the log.
+            if native is not None and self.thinking.get(native) is thoughts:
+                del self.thinking[native]
+            attributes = {
+                "run.id": run.run_id,
+                "reasoning.relayed": relayed,
+                "reasoning.lost": lost,
+                "reasoning.events": reasoned,
+            }
+            tracer().start_span("workspace.aide.reasoning", attributes=attributes).end()
 
     async def consume(self, request_id: str, session_id: str, scope: Scope) -> None:
         """The only writer of one request's event log: its runs' events in order, then its
@@ -1482,7 +1592,9 @@ class Backend:
             rows = [
                 row
                 for row in snapshot.records.sessions
-                if row.scope() is not None and (params.scope is None or row.scope() == params.scope)
+                if (scope := row.scope()) is not None
+                and (params.scope is None or scope == params.scope)
+                and (params.scope_id is None or scope.coworld == params.scope_id)
             ]
         else:
             coworld = params.scope.coworld if params.scope else params.scope_id
@@ -1725,6 +1837,10 @@ async def serve(
         asyncio.TaskGroup() as work,
     ):
         backend = Backend(seam, gateway, inference, work)
+        host, port = env["IDE_REASONING_RELAY"].rsplit(":", 1)
+        # A relay connection's failure ends that connection alone; the plugin reconnects.
+        relay = await asyncio.start_server(backend.relay, host, int(port), limit=MAX_BYTES)
+        work.create_task(relay.serve_forever())
         work.create_task(backend.watch())
         delay = 1
         while True:

@@ -79,6 +79,9 @@ def make_register(role: Role) -> Callable[[Any], None]:
 
         on_context = register_capture(ctx)
         ctx.register_hook("pre_llm_call", make_pre_llm_call(role, on_context))
+        from research_core.plugin.reasoning_relay import register_relay
+
+        register_relay(ctx)
         from research_core.plugin.session_context import make_section
 
         ctx.register_system_prompt_section(
