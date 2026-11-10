@@ -56,7 +56,7 @@ import time
 import traceback
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from http import HTTPStatus
@@ -85,7 +85,7 @@ from research_core.store.actors import Actor
 from research_core.store.db import Store, change_version, wait_for_change
 from research_core.store.errors import NotFound, StoreError
 from research_core.store.registry import GOAL, TASK, record_from_row
-from research_core.telemetry import propagator, span
+from research_core.telemetry import process_context, propagator, span
 from research_core.tools.ui import coworld_conversation, pointer_token
 from research_core.watcher import context, hermes_api
 from research_core.watcher.heartbeat import HAS_WORK_REASONS_KEY, HEARTBEAT_KEY
@@ -1605,6 +1605,9 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
         "--profile", default="orchestrator", help="The Hermes profile that runs the chat Sessions"
     )
     parser.add_argument(
+        "--wake", action="store_true", help="End a workspace sleep cycle before starting dispatch"
+    )
+    parser.add_argument(
         "--hermes",
         default=shutil.which("hermes") or "hermes",
         help="The hermes executable that writes a profile's model (default: hermes on PATH)",
@@ -1616,28 +1619,38 @@ def run(args: argparse.Namespace) -> int:
     logging.basicConfig()
     log.setLevel(logging.INFO)
     env = os.environ
-    profile_home = Path(env.get("HERMES_HOME") or Path.home() / ".hermes").expanduser()
-    researcher_profiles = [
-        name.strip() for name in env.get("IDE_RESEARCHER_PROFILES", "researcher").split(",")
-    ]
-    hermes = HermesRuns.from_profile(
-        profile_home, researcher_profiles=[name for name in researcher_profiles if name]
-    )
-    server = SeamServer(
-        ws=layout.from_env(env),
-        hermes=hermes,
-        profile=args.profile,
-        host=args.host,
-        port=args.port,
-        inference_lease_file=Path(env["IDE_INFERENCE_LEASE_FILE"])
-        if "IDE_INFERENCE_LEASE_FILE" in env
-        else None,
-        profiles=profile_models.sandbox_profiles(
-            profile_home.parent, args.profile, researcher_profiles
-        ),
-        hermes_bin=args.hermes,
-        env=dict(env),
-    )
+    startup_context = process_context(env) if args.wake else None
+    if args.wake:
+        from research_core.watcher.sleep import wake_from_env
+
+        with span("workspace.application_wake", context=startup_context):
+            result = wake_from_env(env)
+            print(json.dumps({"ok": True, **result}, default=str))
+    with (
+        span("workspace.application_ready", context=startup_context) if args.wake else nullcontext()
+    ):
+        profile_home = Path(env.get("HERMES_HOME") or Path.home() / ".hermes").expanduser()
+        researcher_profiles = [
+            name.strip() for name in env.get("IDE_RESEARCHER_PROFILES", "researcher").split(",")
+        ]
+        hermes = HermesRuns.from_profile(
+            profile_home, researcher_profiles=[name for name in researcher_profiles if name]
+        )
+        server = SeamServer(
+            ws=layout.from_env(env),
+            hermes=hermes,
+            profile=args.profile,
+            host=args.host,
+            port=args.port,
+            inference_lease_file=Path(env["IDE_INFERENCE_LEASE_FILE"])
+            if "IDE_INFERENCE_LEASE_FILE" in env
+            else None,
+            profiles=profile_models.sandbox_profiles(
+                profile_home.parent, args.profile, researcher_profiles
+            ),
+            hermes_bin=args.hermes,
+            env=dict(env),
+        )
     print(f"research serve: {server.url} (profile {args.profile}, Hermes {hermes.base_url})")
     signal.signal(signal.SIGTERM, _flush_then_die(server))
     try:

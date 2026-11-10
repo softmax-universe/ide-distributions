@@ -157,10 +157,10 @@ UI answers and their delivery inputs commit together; retrying the same answer r
 `research workspace sleep` preserves lifecycle v1: pause admission, drain recorded workers and
 tracked processes, settle chat/wake runs, then checkpoint and flush the retained volume.
 Exit 0 authorizes the host to stop compute. Explicit Stop and fifteen-minute automatic sleep
-remain enabled. Every start after a sleep is a full boot (`image/runtime.py`): `hermes profile
-update`, `prepare.py` for each profile, the gateway, then `research workspace wake`, which clears a
-sleep-owned pause so the coordinator resumes drained work. A new image therefore takes effect at
-the next wake.
+remain enabled. Every start after a sleep is a full boot (`image/runtime.py`). The runtime updates
+the profiles when the image changes, runs `prepare.py` for each profile, starts the gateway, then
+runs `research serve --wake`. Before starting dispatch, the server clears any sleep-owned pause
+so the coordinator resumes drained work. A new image therefore takes effect at the next wake.
 
 A deliberate pause (the `paused` setting set by the user or the Orchestrator) is different: wake does
 not clear it, and it holds new chat messages as well as background work. Anything with access to the

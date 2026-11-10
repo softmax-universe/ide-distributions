@@ -175,11 +175,7 @@ def run_wake(args: argparse.Namespace) -> int:
     if not os.environ.get("HERMES_HOME"):
         print(json.dumps({"ok": False, "error": NO_HERMES_HOME}))
         return 1
-    ctx = context.build(os.environ)
-    try:
-        result = sleep.wake_up(ctx)
-    finally:
-        close_stores(ctx)
+    result = sleep.wake_from_env(os.environ)
     print(json.dumps({"ok": True, **result}, default=str))
     return 0
 

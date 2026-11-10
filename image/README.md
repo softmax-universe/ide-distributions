@@ -201,7 +201,10 @@ real model credentials or user conversations.
 `workspace.startup` spans join on resource attributes `workspace.id` and
 `service.instance.id` (the boot ID). `workspace.state` is `fresh` or `retained`.
 The root ends at application health. Child spans cover profile installation/preparation,
-gateway readiness, and application wake/readiness. Concurrent `workspace.inference_ready`
+gateway readiness and `workspace.application_startup` (process launch through the health check).
+The server emits child spans for the durable wake and seam setup. The seam setup span retains
+the name `workspace.application_ready`, with CLI imports and the health check now measured by
+the parent span. Concurrent `workspace.inference_ready`
 and `workspace.relay_connected` spans end at first credential installation and first
 websocket handshake respectively. Cancelled readiness is an error observation, never a
 successful zero-duration milestone. Missing completion can also mean process termination.
