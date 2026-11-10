@@ -1105,6 +1105,8 @@ def test_scope_mismatches_are_forbidden_and_unscoped_sessions_are_hidden(system)
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)
         coworld_id = await opened(backend, LEAGUE)
+        other_league = {**LEAGUE, "league": "league_2"}
+        other_session = await opened(backend, other_league)
         # A Coworld session without a league has no AIDE scope.
         hidden = await backend.seam.post(
             "/session-open",
@@ -1127,9 +1129,26 @@ def test_scope_mismatches_are_forbidden_and_unscoped_sessions_are_hidden(system)
         ):
             assert code(await call(backend, method, params)) == "forbidden", method
         listed = await call(backend, "state.list", {"resource": "sessions"})
-        assert {s["id"] for s in listed["result"]["items"]} == {session_id, coworld_id}
+        assert {s["id"] for s in listed["result"]["items"]} == {
+            session_id,
+            coworld_id,
+            other_session,
+        }
         scoped = await call(backend, "state.list", {"resource": "sessions", "scope": LEAGUE})
         assert [s["id"] for s in scoped["result"]["items"]] == [coworld_id]
+        filters = {"resource": "sessions", "scope_id": COWORLD_ID, "limit": 1}
+        first = (await call(backend, "state.list", filters))["result"]
+        assert first["next_cursor"]
+        second = (await call(backend, "state.list", {**filters, "cursor": first["next_cursor"]}))[
+            "result"
+        ]
+        assert {s["id"]: s["scope"]["league"] for s in first["items"] + second["items"]} == {
+            coworld_id: LEAGUE["league"],
+            other_session: other_league["league"],
+        }
+        assert second["next_cursor"] is None
+        missing = await call(backend, "state.list", {**filters, "scope_id": "different-coworld"})
+        assert missing["result"]["items"] == []
         bad = {"session_id": session_id, "messages": say("a") + say("b"), "scope": WORKSPACE}
         assert code(await call(backend, "chat.send", bad)) == "unsupported"
         unscoped = await call(
