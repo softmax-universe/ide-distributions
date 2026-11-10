@@ -165,16 +165,20 @@ SPEC = tool(
         actions=(
             ActionSpec(
                 "search",
-                "Find claims by words in their summary, body and tags; retired claims come last.",
+                "Find claims by words in their summary, body and tags, or omit query to list "
+                "them, most recently updated first (tags: [G-2] lists a Goal's claims); retired "
+                "claims come last.",
                 {
-                    "query": a.string("Words to search for."),
-                    "tags": a.strings("Keep only claims carrying all of these tags."),
+                    "query": a.string("Words to search for; omit to list claims."),
+                    "tags": a.strings(
+                        "Keep only claims carrying all of these tags; a Goal's id, such as G-2, "
+                        "is a tag."
+                    ),
                     "include_retired": a.boolean(
                         "Include superseded and refuted claims (default true)."
                     ),
                     "limit": a.integer("At most this many results (default 20)."),
                 },
-                ("query",),
             ),
             ActionSpec(
                 "read",

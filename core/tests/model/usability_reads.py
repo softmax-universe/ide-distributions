@@ -501,10 +501,20 @@ def _matches(query: Any, *texts: str) -> bool:
     return bool(_words(str(query)) & _words(" ".join(texts)))
 
 
+def _goal_number(value: Any) -> int | None:
+    match = re.search(r"[0-9]+", str(value)) if value is not None else None
+    return int(match.group()) if match else None
+
+
 def claim_search(situation: Situation, args: dict) -> dict:
-    found = [_claim(claim_id) for claim_id in CLAIMS]
-    hits = [c for c in found if _matches(args["query"], c["summary"], c["body"], *c["tags"])]
-    return {"records": [_claim_summary(claim) for claim in hits]}
+    """Like ``claims.search``: words match, no query lists (newest first), tags narrow."""
+    found = [_claim(claim_id) for claim_id in reversed(list(CLAIMS))]
+    query = args.get("query")
+    if str(query or "").strip():
+        found = [c for c in found if _matches(query, c["summary"], c["body"], *c["tags"])]
+    wanted = set(args.get("tags") or ())
+    hits = [c for c in found if wanted <= set(c["tags"])]
+    return {"records": [_claim_summary(claim) for claim in hits[: args.get("limit") or 20]]}
 
 
 def claim_read(situation: Situation, args: dict) -> dict:
@@ -861,11 +871,21 @@ def experiment_search(situation: Situation, args: dict) -> dict:
         records.append(_x6())
     if situation.x5 != "absent":
         records.append(_x5(situation))
-    hits = [r for r in records if _matches(args["query"], r["summary"], *r["tags"])]
+    # Like ``experiments.search``: words match, no query lists (newest first), tags and goal
+    # narrow either.
+    records.sort(key=lambda r: int(r["id"].split("-")[1]), reverse=True)
+    query = args.get("query")
+    if str(query or "").strip():
+        records = [r for r in records if _matches(query, r["summary"], *r["tags"])]
+    wanted = set(args.get("tags") or ())
+    goal = _goal_number(args.get("goal"))
+    hits = [
+        r for r in records if wanted <= set(r["tags"]) and (goal is None or r["goal_id"] == goal)
+    ]
     return {
         "records": [
             {key: row[key] for key in ("id", "summary", "status", "tags", "created", "closed")}
-            for row in hits
+            for row in hits[: args.get("limit") or 20]
         ]
     }
 

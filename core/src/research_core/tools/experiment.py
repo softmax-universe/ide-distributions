@@ -197,8 +197,14 @@ def handle(call: ToolCall) -> dict:
         )
         return {"record": record}
     if call.action == "search":
-        limit = call.get("limit")
-        records = experiments.search(store, call.get("query"), limit=limit or 20)
+        goal = call.get("goal")
+        records = experiments.search(
+            store,
+            call.get("query"),
+            tags=call.get("tags"),
+            goal_id=a.record_number(goal, "goal", "goal") if goal is not None else None,
+            limit=call.get("limit") or 20,
+        )
         return {"records": records}
     if call.action == "update_run":
         if call.get("experiment") is not None:
@@ -555,12 +561,14 @@ SPEC = tool(
             ),
             ActionSpec(
                 "search",
-                "Full-text search over summaries, designs, results and tags.",
+                "Full-text search over summaries, designs, results and tags, or omit query to "
+                "list Experiments, newest first; tags and goal narrow either.",
                 {
-                    "query": a.string("Words to look for; all must match."),
+                    "query": a.string("Words to look for; all must match. Omit to list."),
+                    "tags": a.strings("Keep only Experiments carrying all of these tags."),
+                    "goal": a.string("Keep only Experiments created for this Goal, such as G-2."),
                     "limit": a.integer("At most this many results (default 20)."),
                 },
-                ("query",),
             ),
             ActionSpec(
                 "update",

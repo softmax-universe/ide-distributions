@@ -366,6 +366,11 @@ def test_search_ranks_summary_matches_first_and_lists_retired_last(coworld_store
     ]
     assert [r["id"] for r in claims.search(coworld_store, "latency", limit=1)] == ["C-3"]
     assert claims.search(coworld_store, "nonexistentword") == []
+    # No query lists every claim, active first and newest first; tags alone narrow it, which
+    # is how a Goal's claims are listed.
+    assert [r["id"] for r in claims.search(coworld_store)] == ["C-4", "C-3", "C-2", "C-1"]
+    assert [r["id"] for r in claims.search(coworld_store, None, tags=["cache"])] == ["C-3", "C-1"]
+    assert [r["id"] for r in claims.search(coworld_store, "  ", tags=["opening"])] == ["C-4", "C-2"]
 
 
 def test_search_survives_punctuation_and_falls_back_to_like(coworld_store, harness):
