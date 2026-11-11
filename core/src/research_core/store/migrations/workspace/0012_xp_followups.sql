@@ -18,3 +18,7 @@ CREATE TRIGGER xp_followups_log_update AFTER UPDATE ON xp_followups BEGIN
     INSERT INTO change_log(at,tbl,row_id,op)
     VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'),'xp_followups',NEW.rowid,'update');
 END;
+CREATE TRIGGER xp_followups_log_delete AFTER DELETE ON xp_followups BEGIN
+    INSERT INTO change_log(at,tbl,row_id,op)
+    VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'),'xp_followups',OLD.rowid,'delete');
+END;
