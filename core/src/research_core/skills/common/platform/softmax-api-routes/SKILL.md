@@ -43,11 +43,25 @@ Paging: list routes take `limit` and `cursor` and return the next cursor in the 
 |---|---|
 | Create; list mine; one; its episodes | `POST /v2/experience-requests` (use `xp.request`); `GET /v2/experience-requests?mine=true`; `GET /v2/experience-requests/{xreq}`; `GET /v2/experience-requests/{xreq}/episodes` (`xp.status` covers the one) |
 | Cancel a request | `POST /v2/experience-requests/{xreq}/cancel` (409 when finished) |
-| Episodes in bulk; changes feed; download manifest | `GET /v2/episode-requests?ids=&view=&status=`; `GET /v2/episode-requests/changes`; `GET /v2/episode-requests/download-manifest?ids=&include=` |
+| Episodes in bulk; changes feed; download manifest | `GET /v2/episode-requests?ids=&view=results&status=`; `GET /v2/episode-requests/changes`; `GET /v2/episode-requests/download-manifest?ids=&include=` |
 | One episode; an artifact; the bundle; stats | `GET /v2/episode-requests/{ereq}` (`platform.episode`); `GET …/{ereq}/artifacts/{results|replay|logs|error-info|spec|game-config|player-status}`; `GET …/{ereq}/bundle?include=`; `GET …/{ereq}/episode-stats` |
 | Policy logs and artifacts per seat | `GET …/{ereq}/policy-artifacts`; `GET …/{ereq}/{pv}/policy-logs/{agent_idx}`; `GET …/{ereq}/{pv}/annotations`; `GET …/{ereq}/{pv}/policy-artifact/{agent_idx}` |
 | Episodes of a round, a policy version, a Coworld | `GET /v2/rounds/{round}/episode-requests`; `GET /v2/policy-versions/{pv}/episode-requests`; `GET /v2/coworlds/{cow}/episode-requests?source=` (`platform.episodes` covers the second) |
 | Replay viewer session | `POST /v2/coworlds/replays/session {coworld_id, episode_id, replay_uri}` (`platform.replay` fetches the file) |
+
+For an uploaded policy version, find episode IDs with `platform.episodes {policy_version}`. For one
+episode use `platform.episode {episode}`. For scores across multiple episodes, use one request with
+`view: "results"`. The default progress view omits scores. Pass `ids` as a JSON array of up to 50
+episode IDs or up to 50 experience request IDs of the same kind. Set `limit` for the page size
+(up to 200), and follow `next_cursor` when present.
+
+```json
+{"method":"GET","path":"/v2/episode-requests","params":{"ids":["<ereq_id_1>","<ereq_id_2>"],"view":"results","limit":50}}
+```
+
+Use `participant_scores` with the participant positions to compare outcomes. The bulk results
+are sufficient for a score tally. For fields specific to an episode's result artifact, such as
+ticks, use `research softmax exec -- coworld episode-results <ereq_id>`.
 
 ## Credits, Coworlds, forum, wiki
 

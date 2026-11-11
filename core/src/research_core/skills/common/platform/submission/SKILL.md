@@ -17,7 +17,11 @@ A policy reaches a League in three steps, each its own tool: a Version (`version
 
 ## A user asked
 
-Do it in the same turn: `version.create` on the code they mean (`code/` for what is on `main`), `upload`, then `submit {version, league, user_requested: true, cites: <their message>, reason}`. No setting, quality bar or Task applies. Warn about what is missing (no Experiment, not merged) and submit anyway. `cites` is a record, never a gate: without it the submission still runs and the result asks you to record the reference.
+For an unconditional request, submit in the same turn. Run `version.create` on the code they mean (`code/` for what is on `main`), `upload`, then `submit {version, league, user_requested: true, cites: <their message>, reason}`. No setting, quality bar or Task applies. Warn about what is missing (no Experiment, not merged) and submit anyway. `cites` is a record, never a gate: without it the submission still runs and the result asks you to record the reference.
+
+When the request sets a condition on submission, verify it first. Refresh the Experiment with
+`xp.status {experiment}`. If you already have the episode IDs and need a score tally, use the
+bulk results view in the `softmax-api-routes` skill. Submit only when the user's condition is met.
 
 ## Your own initiative
 
