@@ -180,6 +180,11 @@ def test_create_refs_goal_and_task_and_rejects_wrong_kinds(call, two_versions):
     assert goal["ok"] is True
     created = call("experiment", create_args(goal="G-1"))
     assert created["record"]["goal_id"] == 1
+    call("experiment", create_args())
+    # A Goal's Experiments, listed without words to search for.
+    of_goal = call("experiment", {"action": "search", "goal": "G-1"})
+    assert [r["id"] for r in of_goal["records"]] == ["X-1"]
+    assert [r["id"] for r in call("experiment", {"action": "search"})["records"]] == ["X-2", "X-1"]
     wrong = call("experiment", create_args(goal="T-1"))
     assert wrong["ok"] is False and "goal must be a goal reference" in wrong["error"]
 
@@ -198,6 +203,8 @@ def test_search_and_abandon(call, two_versions):
     found = call("experiment", {"action": "search", "query": "retreating win rate"})
     assert [r["id"] for r in found["records"]] == ["X-1"]
     assert call("experiment", {"action": "search", "query": "zeppelin"})["records"] == []
+    listed = call("experiment", {"action": "search"})
+    assert listed["ok"] is True and [r["id"] for r in listed["records"]] == ["X-1"]
 
     abandoned = call("experiment", {"action": "abandon", "experiment": "X-1", "reason": "moot"})
     assert abandoned["record"]["status"] == "abandoned"

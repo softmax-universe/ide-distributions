@@ -36,6 +36,8 @@ from research_core.store.errors import NotFound, StoreError
 from research_core.store.registry import EXPERIMENT, RECORDS, record_from_row
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from research_core.store.actors import Actor
     from research_core.store.db import Store
 
@@ -484,28 +486,53 @@ def read(store: Store, experiment_id: int | str, section: str | None = None) -> 
     return record
 
 
-def search(store: Store, query: str, limit: int = 20) -> list[dict[str, Any]]:
-    """Full-text search over summary, hypothesis, methods, results and tags; best match first."""
-    match = fts_match(query)
-    if match is None:
-        return []
-    rows = store.q(
-        "SELECT e.id, e.summary, e.status, e.tags, e.created, e.closed"
-        " FROM experiments_fts f JOIN experiments e ON e.id = f.rowid"
-        " WHERE experiments_fts MATCH ? ORDER BY rank LIMIT ?",
-        (match, limit),
-    )
-    return [
-        {
-            "id": display_id("X", row["id"]),
-            "summary": row["summary"],
-            "status": row["status"],
-            "tags": parse_json(row["tags"], []),
-            "created": row["created"],
-            "closed": row["closed"],
-        }
-        for row in rows
-    ]
+def search(
+    store: Store,
+    query: str | None = None,
+    *,
+    tags: Sequence[str] | None = None,
+    goal_id: int | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Full-text search over summary, hypothesis, methods, results and tags; best match first.
+
+    With no query (``None`` or blank) every Experiment, newest first, so ``tags`` or
+    ``goal_id`` alone lists them. ``tags`` keeps only Experiments carrying all of them;
+    ``goal_id`` only those created for that Goal. A query with no words matches nothing.
+    """
+    columns = "e.id, e.summary, e.status, e.tags, e.goal_id, e.created, e.closed"
+    if not (query or "").strip():
+        rows = store.q(f"SELECT {columns} FROM experiments e ORDER BY e.id DESC")
+    else:
+        match = fts_match(query or "")
+        if match is None:
+            return []
+        rows = store.q(
+            f"SELECT {columns} FROM experiments_fts f JOIN experiments e ON e.id = f.rowid"
+            " WHERE experiments_fts MATCH ? ORDER BY rank",
+            (match,),
+        )
+    wanted = set(tags or ())
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        if len(results) >= limit:
+            break
+        row_tags = parse_json(row["tags"], [])
+        if not wanted <= set(row_tags):
+            continue
+        if goal_id is not None and row["goal_id"] != goal_id:
+            continue
+        results.append(
+            {
+                "id": display_id("X", row["id"]),
+                "summary": row["summary"],
+                "status": row["status"],
+                "tags": row_tags,
+                "created": row["created"],
+                "closed": row["closed"],
+            }
+        )
+    return results
 
 
 def fts_match(query: str) -> str | None:

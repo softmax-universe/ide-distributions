@@ -168,11 +168,15 @@ def test_offline_every_situation_opens_and_answers_its_reads():
         ("task.list", {}),
         ("claim.read", {"claim": "C-99"}),
         ("claim.search", {"query": "scouting"}),
+        ("claim.search", {"tags": ["G-1"]}),
+        ("claim.search", {}),
         ("directive.list", {}),
         ("settings.read", {"key": "no_such_setting"}),
         ("version.read", {"version": "V-12"}),
         ("experiment.read", {"experiment": 5, "section": "results"}),
         ("experiment.search", {"query": "retreat"}),
+        ("experiment.search", {"goal": "G-1"}),
+        ("experiment.search", {}),
         ("xp.status", {"experiment": "X-5"}),
         ("workspace.doctor", {}),
         ("platform.standings", {"league": "league_cogs_main"}),
@@ -604,6 +608,10 @@ def test_offline_reads_differ_and_searches_can_come_back_empty():
     assert write_actions.RESULT not in answers
     assert _read("claim.search", {"query": "zzz nothing here"})["records"] == []
     assert _read("claim.search", {"query": "late fights"})["records"][0]["id"] == "C-5"
+    # Without a query the fake lists, as the store does, and tags narrow the list.
+    assert len(_read("claim.search", {})["records"]) == len(usability_reads.CLAIMS)
+    standings = _read("claim.search", {"tags": ["standings"]})["records"]
+    assert [c["id"] for c in standings] == ["C-41", "C-40"]
 
 
 def test_offline_read_file_serves_the_binding_skills_a_session_lists():

@@ -668,7 +668,12 @@ def test_search_matches_words_and_survives_query_operators(coworld_store, sessio
     assert experiments.search(coworld_store, "retreating OR formation") == []
     assert experiments.search(coworld_store, "retreating formation") == []
     assert experiments.search(coworld_store, "--- ( ) *") == []
-    assert experiments.search(coworld_store, "") == []
+    # No query lists them, newest first; tags narrow the list as they narrow a search.
+    assert [r["id"] for r in experiments.search(coworld_store, "")] == ["X-2", "X-1"]
+    assert [r["id"] for r in experiments.search(coworld_store)] == ["X-2", "X-1"]
+    assert [r["id"] for r in experiments.search(coworld_store, None, limit=1)] == ["X-2"]
+    assert [r["id"] for r in experiments.search(coworld_store, tags=["retreat"])] == ["X-1"]
+    assert experiments.search(coworld_store, "formation", tags=["retreat"]) == []
     assert len(experiments.search(coworld_store, "the", limit=1)) == 1
     hit = experiments.search(coworld_store, "formation")[0]
     assert hit == {
