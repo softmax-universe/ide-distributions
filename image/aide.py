@@ -59,6 +59,12 @@ TEXT_CHARS = 65536  # reasoning, interim text and tool arguments in one event
 MERGE_SECONDS = 0.25  # consecutive text deltas share one logged event for this long
 REASONING_MERGE_SECONDS = 1.0  # and consecutive relayed reasoning chunks this long
 DEFAULT_CLIENT = {"id": "aide", "kind": "ide"}
+STEER_OPEN = (
+    "[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered "
+    "once at this position; not tool output and not a new delivery when replayed "
+    "from conversation history]\n"
+)
+STEER_CLOSE = "\n[/OUT-OF-BAND USER MESSAGE]"
 TASK_STATUSES = {
     "proposed": "proposed",
     "unclaimed": "pending",
@@ -632,6 +638,16 @@ def record(message: NativeMessage, session_id: str) -> Record | None:
         return None
     fields = message.model_dump(include={"role", "content", "tool_calls", "tool_call_id"})
     body = {key: value for key, value in fields.items() if key == "content" or value is not None}
+    # Hermes retains the model-facing steer in its session database.
+    content = message.content
+    if (
+        message.role == "user"
+        and message.display_kind == "steer"
+        and isinstance(content, str)
+        and content.startswith(STEER_OPEN)
+        and content.endswith(STEER_CLOSE)
+    ):
+        body["content"] = content[len(STEER_OPEN) : -len(STEER_CLOSE)]
     kind = "message"
     if message.display_kind == "failed_turn":
         kind = "failed_turn"
