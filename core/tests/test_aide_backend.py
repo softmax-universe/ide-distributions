@@ -82,6 +82,7 @@ class Gateway:
     def __init__(self, hermes: FakeHermesRuns):
         self.hermes = hermes
         self.transcripts: dict[str, list[dict]] = {}
+        self.titles: dict[str, str] = {}
         self.controls: dict[str, list[dict]] = {}
         self.event_requests: list[tuple[str, str]] = []
         self.drop_after: int | None = None
@@ -134,6 +135,10 @@ class Gateway:
             session_id = path.split("/")[2]
             if session_id not in self.hermes.sessions:
                 return httpx.Response(404, json={"error": "Session not found"})
+            if path == f"api/sessions/{session_id}":
+                return httpx.Response(
+                    200, json={"session": {"id": session_id, "title": self.titles.get(session_id)}}
+                )
             # Hermes ``order=latest``: offset and limit count back from the newest, and the page
             # comes back oldest first.
             assert request.url.params["order"] == "latest"
@@ -335,6 +340,7 @@ def test_chat_round_trip_pushes_what_the_reads_return_to_every_subscriber(system
             frontend=OTHER,
         )
         assert watching["result"]["item"]["id"] == session_id
+        assert "title" not in watching["result"]["item"]
         request_id = str(uuid4())
         params = {"session_id": session_id, "messages": say("hi"), "scope": WORKSPACE}
         accepted = await call(backend, "chat.send", params, request_id=request_id)
@@ -439,6 +445,10 @@ def test_chat_round_trip_pushes_what_the_reads_return_to_every_subscriber(system
         )["result"]["item"]
         assert [r["request_id"] for r in session["requests"]] == [request_id]
         assert session["active_request_ids"] == []
+        assert session["title"] == "hi"
+        gateway.titles[session_id] = "Saved Hermes title"
+        titled = await call(restarted, "state.list", {"resource": "sessions"})
+        assert titled["result"]["items"][0]["title"] == "Saved Hermes title"
         # The log, not the gateway, answers: a gateway restart changes no read.
         gateway.restart()
         assert (await events_read(restarted, session_id, request_id))["result"] == read
@@ -589,7 +599,11 @@ def test_an_append_with_no_answer_ends_the_backend_and_the_next_one_resumes_the_
 
     async def resume(backend, gateway, ctx, hermes):
         (session_id,) = hermes.sessions
-        # The reloaded frontend subscribes before the new backend's first await.
+        # Model an already subscribed frontend before recovery can push. state.get awaits
+        # a scope read before subscribing, so it can otherwise race the recovering consumer.
+        subscription = aide.Subscription(aide.Scope.model_validate(WORKSPACE))
+        subscription.frontends.add(FRONTEND)
+        backend.subscribers[session_id] = subscription
         state = {"resource": "sessions", "id": session_id, "scope": WORKSPACE}
         await call(backend, "state.get", state)
         await until(lambda: backend.socket.notes("chat.finished"))

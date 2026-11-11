@@ -18,6 +18,7 @@ from uuid import uuid4
 
 import yaml
 from aiohttp import ClientSession, WSMsgType, web
+from hermes_state import SessionDB
 
 PLATFORM_PORT, MODEL_PORT = int(sys.argv[1]), int(sys.argv[2])
 WORKSPACE = {"scope": "workspace", "coworld": None, "league": None}
@@ -254,6 +255,13 @@ async def main() -> None:
         print(
             "PASS AIDE session.open, chat.send, chunks, chat.finished and chat.history", flush=True
         )
+
+        with SessionDB(config.with_name("state.db")) as native:
+            assert native.set_session_title(session["id"], "Packaged Hermes title")
+        listed = await request("state.list", {"resource": "sessions"})
+        item = next(item for item in listed["items"] if item["id"] == session["id"])
+        assert item["title"] == "Packaged Hermes title", item
+        print("PASS AIDE lists the title stored by Hermes", flush=True)
 
         # Reads are authoritative: a new backend socket reads what the first one pushed.
         await relay.close()
