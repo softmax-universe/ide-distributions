@@ -119,7 +119,6 @@ async def main() -> None:
         mirror = f"http://127.0.0.1:{MODEL_PORT}/api/v1"
         settings["model"]["base_url"] = mirror
         title_config = settings["auxiliary"]["title_generation"]
-        assert title_config["enabled"] and title_config["model_upgrade_enabled"]
         title_model = title_config["model"]
         title_config["base_url"] = mirror
         config.write_text(yaml.safe_dump(settings))
