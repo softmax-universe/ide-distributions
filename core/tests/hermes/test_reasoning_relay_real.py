@@ -103,6 +103,7 @@ def test_reasoning_streams_into_the_request_log_before_the_tool(hermes_bin, tmp_
             request = aide.Admission(
                 op_id="op-1",
                 session_id=SESSION,
+                origin="runtime",
                 status="running",
                 input=None,
                 error=None,
