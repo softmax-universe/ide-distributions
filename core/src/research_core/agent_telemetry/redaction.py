@@ -1,6 +1,7 @@
 """Take secrets out of captured text before it is hashed or written.
 
-The gateway writer calls Hermes's own scanner and adds patterns for Softmax User and Player tokens.
+The gateway writer calls Hermes's own scanner and adds patterns for Softmax credential tokens
+(User, Player, cogent agent, and the platform's service tokens).
 Those patterns stay here and are not registered with Hermes, because a registered pattern would also
 change what the agent sees in its tool output. Tested on 2026-11-04: Hermes alone leaves a bare
 ``usr_...`` token untouched.
@@ -32,13 +33,17 @@ from typing import Any
 
 from research_core.agent_telemetry.records import clean_text
 
-# Both tokens are the prefix and the URL-safe base64 of 32 random bytes (metta
-# ``observatory_core/credential_tokens.py``), so exactly 43 characters and one "=". A Player ID is
-# ``ply_`` and a 36-character UUID, which must survive. No letter or digit comes before a token,
-# except the end of an escape in escaped text: ``\nusr_...``, ``\u000ausr_...``, ``%20usr_...``.
+# Every prefix in metta's ``CredentialTokenPrefix`` except ``code_`` (a short-lived auth code, and a
+# common word) names a token built the same way: the prefix and the URL-safe base64 of 32 random
+# bytes (``observatory_core/credential_tokens.py``), so exactly 43 characters and one "=". The
+# workspace's own Player credential is a ``cga_`` (cogent agent) token. A Player ID is ``ply_`` and
+# a 36-character UUID, which must survive. No letter or digit comes before a token, except the end
+# of an escape in escaped text: ``\nusr_...``, ``\u000ausr_...``, ``%20usr_...``.
+SOFTMAX_TOKEN_PREFIXES = ("usr_", "ply_", "cga_", "rrt_", "cmr_", "mch_", "xpw_")
 _SOFTMAX_TOKEN = re.compile(
     r"(?:(?<![A-Za-z0-9])|(?<=\\[nrtbf])|(?<=\\u[0-9a-fA-F]{4})|(?<=%[0-9a-fA-F]{2}))"
-    r"(?:usr|ply)_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])=?"
+    rf"(?:{'|'.join(prefix[:-1] for prefix in SOFTMAX_TOKEN_PREFIXES)})_[A-Za-z0-9_-]{{43}}"
+    r"(?![A-Za-z0-9_-])=?"
 )
 SOFTMAX_TOKEN_MASK = "[redacted-softmax-token]"
 _SECRET_FIELD_MASK = "[redacted-secret-field]"
