@@ -1,4 +1,4 @@
-name: Workspace startup comparison
+name: Fresh workspace startup comparison
 on:
   workflow_dispatch:
     inputs:
@@ -37,17 +37,6 @@ jobs:
               -c 'import pathlib,sysconfig; root=pathlib.Path("/opt/hermes"); site=pathlib.Path(sysconfig.get_path("purelib")); print("gateway pyc",len(list((root/"gateway").rglob("*.pyc"))),"CLI pyc",len(list((root/"hermes_cli").rglob("*.pyc"))),"dependency pyc",len(list(site.rglob("*.pyc"))))' \
               > "$RUNNER_TEMP/$variant-bytecode.txt"
           done
-      - name: Measure baseline startup
-        working-directory: ${{ runner.temp }}/baseline-source
-        env:
-          STARTUP_CYCLES: "6"
-          STARTUP_ARTIFACTS: ${{ runner.temp }}/baseline-proof
-        run: bash image/system_tests/start-stop.sh startup-baseline
-      - name: Measure candidate startup
-        env:
-          STARTUP_CYCLES: "6"
-          STARTUP_ARTIFACTS: ${{ runner.temp }}/candidate-proof
-        run: bash image/system_tests/start-stop.sh startup-candidate
       - name: Compare independent fresh-volume starts
         run: bash image/system_tests/fresh-startup.sh startup-baseline startup-candidate "$RUNNER_TEMP/fresh-proof" 10
       - name: Retain comparison evidence
@@ -58,6 +47,4 @@ jobs:
           path: |
             ${{ runner.temp }}/*-imports.log
             ${{ runner.temp }}/*-bytecode.txt
-            ${{ runner.temp }}/baseline-proof
-            ${{ runner.temp }}/candidate-proof
             ${{ runner.temp }}/fresh-proof

@@ -124,6 +124,7 @@ async def run(stack: AsyncExitStack) -> None:
         )
     )
     host_dotenv.chmod(0o600)
+    existing_workspace = True
     if any(not (HOME / "profiles" / role).exists() for role in PROFILES):
         # Templates contain configuration only; each workspace owns its freshly created store.
         from research_core import layout
@@ -131,6 +132,7 @@ async def run(stack: AsyncExitStack) -> None:
 
         with telemetry.span("workspace.store_prepare", context=startup_context):
             workspace = layout.from_env(common)
+            existing_workspace = workspace.store_path.exists()
             workspace.ensure_dirs()
             ensure_stores(workspace)
     for role in PROFILES:
@@ -176,7 +178,8 @@ async def run(stack: AsyncExitStack) -> None:
         )
         dotenv.chmod(0o600)
         with telemetry.span("workspace.profile_prepare", context=startup_context, role=role):
-            if not fresh:
+            # A replacement profile must discover the existing Coworlds and owner settings.
+            if not fresh or existing_workspace:
                 await command(
                     PYTHON,
                     str(home / "scripts/prepare.py"),
