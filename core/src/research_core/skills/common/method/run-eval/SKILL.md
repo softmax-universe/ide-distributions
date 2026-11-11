@@ -38,6 +38,15 @@ Never conclude from a rung below the question's weight.
 5. `task_wait {task, kind: xp, detail: "X-n's requests", ref: [<request ids>]}` and end your run. Reading starts when the watcher resumes you: `xp.status {experiment}`.
 6. Both arms of an A/B go out in the same window; when the binding gives a batch size, respect it.
 
+## Read episode scores
+
+Find an uploaded version's episode IDs with `platform.episodes {policy_version}`. Use
+`platform.episode {episode}` for one episode. For a tally use the bulk score example in
+`softmax-api-routes`. Pass up to 50 IDs of one kind (episode or experience request) as an array,
+set `view: "results"` to include scores, and follow `next_cursor` when present. Join
+`participant_scores` to the participant positions. For artifact fields such as ticks, use
+`research softmax exec -- coworld episode-results <ereq_id>`.
+
 ## Footguns
 
 - Sampled seats (`league`) in an A/B invalidate the comparison: the arms saw different fields.

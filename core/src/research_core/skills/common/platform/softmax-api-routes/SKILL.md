@@ -49,19 +49,11 @@ Paging: list routes take `limit` and `cursor` and return the next cursor in the 
 | Episodes of a round, a policy version, a Coworld | `GET /v2/rounds/{round}/episode-requests`; `GET /v2/policy-versions/{pv}/episode-requests`; `GET /v2/coworlds/{cow}/episode-requests?source=` (`platform.episodes` covers the second) |
 | Replay viewer session | `POST /v2/coworlds/replays/session {coworld_id, episode_id, replay_uri}` (`platform.replay` fetches the file) |
 
-For an uploaded policy version, find episode IDs with `platform.episodes {policy_version}`. For one
-episode use `platform.episode {episode}`. For scores across multiple episodes, use one request with
-`view: "results"`. The default progress view omits scores. Pass `ids` as a JSON array of up to 50
-episode IDs or up to 50 experience request IDs of the same kind. Set `limit` for the page size
-(up to 200), and follow `next_cursor` when present.
+A bulk score request takes an `ids` array.
 
 ```json
 {"method":"GET","path":"/v2/episode-requests","params":{"ids":["<ereq_id_1>","<ereq_id_2>"],"view":"results","limit":50}}
 ```
-
-Use `participant_scores` with the participant positions to compare outcomes. The bulk results
-are sufficient for a score tally. For fields specific to an episode's result artifact, such as
-ticks, use `research softmax exec -- coworld episode-results <ereq_id>`.
 
 ## Credits, Coworlds, forum, wiki
 
