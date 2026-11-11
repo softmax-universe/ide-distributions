@@ -135,3 +135,15 @@ docker run -d --name "$name-aide" -e IDE_PLATFORM=fake --read-only --cap-drop AL
   --tmpfs /tmp:rw,size=1g --mount "type=volume,src=$volume-aide,dst=/workspace" \
   --mount "type=bind,src=$scratch/aide-bootstrap.json,dst=/run/workspace/bootstrap.json,readonly" "$image"
 docker exec "$name-aide" /opt/hermes/.venv/bin/python /opt/distribution/image/system_tests/check-aide.py 8700 8701
+
+# Let the requests finish on the platform while the workspace container is stopped.
+docker exec -e HERMES_HOME=/workspace/host/profiles/orchestrator "$name-aide" \
+  /opt/workspace-env/bin/research workspace sleep
+docker stop --time 30 "$name-aide" >/dev/null
+test "$(docker inspect --format '{{.State.ExitCode}}' "$name-aide")" = 0
+docker run --rm -e IDE_PLATFORM=fake -v "$volume-aide:/workspace" \
+  --entrypoint /opt/workspace-env/bin/python "$image" -c \
+  'from research_core.platform import from_env; from_env().configure(polls_to_complete=1)'
+docker start "$name-aide" >/dev/null
+docker exec "$name-aide" /opt/hermes/.venv/bin/python \
+  /opt/distribution/image/system_tests/check-aide.py 8700 8701 --wake-proof

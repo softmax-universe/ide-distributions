@@ -119,6 +119,8 @@ class Coordinator:
         self.clock = clock
         # The last report recorded per Coworld: this loop can run twice a second with nothing new.
         self._last_reports: dict[str | None, dict[str, Any]] = {}
+        # A new coordinator checks retained work on its first tick after startup or wake.
+        self._workflow_checked_at: dict[str | None, datetime] = {}
 
     def status(self, run_id: str, *, profile: str):
         return self.native.status(run_id, profile=profile)
@@ -1724,17 +1726,15 @@ class Coordinator:
             ctx.set_meta("paused_drained", "0")
             # These are explicit domain operations, not an import-by-name event bus.
             # Their polling cadence is independent from missed-native-outcome recovery.
-            workflow_key = (
-                f"coordinator_workflow_at:{ctx.coworld.coworld_id if ctx.coworld else 'workspace'}"
-            )
-            due = ctx.meta(workflow_key)
-            if due is None or ctx.now - parse_iso(due) >= timedelta(seconds=60):
+            coworld_id = ctx.coworld.coworld_id if ctx.coworld else None
+            checked_at = self._workflow_checked_at.get(coworld_id)
+            if checked_at is None or ctx.now - checked_at >= timedelta(seconds=60):
                 report["champion_sync"] = champion_sync.run(ctx)
                 report["waits"] = waits.run(ctx)
                 report["merge"] = merge.run(ctx)
                 report["goals"] = goals.run(ctx)
                 report["checks"] = checks.run(ctx)
-                ctx.set_meta(workflow_key, ctx.now.isoformat())
+                self._workflow_checked_at[coworld_id] = ctx.now
                 if ctx.coworld is None:
                     report["xp_followups"] = xp_followups.advance(ctx)
             report["messages"] = self.deliver_worker_messages(ctx)

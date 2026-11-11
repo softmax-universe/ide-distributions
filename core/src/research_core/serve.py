@@ -75,7 +75,6 @@ from research_core import (
     intake,
     layout,
     profile_models,
-    xp_followups,
 )
 from research_core.agent_telemetry import Producer, TelemetryWriter, observed, stream_path
 from research_core.attachments import AttachmentError
@@ -461,19 +460,16 @@ class SeamServer:
                     )
                 finally:
                     store.close()
-            paused = bool(settings.get(wstore, "paused"))
-            waiting_on = (
-                json.loads(wstore.get_meta(HAS_WORK_REASONS_KEY) or "[]")
-                + admissions.work_reasons(wstore)
-                + ([] if paused else xp_followups.work_reasons(wstore))
-            )
+            waiting_on = json.loads(
+                wstore.get_meta(HAS_WORK_REASONS_KEY) or "[]"
+            ) + admissions.work_reasons(wstore)
             return {
                 "ok": True,
                 "heartbeat": heartbeat,
                 "heartbeat_age_s": age_s,
                 "has_work": bool(waiting_on),
                 "waiting_on": waiting_on,
-                "paused": paused,
+                "paused": bool(settings.get(wstore, "paused")),
                 "paused_drained": wstore.get_meta(PAUSED_DRAINED_KEY) == "1",
                 "sleep_started": wstore.get_meta("sleep_started"),
                 "blocked_executions": admissions.problems(wstore),

@@ -17,7 +17,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from research_core import layout, xp_followups
+from research_core import layout
 from research_core.store import admissions, coworlds, settings
 from research_core.store._common import parse_iso
 from research_core.store.db import Store
@@ -91,19 +91,16 @@ def run_status(args: argparse.Namespace) -> int:
         age_s = None
         if heartbeat is not None:
             age_s = round((datetime.now(UTC) - parse_iso(heartbeat)).total_seconds(), 1)
-        paused = bool(settings.get(wstore, "paused"))
-        waiting_on = (
-            json.loads(wstore.get_meta("has_work_reasons") or "[]")
-            + admissions.work_reasons(wstore)
-            + ([] if paused else xp_followups.work_reasons(wstore))
-        )
+        waiting_on = json.loads(
+            wstore.get_meta("has_work_reasons") or "[]"
+        ) + admissions.work_reasons(wstore)
         payload = {
             "ok": True,
             "heartbeat": heartbeat,
             "heartbeat_age_s": age_s,
             "has_work": bool(waiting_on),
             "waiting_on": waiting_on,
-            "paused": paused,
+            "paused": bool(settings.get(wstore, "paused")),
             "paused_drained": wstore.get_meta(PAUSED_DRAINED_KEY) == "1",
             "sleep_started": wstore.get_meta("sleep_started"),
             "blocked_executions": admissions.problems(wstore),

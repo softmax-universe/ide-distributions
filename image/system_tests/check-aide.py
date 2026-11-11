@@ -24,6 +24,9 @@ WORKSPACE = {"scope": "workspace", "coworld": None, "league": None}
 REPLY = ["The ", "workspace ", "answers."]
 XP_SCOPE = {"scope": "coworld", "coworld": "cow_fake", "league": "league_fake"}
 XP_START = "Run the prepared experiment."
+XP_NEXT = "Run the prepared experiment with the next seed."
+XP_SESSION = Path("/workspace/.xp-sleep-session")
+WAKE_PROOF = "--wake-proof" in sys.argv[3:]
 XP_REPLY = "Both experiment arms finished and were evaluated."
 XP_SEED = """
 import sys
@@ -101,7 +104,7 @@ async def main() -> None:
         finish = "stop"
         tool_call = None
         reply = REPLY
-        starting = last["role"] == "user" and XP_START in text
+        starting = last["role"] == "user" and (XP_START in text or XP_NEXT in text)
         following = (
             last["role"] == "user"
             and "The watched experience requests for X-1 have reached terminal states." in text
@@ -110,6 +113,8 @@ async def main() -> None:
             args = {"action": "request" if starting else "status", "experiment": "X-1"}
             if starting:
                 args["opponents"] = ["pv_other"]
+                if XP_NEXT in text:
+                    args["seeds"] = [2]
             tool_call = {
                 "id": "call_experience" if starting else "call_evaluate",
                 "type": "function",
@@ -182,7 +187,7 @@ async def main() -> None:
         await runner.setup()
         await web.TCPSite(runner, "127.0.0.1", port).start()
 
-    async with asyncio.timeout(300):
+    async def exercise() -> None:
         control = await control_sockets.get()
         await control.send_json(
             {"stream_id": "status", "envelope": {"id": str(uuid4()), "control": "status"}}
@@ -213,6 +218,20 @@ async def main() -> None:
                     assert "result" in frame["message"], frame
                     return frame["message"]["result"]
                 notes.append(frame["message"])
+
+        if WAKE_PROOF:
+            target = {"session_id": XP_SESSION.read_text(), "scope": XP_SCOPE}
+            # The retained chat may have received its reply before this client reconnected.
+            # History reads never send a message or start a turn.
+            while True:
+                history = await request("chat.history", target)
+                replies = [i for i in history["items"] if i["message"]["content"] == XP_REPLY]
+                if len(replies) >= 2:
+                    assert len(replies) == 2, replies
+                    break
+                await asyncio.sleep(1)
+            print("PASS AIDE checks retained XP on wake and follows up without a send", flush=True)
+            return
 
         session = (await request("session.open", {"scope": WORKSPACE}))["session"]
         assert session["scope"] == WORKSPACE, session
@@ -267,7 +286,7 @@ async def main() -> None:
             notes.append(json.loads((await relay.receive()).data)["message"])
         async with ClientSession() as http, http.get("http://127.0.0.1:8650/status") as status:
             waiting = await status.json()
-        assert waiting["has_work"] and "experiment:X-1:waiting:xp" in waiting["waiting_on"], waiting
+        assert not waiting["has_work"], waiting
 
         # Complete the fake platform requests without sending another user message.
         complete = await asyncio.create_subprocess_exec(
@@ -298,7 +317,28 @@ async def main() -> None:
             if "This is an automatic follow-up" in str(i["message"]["content"])
         ]
         assert trigger["kind"] == "continuation", trigger
-        print("PASS pending XP keeps workspace awake and follows up in its chat", flush=True)
+        print("PASS pending XP allows sleep and follows up while awake", flush=True)
+
+        # Leave a second batch pending on the same volume for the next boot.
+        pending = await asyncio.create_subprocess_exec(
+            "/opt/workspace-env/bin/python",
+            "-c",
+            "from research_core.platform import from_env; "
+            "from_env().configure(polls_to_complete=10000)",
+        )
+        assert await pending.wait() == 0
+        started = await request(
+            "chat.send", xp_target | {"messages": [{"role": "user", "content": XP_NEXT}]}
+        )
+        while not any(
+            n["method"] == "chat.finished" and n["params"]["request_id"] == started["request_id"]
+            for n in notes
+        ):
+            notes.append(json.loads((await relay.receive()).data)["message"])
+        XP_SESSION.write_text(xp_session)
+
+    async with asyncio.timeout(300):
+        await exercise()
     print(
         "PASS AIDE request record and chat.events read again after the socket is replaced",
         flush=True,

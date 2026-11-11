@@ -3,20 +3,15 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, uuid5
 
 from research_core.store import admissions, sessions
-from research_core.store._common import parse_iso
 
 if TYPE_CHECKING:
     from research_core.store.actors import Actor
     from research_core.store.db import Store
     from research_core.watcher.context import TickContext
-
-# A lost or indefinitely stalled platform request should not keep compute awake forever.
-MAX_WAIT = timedelta(hours=24)
 
 
 def register(
@@ -48,16 +43,6 @@ def register(
     return True
 
 
-def work_reasons(store: Store) -> list[str]:
-    return [
-        f"experiment:{row['experiment']}:waiting:xp"
-        for row in store.q(
-            "SELECT DISTINCT experiment FROM xp_followups WHERE admission_id IS NULL"
-            " ORDER BY experiment"
-        )
-    ]
-
-
 def advance(ctx: TickContext) -> list[str]:
     """Observe terminal requests and atomically hand each batch to the regular chat queue."""
     queued = []
@@ -69,18 +54,12 @@ def advance(ctx: TickContext) -> list[str]:
         # the workflow supervisor and cannot starve other batches on the next tick.
         with ctx.wstore.tx(ctx.actor) as tx:
             tx.execute("UPDATE xp_followups SET checked_at=? WHERE id=?", (tx.at, row["id"]))
-        expired = ctx.now - parse_iso(row["created_at"]) >= MAX_WAIT
-        if not expired and not all(
+        if not all(
             ctx.platform.xp_get(request_id).terminal
             for request_id in json.loads(row["request_ids"])
         ):
             continue
         experiment = row["experiment"]
-        text = (
-            f"AIDE could not confirm completion of {experiment} within 24 hours."
-            if expired
-            else f"The watched experience requests for {experiment} have reached terminal states."
-        )
         with ctx.wstore.tx(ctx.actor) as tx:
             op_id = admissions.enqueue_in_transaction(
                 tx,
@@ -89,7 +68,9 @@ def advance(ctx: TickContext) -> list[str]:
                 profile=row["profile"],
                 origin="followup",
                 text=(
-                    f"{text} This is an automatic follow-up. Read the experiment and use xp.status "
+                    f"The watched experience requests for {experiment} "
+                    "have reached terminal states. "
+                    "This is an automatic follow-up. Read the experiment and use xp.status "
                     "to check the actual results. Report the outcome in this chat, including "
                     "failed or missing results. If evaluation is still running, use its resume "
                     "token to finish it before reporting. Follow the user's earlier instructions."
