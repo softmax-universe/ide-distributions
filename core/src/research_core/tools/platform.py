@@ -23,12 +23,13 @@ from dataclasses import asdict
 from datetime import datetime
 from functools import partial
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 from research_core import mixin, refs
-from research_core.platform.errors import IdentityUnavailable
+from research_core.platform.errors import IdentityUnavailable, PlatformError
 from research_core.platform.protocol import Identity, Membership, Platform, PolicyVersion
-from research_core.platform.wait import call_platform, identity_for
+from research_core.platform.wait import call_platform, identity_for, read_platform_batch, tool_error
 from research_core.store import pins, sessions
 from research_core.tools import _args as a
 from research_core.tools.base import (
@@ -48,14 +49,21 @@ PLAYER_REFUSED_STATUSES = frozenset({401, 403, 404})
 NO_FILE_STATUS = 409
 # ``episodes {league}`` reads the episodes of at most this many active policies.
 LEAGUE_EPISODE_POLICIES = 10
+MAX_ARTIFACT_BATCH = 20
+MAX_SUMMARY_BATCH = 50
 
 LEAGUE = a.string("The League id (league_...) or a platform URL carrying it.")
 IDENTITY = a.string("Default player.", enum=["player", "user"])
+EPISODE_IDS = a.strings("Episode request IDs (ereq_...) or their platform URLs.")
 
 
 def handle(call: ToolCall) -> dict:
     handler = ACTIONS[call.action or ""]
-    return handler(call, call.ctx.platform())
+    platform = call.ctx.platform()
+    try:
+        return handler(call, platform)
+    finally:
+        platform.close()
 
 
 # --- leagues, divisions, standings --------------------------------------------------------
@@ -414,30 +422,115 @@ def episode(call: ToolCall, platform: Platform) -> dict:
     return {"episode": row}
 
 
-def replay(call: ToolCall, platform: Platform) -> dict:
-    """Fetch an episode's replay once: the file lands in ``documents/replays/`` and a pin keyed
-    ``replay`` / ``episode:<id>`` records it; a later call returns the pin."""
-    episode_id = _id(call.get("episode"))
-    ref = f"episode:{episode_id}"
-    pinned = pins.find(call.ctx.store, "replay", ref)
-    if pinned is not None and Path(pinned["download"]["path"]).is_file():
-        path = pinned["download"]["path"]
-        return {"episode": episode_id, "path": path, "pin": pinned, "existing": True}
-    path = _replay_path(call.ctx, episode_id, call.get("dest"))
-    content = _call(
-        call,
-        f"GET /v2/episode-requests/{episode_id}/artifacts/replay",
-        lambda: platform.episode_artifact(episode_id, "replay"),
+def episode_summaries(call: ToolCall, platform: Platform) -> dict:
+    ids = _episode_ids(call, MAX_SUMMARY_BATCH)
+    episodes, unavailable = _call(
+        call, "GET /v2/episode-requests", partial(platform.episode_summaries, ids)
     )
+    return {"episodes": episodes, "unavailable_ids": unavailable}
+
+
+def replay(call: ToolCall, platform: Platform) -> dict:
+    episode_id = _id(call.get("episode"))
+    pinned = _replay_pin(call.ctx, episode_id)
+    if pinned is not None and Path(pinned["download"]["path"]).is_file():
+        return {
+            "episode": episode_id,
+            "path": pinned["download"]["path"],
+            "pin": pinned,
+            "existing": True,
+        }
+    path = (
+        Path(pinned["download"]["path"])
+        if pinned is not None
+        else _replay_path(call.ctx, episode_id, call.get("dest"))
+    )
+    download = _call(
+        call,
+        _artifact_route(episode_id, "replay"),
+        partial(_download_artifact, platform, episode_id, "replay", path),
+    )
+    pin = _pin_replay(call.ctx, episode_id, download)
+    return {"episode": episode_id, "path": str(path), "pin": pin, "existing": pin["existing"]}
+
+
+def episode_artifacts(call: ToolCall, platform: Platform, *, artifact: str) -> dict:
+    ids = _episode_ids(call, MAX_ARTIFACT_BATCH)
+    results: dict[str, dict] = {}
+    reads = {}
+    destinations: set[Path] = set()
+    documents = _documents(call.ctx)
+    for episode_id in ids:
+        pin = _replay_pin(call.ctx, episode_id) if artifact == "replay" else None
+        if pin is not None:
+            path = Path(pin["download"]["path"])
+        elif artifact == "replay":
+            path = documents / "replays" / f"{episode_id}.replay"
+        else:
+            path = documents / "results" / f"{episode_id}.json"
+        destination = path.resolve()
+        if destination in destinations:
+            raise ToolError(f"multiple episodes share the replay path {path}")
+        destinations.add(destination)
+        if pin is not None and path.is_file():
+            results[episode_id] = {"episode": episode_id, "path": str(path), "existing": True}
+        else:
+            reads[episode_id] = partial(_download_artifact, platform, episode_id, artifact, path)
+
+    for episode_id, download in read_platform_batch(reads):
+        if isinstance(download, PlatformError):
+            error = tool_error(call.ctx, _artifact_route(episode_id, artifact), download)
+            results[episode_id] = {
+                "episode": episode_id,
+                "error": str(error),
+                "context": error.context,
+            }
+            continue
+        item: dict[str, Any] = {"episode": episode_id, "path": download["path"]}
+        if artifact == "replay":
+            pin = _pin_replay(call.ctx, episode_id, download)
+            item["existing"] = pin["existing"]
+        results[episode_id] = item
+    key = "replays" if artifact == "replay" else "episode_results"
+    return {key: [results[episode_id] for episode_id in ids]}
+
+
+def _episode_ids(call: ToolCall, maximum: int) -> list[str]:
+    ids = call.get("episode_ids")
+    if not 1 <= len(ids) <= maximum:
+        raise ToolError(f"episode_ids must contain between 1 and {maximum} IDs")
+    normalized = []
+    for raw in ids:
+        ref = refs.parse(raw) if isinstance(raw, str) else None
+        if ref is None or ref.kind != "episode" or ref.value == "ereq_":
+            raise ToolError("episode_ids must contain episode request IDs (ereq_...) or their URLs")
+        normalized.append(ref.value)
+    return list(dict.fromkeys(normalized))
+
+
+def _artifact_route(episode_id: str, artifact: str) -> str:
+    return f"GET /v2/episode-requests/{episode_id}/artifacts/{artifact}"
+
+
+def _replay_pin(ctx: ToolContext, episode_id: str) -> dict | None:
+    return pins.find(ctx.store, "replay", f"episode:{episode_id}")
+
+
+def _pin_replay(ctx: ToolContext, episode_id: str, download: dict) -> dict:
+    return pins.add(
+        ctx.store, ctx.actor, kind="replay", ref=f"episode:{episode_id}", download=download
+    )
+
+
+def _download_artifact(platform: Platform, episode_id: str, artifact: str, path: Path) -> dict:
+    content = platform.episode_artifact(episode_id, artifact)
     _write(path, content)
-    download = {
+    return {
         "path": str(path),
         "digest": hashlib.sha256(content).hexdigest(),
         "size_bytes": len(content),
-        "artifact": "replay",
+        "artifact": artifact,
     }
-    pin = pins.add(call.ctx.store, call.ctx.actor, kind="replay", ref=ref, download=download)
-    return {"episode": episode_id, "path": str(path), "pin": pin, "existing": pin["existing"]}
 
 
 # --- credits, champion, Coworld -----------------------------------------------------------
@@ -570,9 +663,14 @@ def _documents(ctx: ToolContext) -> Path:
 
 def _write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".part")
-    tmp.write_bytes(content)
-    tmp.replace(path)
+    with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        tmp = Path(stream.name)
+        try:
+            stream.write(content)
+            stream.close()
+            tmp.replace(path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
 
 def _replay_path(ctx: ToolContext, episode_id: str, dest: str | None) -> Path:
@@ -606,7 +704,10 @@ ACTIONS = {
     "results": results,
     "episodes": episodes,
     "episode": episode,
+    "episode_summaries": episode_summaries,
     "replay": replay,
+    "replays": partial(episode_artifacts, artifact="replay"),
+    "episode_results": partial(episode_artifacts, artifact="results"),
     "credits": credits,
     "champion": champion,
     "forum_list": forum_list,
@@ -624,8 +725,9 @@ SPEC = tool(
         description=(
             "Read the Softmax platform: leagues, standings, policies, results, episodes and "
             "replays, credits, the champion, the forum and wiki, a Coworld's manifest. Never "
-            "changes the platform; writes have their own tools. A persistent platform error makes "
-            "a task Session wait on it."
+            "changes the platform; writes have their own tools. Batch independent episode reads "
+            "with episode_summaries, episode_results, or replays. A persistent platform error "
+            "makes a task Session wait on it."
         ),
         handler=handle,
         roles=BOTH,
@@ -700,13 +802,32 @@ SPEC = tool(
             ),
             ActionSpec(
                 "episode",
-                "One episode request.",
+                "One episode request. For scores and participants across episodes, use "
+                "episode_summaries.",
                 {"episode": a.string("The episode id (ereq_...).")},
                 ("episode",),
             ),
             ActionSpec(
+                "episode_summaries",
+                "Scores, participants and status for up to 50 episodes in one request.",
+                {"episode_ids": EPISODE_IDS},
+                ("episode_ids",),
+            ),
+            ActionSpec(
+                "replays",
+                "Fetch and pin up to 20 episode replays concurrently; returns each path or error.",
+                {"episode_ids": EPISODE_IDS},
+                ("episode_ids",),
+            ),
+            ActionSpec(
+                "episode_results",
+                "Fetch raw result JSON for up to 20 episodes concurrently to documents/results/.",
+                {"episode_ids": EPISODE_IDS},
+                ("episode_ids",),
+            ),
+            ActionSpec(
                 "replay",
-                "Fetch an episode's replay into documents/replays/ once (pinned); gives the path.",
+                "Pin one replay in documents/replays/. For several, use replays with episode_ids.",
                 {
                     "episode": a.string("The episode id (ereq_...)."),
                     "dest": a.string("A file or folder, absolute or under documents/."),

@@ -1055,11 +1055,14 @@ class FakePlatform:
         end = offset + limit
         return EpisodePage(rows[offset:end], str(end) if end < len(rows) else None)
 
-    def _find_episode(self, state: dict, episode_request_id: str) -> dict:
-        candidates = self._league_episodes(state, 30)
+    def _known_episodes(self, state: dict) -> list[dict]:
+        rows = self._league_episodes(state, 30)
         for policy_version_id in state["policies"]:
-            candidates.extend(self._policy_episodes(state, policy_version_id))
-        for episode in candidates:
+            rows.extend(self._policy_episodes(state, policy_version_id))
+        return rows
+
+    def _find_episode(self, state: dict, episode_request_id: str) -> dict:
+        for episode in self._known_episodes(state):
             if episode["id"] == episode_request_id:
                 return episode
         raise self._not_found(f"GET /v2/episode-requests/{episode_request_id}")
@@ -1068,6 +1071,17 @@ class FakePlatform:
         return self._operate(
             "episode", lambda state: self._find_episode(state, episode_request_id), persist=False
         )
+
+    def episode_summaries(self, ids: list[str]) -> tuple[list[dict], list[str]]:
+        def select(state: dict) -> tuple[list[dict], list[str]]:
+            by_id = {row["id"]: row for row in self._known_episodes(state)}
+            fields = ("id", "created_at", "status", "scores", "participants")
+            return (
+                [{key: by_id[id_][key] for key in fields} for id_ in ids if id_ in by_id],
+                [id_ for id_ in ids if id_ not in by_id],
+            )
+
+        return self._operate("episode_summaries", select, persist=False)
 
     def episode_artifact(self, episode_request_id: str, artifact_type: str) -> bytes:
         episode = self.episode(episode_request_id)
