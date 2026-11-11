@@ -23,7 +23,7 @@ Do this in order, and end the run when it is done:
    `AGENTS.md`, `docs/`, a reference policy with a version log and `tools/build.sh`.
 3. Import lesson notes the switch skipped as claims (`claim_write`).
 4. `workspace.capabilities {check: true}` marks the tool checks due; the watcher runs them on
-   its next tick. Setup ends only when build, check and one upload pass (the first check uploads for real, as policy `<coworld>-tool-check`); a failed check creates a maintenance Task on its own.
+   its next tick. Setup ends only when build, check and one upload pass (the first check uploads for real, as policy `<coworld>-tool-check-<player>`); a failed check creates a maintenance Task on its own.
 5. When `setup-status` shows a `pending_request` (it holds the latest, which the payload may not),
    carry it out now. For a submission: `version.create` on `main`, `upload` that Version, then
    `submit` with `user_requested: true` citing `pending_request.cites`, in the league the request
