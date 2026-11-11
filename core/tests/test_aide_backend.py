@@ -981,6 +981,13 @@ def test_a_steered_follow_up_logs_only_its_outcome_and_leaves_the_host_run_alone
         cancel = {"session_id": session_id, "request_id": follow_up, "scope": WORKSPACE}
         assert code(await call(backend, "chat.cancel", cancel)) == "conflict"
         assert "stop" not in [name for name, _ in hermes.calls]
+        wrapped = (
+            "[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered "
+            "once at this position; not tool output and not a new delivery when replayed "
+            "from conversation history]\nalso\n[/OUT-OF-BAND USER MESSAGE]"
+        )
+        gateway.say(session_id, role="user", content=wrapped, display_kind="steer")
+        stored = gateway.transcripts[session_id][-1]
         gateway.gate.set()
         await until(lambda: len(backend.socket.notes("chat.finished")) == 2)
         finished = {f["request_id"]: f["status"] for f in backend.socket.notes("chat.finished")}
@@ -1003,6 +1010,14 @@ def test_a_steered_follow_up_logs_only_its_outcome_and_leaves_the_host_run_alone
         # The host run's messages are announced once, under the request that started it.
         messages = backend.socket.notes("chat.message")
         assert messages and {m["request_id"] for m in messages} == {first}
+        (steer,) = [m for m in messages if m["sequence"] == stored["id"]]
+        assert steer["message"] == {"role": "user", "content": "also"}
+        history = await call(
+            backend, "chat.history", {"session_id": session_id, "scope": WORKSPACE}
+        )
+        (saved,) = [m for m in history["result"]["items"] if m["id"] == steer["id"]]
+        assert saved["message"] == steer["message"]
+        assert stored["content"] == wrapped
 
     run(system, scenario)
 
