@@ -389,3 +389,17 @@ dispatcher start.
 Each notification is followed by one HTTP contract check. There is no periodic startup probe.
 
 See [the polling audit](../docs/reports/workspace-polling-audit-2026-11-09.md) for remaining work.
+
+### Fresh startup benchmarks
+
+`image/system_tests/fresh-startup.sh BASELINE_IMAGE CANDIDATE_IMAGE ARTIFACT_DIR 10`
+compares ten independent empty-volume starts per image, alternating their order, with two CPUs,
+2 GiB memory, and the production read-only filesystem restrictions. Each start verifies usable
+session intake. The reported durations come from runtime spans, not health-check polling.
+The fixture has no platform or model credentials: it measures packaged startup and intake,
+not Kubernetes provisioning, inference availability, or browser composer readiness.
+
+The image builds fresh profile templates using the native installer and preparation scripts at
+canonical runtime paths. It copies only release files and generated configuration into the image;
+workspace databases, session state, and credentials are created separately at runtime. Existing
+profiles still run preparation to preserve owner settings, migrate stores, and refresh old sessions.

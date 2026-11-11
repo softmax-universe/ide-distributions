@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import signal
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
@@ -123,9 +124,21 @@ async def run(stack: AsyncExitStack) -> None:
         )
     )
     host_dotenv.chmod(0o600)
+    existing_workspace = True
+    if any(not (HOME / "profiles" / role).exists() for role in PROFILES):
+        # Templates contain configuration only; each workspace owns its freshly created store.
+        from research_core import layout
+        from research_core.prepare import ensure_stores
+
+        with telemetry.span("workspace.store_prepare", context=startup_context):
+            workspace = layout.from_env(common)
+            existing_workspace = workspace.store_path.exists()
+            workspace.ensure_dirs()
+            ensure_stores(workspace)
     for role in PROFILES:
         with telemetry.span("workspace.profile_install", context=startup_context, role=role):
             home = HOME / "profiles" / role
+            fresh = not home.exists()
             applied = home / ".softmax-distribution-image"
             current = applied.is_file() and applied.read_text().strip() == image_id
             trace.get_current_span().set_attribute("profile.updated", not current)
@@ -134,17 +147,12 @@ async def run(stack: AsyncExitStack) -> None:
                 # Otherwise rolling back could reuse partially replaced profile content.
                 applied.unlink(missing_ok=True)
                 await command(HERMES, "profile", "update", role, "--yes", env=common)
-            elif not home.exists():
-                await command(
-                    HERMES,
-                    "profile",
-                    "install",
-                    str(SOURCE / role),
-                    "--name",
-                    role,
-                    "--yes",
-                    env=common,
-                )
+            elif fresh:
+                staging = home.with_name(f".{role}.installing")
+                if staging.exists():
+                    shutil.rmtree(staging)
+                shutil.copytree(SOURCE / "prepared-profiles" / role, staging)
+                staging.rename(home)
         profile_env = {**common, "HERMES_HOME": str(home)}
         # The watcher reads the gateway key from its profile dotenv.
         dotenv = home / ".env"
@@ -170,15 +178,17 @@ async def run(stack: AsyncExitStack) -> None:
         )
         dotenv.chmod(0o600)
         with telemetry.span("workspace.profile_prepare", context=startup_context, role=role):
-            await command(
-                PYTHON,
-                str(home / "scripts/prepare.py"),
-                "--source",
-                str(SOURCE / role),
-                "--hermes",
-                HERMES,
-                env=profile_env,
-            )
+            # A replacement profile must discover the existing Coworlds and owner settings.
+            if not fresh or existing_workspace:
+                await command(
+                    PYTHON,
+                    str(home / "scripts/prepare.py"),
+                    "--source",
+                    str(SOURCE / role),
+                    "--hermes",
+                    HERMES,
+                    env=profile_env,
+                )
         # Publish only after installation and preparation both succeed. A failed upgrade retries.
         pending = applied.with_suffix(".tmp")
         pending.write_text(image_id + "\n")

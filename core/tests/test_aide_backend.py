@@ -589,7 +589,11 @@ def test_an_append_with_no_answer_ends_the_backend_and_the_next_one_resumes_the_
 
     async def resume(backend, gateway, ctx, hermes):
         (session_id,) = hermes.sessions
-        # The reloaded frontend subscribes before the new backend's first await.
+        # Model an already subscribed frontend before recovery can push. state.get awaits
+        # a scope read before subscribing, so it can otherwise race the recovering consumer.
+        subscription = aide.Subscription(aide.Scope.model_validate(WORKSPACE))
+        subscription.frontends.add(FRONTEND)
+        backend.subscribers[session_id] = subscription
         state = {"resource": "sessions", "id": session_id, "scope": WORKSPACE}
         await call(backend, "state.get", state)
         await until(lambda: backend.socket.notes("chat.finished"))
