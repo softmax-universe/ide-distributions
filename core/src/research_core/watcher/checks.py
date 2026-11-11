@@ -325,6 +325,19 @@ def _evaluate_check(ctx: TickContext, loaded: mixin_module.Mixin, tree: Path) ->
     return _command_check(ctx, loaded, "evaluate", tree, env)
 
 
+def upload_probe_name(coworld_id: str, player_id: str | None) -> str:
+    """The upload check's policy name: ``<coworld>-tool-check-<player>``.
+
+    Policy names are global on the platform and belong to the User who first uploads one, so a
+    name made of the Coworld alone is soon owned by another account. Every later check then
+    fails with 409 although real uploads work. The Player's id, which ``login:player`` stores
+    earlier in the same tick, keeps the name to this account; without one the bare name stands.
+    """
+    tag = "".join(ch for ch in (player_id or "").removeprefix("ply_") if ch.isalnum())[:12]
+    base = f"{coworld_id}-{UPLOAD_NAME_SUFFIX}"
+    return f"{base}-{tag}" if tag else base
+
+
 def _upload_check(
     ctx: TickContext, loaded: mixin_module.Mixin, tree: Path, *, built_ok: bool
 ) -> dict[str, Any]:
@@ -345,7 +358,9 @@ def _upload_check(
     if not send:
         note = "skipped: real upload not attempted (the route was verified before)"
         return _result("upload", "route", None, note, capability="upload", note=note)
-    name = f"{ctx.coworld.coworld_id}-{UPLOAD_NAME_SUFFIX}"
+    name = upload_probe_name(
+        ctx.coworld.coworld_id, ctx.env.get("SOFTMAX_PLAYER_ID") or ctx.meta(PLAYER_ID_META)
+    )
     try:
         version = with_retries(
             lambda: (

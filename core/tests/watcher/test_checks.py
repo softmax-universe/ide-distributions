@@ -83,7 +83,7 @@ def test_full_run_marks_capabilities_and_sets_the_coworld_up(tmp_path):
     assert versions["coworld"]["installed"] and versions["softmax"]["installed"]
     assert "lock_refreshed" in versions
     uploaded = [p for p in ctx.platform.snapshot()["policies"].values()]
-    assert [p["name"] for p in uploaded] == ["cow_fake-tool-check"]
+    assert [p["name"] for p in uploaded] == ["cow_fake-tool-check-fake"]  # Player ply_fake
     [ran] = events_of(store, "checks.ran")
     assert ran["payload"]["mode"] == "full" and ran["payload"]["skipped"] == {
         "evaluate": "no results to evaluate"
@@ -328,3 +328,12 @@ def test_a_full_check_installs_the_mixin_toolchains(tmp_path, monkeypatch):
     checks.mixin_checks(ctx)
 
     assert len(declared) == 1
+
+
+def test_the_upload_probe_name_is_this_players_own():
+    """Policy names are global; a bare ``<coworld>-tool-check`` is soon another account's (409)."""
+    player = "ply_f39295d0-ac38-4a62-ac4f-e1d62d7dc9d1"
+    assert checks.upload_probe_name("cow_x", player) == "cow_x-tool-check-f39295d0ac38"
+    other = checks.upload_probe_name("cow_x", "ply_0b8c1d2e-0000-4000-8000-000000000000")
+    assert other != checks.upload_probe_name("cow_x", player)
+    assert checks.upload_probe_name("cow_x", None) == "cow_x-tool-check"
