@@ -59,6 +59,8 @@ ENV PYTHONUNBUFFERED=1 \
     IDE_WORKSPACE=/workspace/research \
     XDG_RUNTIME_DIR=/tmp/hermes-runtime \
     PATH=/opt/workspace-env/bin:/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin
+RUN /opt/hermes/.venv/bin/python /opt/distribution/image/prepare-profiles.py \
+    && chmod -R a+rX /opt/distribution/prepared-profiles
 USER 10000:10000
 WORKDIR /workspace
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/hermes/.venv/bin/python", "/opt/distribution/image/runtime.py"]

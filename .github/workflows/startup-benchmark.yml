@@ -11,7 +11,7 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,6 +48,8 @@ jobs:
           STARTUP_CYCLES: "6"
           STARTUP_ARTIFACTS: ${{ runner.temp }}/candidate-proof
         run: bash image/system_tests/start-stop.sh startup-candidate
+      - name: Compare independent fresh-volume starts
+        run: bash image/system_tests/fresh-startup.sh startup-baseline startup-candidate "$RUNNER_TEMP/fresh-proof" 10
       - name: Retain comparison evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -58,3 +60,4 @@ jobs:
             ${{ runner.temp }}/*-bytecode.txt
             ${{ runner.temp }}/baseline-proof
             ${{ runner.temp }}/candidate-proof
+            ${{ runner.temp }}/fresh-proof
