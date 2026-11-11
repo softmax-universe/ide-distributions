@@ -75,11 +75,13 @@ from research_core import (
     intake,
     layout,
     profile_models,
+    xp_followups,
 )
 from research_core.agent_telemetry import Producer, TelemetryWriter, observed, stream_path
 from research_core.attachments import AttachmentError
 from research_core.coordinator import Coordinator, ownership
 from research_core.messages import UserMessage
+from research_core.platform import experience_changes
 from research_core.platform.errors import PlatformError
 from research_core.prepare import Runner
 from research_core.profile_models import Catalog, ModelError, Profile
@@ -320,13 +322,26 @@ class SeamServer:
         observer = asyncio.create_task(self.observe_forever())
         workflow = asyncio.create_task(self.coordinate_forever())
         try:
-            while not self.stopping.is_set():
-                (result,) = await asyncio.gather(self.dispatch_messages(), return_exceptions=True)
-                if isinstance(result, RunsError):
-                    log.warning("Admission unavailable: %s", result)
-                elif isinstance(result, BaseException):
-                    raise result
-                await asyncio.to_thread(wait_for_change, change_version(), 0.5)
+            async with (
+                experience_changes.connect(self.env, self.ws) as read,
+                asyncio.TaskGroup() as group,
+            ):
+                with Store.open(self.ws.store_path, kind="workspace") as store:
+                    watches = xp_followups.Watches(store, read, group)
+                    try:
+                        while not self.stopping.is_set():
+                            if self.env.get("HERMES_HOME"):
+                                watches.sync()
+                            (result,) = await asyncio.gather(
+                                self.dispatch_messages(), return_exceptions=True
+                            )
+                            if isinstance(result, RunsError):
+                                log.warning("Admission unavailable: %s", result)
+                            elif isinstance(result, BaseException):
+                                raise result
+                            await asyncio.to_thread(wait_for_change, change_version(), 0.5)
+                    finally:
+                        watches.cancel()
         finally:
             self.stopping.set()
             await asyncio.gather(observer, workflow)

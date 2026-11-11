@@ -20,7 +20,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from opentelemetry.trace import StatusCode
 
-from research_core import inference, layout, run_failures, transitions, xp_followups
+from research_core import inference, layout, run_failures, transitions
 from research_core.agent_telemetry import observed
 from research_core.store import admissions, events, notices, sessions, settings, tasks
 from research_core.store._common import now_iso, parse_iso
@@ -1735,8 +1735,6 @@ class Coordinator:
                 report["goals"] = goals.run(ctx)
                 report["checks"] = checks.run(ctx)
                 self._workflow_checked_at[coworld_id] = ctx.now
-                if ctx.coworld is None:
-                    report["xp_followups"] = xp_followups.advance(ctx)
             report["messages"] = self.deliver_worker_messages(ctx)
             report["dispatch"] = self.plan_assignments(ctx)
             report["wakes"] = self.advance_events(ctx)

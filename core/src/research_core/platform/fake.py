@@ -911,6 +911,19 @@ class FakePlatform:
             raise self._not_found(route)
         return row
 
+    def xp_progress(self, ids: tuple[str, ...]) -> list[dict[str, str]]:
+        """Read simulated progress without advancing the fake platform's poll counters."""
+
+        def progress(state: dict) -> list[dict[str, str]]:
+            batches = []
+            for xp_id in ids:
+                row = self._xp_row(state, xp_id, "GET /v2/episode-requests/changes")
+                status = self._xp_status(state, {**row, "polls": row["polls"] + 1})
+                batches.append({"id": xp_id, "status": status})
+            return batches
+
+        return self._operate("xp_progress", progress, persist=False)
+
     def xp_get(self, xp_id: str) -> XpRequest:
         def action(state: dict) -> XpRequest:
             row = self._xp_row(state, xp_id, f"GET /v2/experience-requests/{xp_id}")

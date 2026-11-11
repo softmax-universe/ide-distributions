@@ -194,8 +194,8 @@ def handle_request(call: ToolCall) -> dict:
         "warnings": warnings,
         "followup_scheduled": followup,
         "next": (
-            "AIDE will check these requests while awake and after waking, then resume this chat "
-            "when the results are ready."
+            "AIDE will watch for updates while awake and check for results after waking, "
+            "then resume this chat when the results are ready."
             if followup
             else _next_after_request(ctx, record, ids)
         ),

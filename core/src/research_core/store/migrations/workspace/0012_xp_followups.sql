@@ -6,10 +6,9 @@ CREATE TABLE xp_followups (
     experiment TEXT NOT NULL,
     request_ids TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    checked_at TEXT,
     admission_id TEXT REFERENCES client_admissions(op_id)
 );
-CREATE INDEX xp_followups_pending ON xp_followups(checked_at,created_at) WHERE admission_id IS NULL;
+CREATE INDEX xp_followups_pending ON xp_followups(created_at) WHERE admission_id IS NULL;
 CREATE TRIGGER xp_followups_log_insert AFTER INSERT ON xp_followups BEGIN
     INSERT INTO change_log(at,tbl,row_id,op)
     VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'),'xp_followups',NEW.rowid,'insert');
