@@ -29,6 +29,7 @@ XP_NEXT = "Run the prepared experiment with the next seed."
 XP_SESSION = Path("/workspace/.xp-sleep-session")
 WAKE_PROOF = "--wake-proof" in sys.argv[3:]
 XP_REPLY = "Both experiment arms finished and were evaluated."
+XP_WAKE_REPLY = "Both experiment arms for the second seed finished and were evaluated."
 XP_SEED = """
 import sys
 
@@ -116,25 +117,26 @@ async def main() -> None:
                 args["opponents"] = ["pv_other"]
                 if XP_NEXT in text:
                     args["seeds"] = [2]
+            action = "experience" if starting else "evaluate"
             tool_call = {
-                "id": "call_experience" if starting else "call_evaluate",
+                "id": f"call_{action}_{uuid4().hex[:12]}",
                 "type": "function",
                 "function": {"name": "xp", "arguments": json.dumps(args)},
             }
             finish = "tool_calls"
             chunks = [{"role": "assistant", "tool_calls": [{"index": 0, **tool_call}]}]
         else:
-            if last["role"] == "tool" and last["tool_call_id"] == "call_experience":
+            if last["role"] == "tool" and last["tool_call_id"].startswith("call_experience_"):
                 assert json.loads(text)["followup_scheduled"] is True, text
                 reply = ["I will report when they finish."]
-            elif last["role"] == "tool" and last["tool_call_id"] == "call_evaluate":
+            elif last["role"] == "tool" and last["tool_call_id"].startswith("call_evaluate_"):
                 evaluated = json.loads(text)
                 assert evaluated["complete"] is True, evaluated
                 assert {r["arm"] for r in evaluated["runs"] if r["results"]["rows"]} == {
                     "baseline",
                     "candidate",
                 }, evaluated
-                reply = [XP_REPLY]
+                reply = [XP_WAKE_REPLY if len(evaluated["runs"]) == 4 else XP_REPLY]
             chunks = [{"role": "assistant", "content": reply[0]}] + [
                 {"content": t} for t in reply[1:]
             ]
@@ -226,9 +228,9 @@ async def main() -> None:
             # History reads never send a message or start a turn.
             while True:
                 history = await request("chat.history", target)
-                replies = [i for i in history["items"] if i["message"]["content"] == XP_REPLY]
-                if len(replies) >= 2:
-                    assert len(replies) == 2, replies
+                replies = [i["message"]["content"] for i in history["items"]]
+                if XP_WAKE_REPLY in replies:
+                    assert replies.count(XP_REPLY) == replies.count(XP_WAKE_REPLY) == 1, replies
                     break
                 await asyncio.sleep(1)
             print("PASS AIDE checks retained XP on wake and follows up without a send", flush=True)
