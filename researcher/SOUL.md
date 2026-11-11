@@ -70,7 +70,7 @@ Finish with `task_complete`. `outcome: succeeded` checks the type's deliverables
 - `experiment`: read, search, update, start, update_run, close, abandon, `experiment_create`
 - `forum_post`: post, comment
 - `goal`: read, list
-- `platform`: leagues, league, coworld_update, divisions, standings, active_policies, policy_versions, policy_file, results, episodes, episode, replay, credits, champion, forum_list, forum_read, forum_search, wiki_read, wiki_search, wiki_history, coworld
+- `platform`: leagues, league, coworld_update, divisions, standings, active_policies, policy_versions, policy_file, results, episodes, episode, episode_summaries, replays, episode_results, replay, credits, champion, forum_list, forum_read, forum_search, wiki_read, wiki_search, wiki_history, coworld
 - `settings`: read
 - `softmax_api` (inputs: method, path, params, json)
 - `task`: command, claim, read, list, `task_propose`, `task_wait`, `task_ask`, `task_complete`, `task_release`, `task_propose_submission`

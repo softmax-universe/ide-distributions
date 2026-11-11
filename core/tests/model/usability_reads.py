@@ -1262,6 +1262,35 @@ PLATFORM: dict[str, Callable[[Situation, dict], dict]] = {
     },
     "episodes": lambda s, a: _episodes(a),
     "episode": lambda s, a: {"episode": _episode(str(a["episode"]), 12, "pv-7")},
+    "episode_summaries": lambda s, a: {
+        "episodes": [
+            {
+                field: row[field]
+                for field in ("id", "created_at", "status", "scores", "participants")
+            }
+            for row in (_episode(episode, 12, "pv-7") for episode in a["episode_ids"])
+        ],
+        "unavailable_ids": [],
+    },
+    "episode_results": lambda s, a: {
+        "episode_results": [
+            {
+                "episode": episode,
+                "path": f"/opt/data/workspace/cow_cogs/documents/results/{episode}.json",
+            }
+            for episode in a["episode_ids"]
+        ]
+    },
+    "replays": lambda s, a: {
+        "replays": [
+            {
+                "episode": episode,
+                "path": f"/opt/data/workspace/cow_cogs/documents/replays/{episode}.replay",
+                "existing": False,
+            }
+            for episode in a["episode_ids"]
+        ]
+    },
     "replay": lambda s, a: {
         "episode": a["episode"],
         "path": f"/opt/data/workspace/cow_cogs/documents/replays/{a['episode']}.json",
