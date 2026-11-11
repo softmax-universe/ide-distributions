@@ -10,7 +10,9 @@ mkdir -p "$artifacts"
 artifacts=$(cd "$artifacts" && pwd)
 name="fresh-startup-$$"
 cleanup() {
-  docker logs "$name" > "${proof:-$artifacts}/boot.log" 2>&1 || true
+  if docker container inspect "$name" >/dev/null 2>&1; then
+    docker logs "$name" > "${proof:-$artifacts}/boot.log" 2>&1 || true
+  fi
   docker rm -f "$name" >/dev/null 2>&1 || true
   docker volume rm "$name" >/dev/null 2>&1 || true
 }
