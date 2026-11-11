@@ -131,7 +131,7 @@ printf '%s\n' '{"workspace_id":"00000000-0000-4000-8000-000000000150","platform_
 chmod 644 "$scratch/aide-bootstrap.json"
 docker volume create "$volume-aide" >/dev/null
 docker run --rm --user 0 --entrypoint /bin/sh -v "$volume-aide:/workspace" "$image" -c 'chown 10000:10000 /workspace'
-docker run -d --name "$name-aide" --read-only --cap-drop ALL --security-opt no-new-privileges \
+docker run -d --name "$name-aide" -e IDE_PLATFORM=fake --read-only --cap-drop ALL --security-opt no-new-privileges \
   --tmpfs /tmp:rw,size=1g --mount "type=volume,src=$volume-aide,dst=/workspace" \
   --mount "type=bind,src=$scratch/aide-bootstrap.json,dst=/run/workspace/bootstrap.json,readonly" "$image"
 docker exec "$name-aide" /opt/hermes/.venv/bin/python /opt/distribution/image/system_tests/check-aide.py 8700 8701

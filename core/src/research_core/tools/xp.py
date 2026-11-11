@@ -49,6 +49,7 @@ from typing import Any
 from uuid import uuid4
 
 from research_core import mixin as mixin_module
+from research_core import xp_followups
 from research_core.platform import credits as credits_module
 from research_core.platform import wait
 from research_core.platform import xp as xp_module
@@ -176,6 +177,11 @@ def handle_request(call: ToolCall) -> dict:
             )
     runs = _xp_runs(store, n)
     ids = [run["platform_request_id"] for run in runs if run["state"] not in TERMINAL_STATES]
+    followup = bool(
+        ids
+        and ctx.role == "orchestrator"
+        and xp_followups.register(ctx.wstore, actor, ctx.hermes_session_id(), record["id"], ids)
+    )
     credits = _read_credits(platform)  # after the creates: the balance that is left
     return {
         "experiment": record["id"],
@@ -186,7 +192,12 @@ def handle_request(call: ToolCall) -> dict:
         "credits": credits_module.describe(credits),
         "estimate": _estimate(ctx, credits, plan["episodes"] * len(new_pairs)),
         "warnings": warnings,
-        "next": _next_after_request(ctx, record, ids),
+        "followup_scheduled": followup,
+        "next": (
+            "AIDE is watching these requests and will resume this chat when they finish."
+            if followup
+            else _next_after_request(ctx, record, ids)
+        ),
     }
 
 

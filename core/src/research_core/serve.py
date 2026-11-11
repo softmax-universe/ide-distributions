@@ -68,7 +68,15 @@ from uuid import UUID
 from httpx import HTTPError
 from opentelemetry import trace
 
-from research_core import attachments, contract, inference, intake, layout, profile_models
+from research_core import (
+    attachments,
+    contract,
+    inference,
+    intake,
+    layout,
+    profile_models,
+    xp_followups,
+)
 from research_core.agent_telemetry import Producer, TelemetryWriter, observed, stream_path
 from research_core.attachments import AttachmentError
 from research_core.coordinator import Coordinator, ownership
@@ -453,16 +461,19 @@ class SeamServer:
                     )
                 finally:
                     store.close()
-            waiting_on = json.loads(
-                wstore.get_meta(HAS_WORK_REASONS_KEY) or "[]"
-            ) + admissions.work_reasons(wstore)
+            paused = bool(settings.get(wstore, "paused"))
+            waiting_on = (
+                json.loads(wstore.get_meta(HAS_WORK_REASONS_KEY) or "[]")
+                + admissions.work_reasons(wstore)
+                + ([] if paused else xp_followups.work_reasons(wstore))
+            )
             return {
                 "ok": True,
                 "heartbeat": heartbeat,
                 "heartbeat_age_s": age_s,
                 "has_work": bool(waiting_on),
                 "waiting_on": waiting_on,
-                "paused": bool(settings.get(wstore, "paused")),
+                "paused": paused,
                 "paused_drained": wstore.get_meta(PAUSED_DRAINED_KEY) == "1",
                 "sleep_started": wstore.get_meta("sleep_started"),
                 "blocked_executions": admissions.problems(wstore),
@@ -883,6 +894,14 @@ class SeamServer:
                     (session_id,),
                 )
             }
+            followup_messages = {
+                row["native_message_id"]
+                for row in stores.wstore.q(
+                    "SELECT native_message_id FROM client_admissions"
+                    " WHERE session_id=? AND origin='followup'",
+                    (session_id,),
+                )
+            }
             return {
                 "data": [
                     {
@@ -892,6 +911,7 @@ class SeamServer:
                             if message["id"] in admissions_by_message
                             else {}
                         ),
+                        **({"runtime_input": True} if message["id"] in followup_messages else {}),
                         "client_context": admissions_by_message[message["id"]][0]
                         if message["id"] in admissions_by_message
                         else None,

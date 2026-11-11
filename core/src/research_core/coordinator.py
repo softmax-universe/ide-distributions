@@ -20,7 +20,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from opentelemetry.trace import StatusCode
 
-from research_core import inference, layout, run_failures, transitions
+from research_core import inference, layout, run_failures, transitions, xp_followups
 from research_core.agent_telemetry import observed
 from research_core.store import admissions, events, notices, sessions, settings, tasks
 from research_core.store._common import now_iso, parse_iso
@@ -1089,7 +1089,7 @@ class Coordinator:
             # task abandon, a gateway shutdown) was interrupted under the input.
             outcome, error = "interrupted", error or "The workspace stopped the run"
         error_class = None
-        if status.status == "failed" and row["origin"] == "client":
+        if status.status == "failed" and row["origin"] in {"client", "followup"}:
             error_class = self._classify(row, status)
             if (
                 error_class in run_failures.WAITING_CLASSES
@@ -1735,6 +1735,8 @@ class Coordinator:
                 report["goals"] = goals.run(ctx)
                 report["checks"] = checks.run(ctx)
                 ctx.set_meta(workflow_key, ctx.now.isoformat())
+                if ctx.coworld is None:
+                    report["xp_followups"] = xp_followups.advance(ctx)
             report["messages"] = self.deliver_worker_messages(ctx)
             report["dispatch"] = self.plan_assignments(ctx)
             report["wakes"] = self.advance_events(ctx)

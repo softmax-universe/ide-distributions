@@ -9,6 +9,7 @@ backend opens after the platform drops the first one.
 
 import asyncio
 import json
+import os
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -16,11 +17,56 @@ from pathlib import Path
 from uuid import uuid4
 
 import yaml
-from aiohttp import WSMsgType, web
+from aiohttp import ClientSession, WSMsgType, web
 
 PLATFORM_PORT, MODEL_PORT = int(sys.argv[1]), int(sys.argv[2])
 WORKSPACE = {"scope": "workspace", "coworld": None, "league": None}
 REPLY = ["The ", "workspace ", "answers."]
+XP_SCOPE = {"scope": "coworld", "coworld": "cow_fake", "league": "league_fake"}
+XP_START = "Run the prepared experiment."
+XP_REPLY = "Both experiment arms finished and were evaluated."
+XP_SEED = """
+import sys
+
+from research_core.store import experiments, versions
+from research_core.tools.base import ToolContext
+
+sys.path.insert(0, "/opt/distribution/core")
+from tests.fixtures.fakegame_repo import fixture_files
+
+ctx = ToolContext.from_env("orchestrator")
+files = fixture_files("cow_fake")
+mixin = ctx.coworld().mixin
+(mixin / "tools").mkdir(parents=True, exist_ok=True)
+(mixin / "MIXIN.md").write_text(files["MIXIN.md"])
+(mixin / "tools/evaluate.py").write_text(
+    files["tools/evaluate.py"].replace('"source": str(path),', '')
+)
+platform = ctx.platform()
+platform.configure(polls_to_complete=10000)
+for number, patience in ((1, 5), (2, 8)):
+    version = versions.create(
+        ctx.store, ctx.actor, summary=f"Policy {number}", commit_sha=f"{number:040x}",
+        branch="main", artifact={"kind": "file", "path": "policy.json",
+                                "digest": "d" * 64, "size": 1}, based_on=[],
+    )
+    policy = platform.upload_file_policy(
+        name=f"policy-{number}", content=(
+            '{"parameters":{"aggression":3,"patience":%d}}' % patience
+        ).encode(),
+    )
+    versions.mark_uploaded(ctx.store, ctx.actor, version["id"], policy_version_id=policy.id,
+                           at=policy.created_at, digest_checked=True)
+record = experiments.create(
+    ctx.store, ctx.actor, summary="Does patience help?",
+    hypothesis={"statement": "Patience helps", "if_true": "score rises",
+                "if_false": "score stays flat", "motivation": "Compare two policies"},
+    methods={"baseline": "V-1", "candidate": "V-2", "procedure": "One paired seed",
+             "metrics": [{"name": "score", "direction": "up", "role": "primary", "min_effect": 1}],
+             "decision_rule": {"text": "Higher score wins", "n_min": 1}},
+)
+experiments.start(ctx.store, ctx.actor, record["id"])
+"""
 
 
 async def main() -> None:
@@ -50,7 +96,42 @@ async def main() -> None:
 
     async def completions(request: web.Request) -> web.StreamResponse:
         body = await request.json()
-        chunks = [{"role": "assistant", "content": REPLY[0]}] + [{"content": t} for t in REPLY[1:]]
+        last = body["messages"][-1]
+        text = str(last.get("content"))
+        finish = "stop"
+        tool_call = None
+        reply = REPLY
+        starting = last["role"] == "user" and XP_START in text
+        following = (
+            last["role"] == "user"
+            and "The watched experience requests for X-1 have reached terminal states." in text
+        )
+        if starting or following:
+            args = {"action": "request" if starting else "status", "experiment": "X-1"}
+            if starting:
+                args["opponents"] = ["pv_other"]
+            tool_call = {
+                "id": "call_experience" if starting else "call_evaluate",
+                "type": "function",
+                "function": {"name": "xp", "arguments": json.dumps(args)},
+            }
+            finish = "tool_calls"
+            chunks = [{"role": "assistant", "tool_calls": [{"index": 0, **tool_call}]}]
+        else:
+            if last["role"] == "tool" and last["tool_call_id"] == "call_experience":
+                assert json.loads(text)["followup_scheduled"] is True, text
+                reply = ["I will report when they finish."]
+            elif last["role"] == "tool" and last["tool_call_id"] == "call_evaluate":
+                evaluated = json.loads(text)
+                assert evaluated["complete"] is True, evaluated
+                assert {r["arm"] for r in evaluated["runs"] if r["results"]["rows"]} == {
+                    "baseline",
+                    "candidate",
+                }, evaluated
+                reply = [XP_REPLY]
+            chunks = [{"role": "assistant", "content": reply[0]}] + [
+                {"content": t} for t in reply[1:]
+            ]
         frames = [
             {
                 "id": "scripted",
@@ -61,7 +142,7 @@ async def main() -> None:
             }
             for delta in chunks
         ]
-        frames[-1]["choices"][0]["finish_reason"] = "stop"
+        frames[-1]["choices"][0]["finish_reason"] = finish
         frames.append(
             {
                 **frames[-1],
@@ -70,14 +151,16 @@ async def main() -> None:
             }
         )
         if not body.get("stream"):
-            message = {"role": "assistant", "content": "".join(REPLY)}
+            message = {"role": "assistant", "content": "".join(reply)}
+            if tool_call is not None:
+                message = {"role": "assistant", "content": None, "tool_calls": [tool_call]}
             return web.json_response(
                 {
                     "id": "scripted",
                     "object": "chat.completion",
                     "created": int(time.time()),
                     "model": body["model"],
-                    "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+                    "choices": [{"index": 0, "message": message, "finish_reason": finish}],
                     "usage": frames[-1]["usage"],
                 }
             )
@@ -164,6 +247,58 @@ async def main() -> None:
         got = {"resource": "requests", "id": request_id, "scope": WORKSPACE}
         item = (await request("state.get", got))["item"]
         assert (item["status"], item["revision"]) == ("completed", finished["revision"]), item
+
+        xp_session = (await request("session.open", {"scope": XP_SCOPE}))["session"]["id"]
+        seed = await asyncio.create_subprocess_exec(
+            "/opt/workspace-env/bin/python",
+            "-c",
+            XP_SEED,
+            env={**os.environ, "IDE_SESSION_ID": xp_session},
+        )
+        assert await seed.wait() == 0
+        xp_target = {"session_id": xp_session, "scope": XP_SCOPE}
+        xp_start = await request(
+            "chat.send", xp_target | {"messages": [{"role": "user", "content": XP_START}]}
+        )
+        while not any(
+            n["method"] == "chat.finished" and n["params"]["request_id"] == xp_start["request_id"]
+            for n in notes
+        ):
+            notes.append(json.loads((await relay.receive()).data)["message"])
+        async with ClientSession() as http, http.get("http://127.0.0.1:8650/status") as status:
+            waiting = await status.json()
+        assert waiting["has_work"] and "experiment:X-1:waiting:xp" in waiting["waiting_on"], waiting
+
+        # Complete the fake platform requests without sending another user message.
+        complete = await asyncio.create_subprocess_exec(
+            "/opt/workspace-env/bin/python",
+            "-c",
+            "from research_core.platform import from_env; "
+            "from_env().configure(polls_to_complete=1)",
+        )
+        assert await complete.wait() == 0
+        while not any(
+            n["method"] == "chat.finished"
+            and n["params"]["session_id"] == xp_session
+            and n["params"]["request_id"] != xp_start["request_id"]
+            for n in notes
+        ):
+            notes.append(json.loads((await relay.receive()).data)["message"])
+        replies = [
+            n["params"]["message"]["content"]
+            for n in notes
+            if n["method"] == "chat.message" and n["params"]["session_id"] == xp_session
+        ]
+        assert replies.count(XP_REPLY) == 1, replies
+        history = await request("chat.history", xp_target)
+        assert sum(i["message"]["content"] == XP_REPLY for i in history["items"]) == 1, history
+        (trigger,) = [
+            i
+            for i in history["items"]
+            if "This is an automatic follow-up" in str(i["message"]["content"])
+        ]
+        assert trigger["kind"] == "continuation", trigger
+        print("PASS pending XP keeps workspace awake and follows up in its chat", flush=True)
     print(
         "PASS AIDE request record and chat.events read again after the socket is replaced",
         flush=True,

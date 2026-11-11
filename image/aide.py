@@ -331,6 +331,7 @@ class NativeMessage(BaseModel):
     tool_calls: list[JsonValue] | None = None
     tool_call_id: str | None = None
     display_kind: str | None = None
+    runtime_input: bool = False
     client_context: dict[str, JsonValue] | None = None
     reasoning: str | None = None
     reasoning_content: str | None = None
@@ -653,7 +654,7 @@ def record(message: NativeMessage, session_id: str) -> Record | None:
         kind = "failed_turn"
     # The runtime writes its resume prompt itself, so no admission's context joins it; a message
     # the user typed with the same words carries its own admission's context.
-    elif (
+    elif message.runtime_input or (
         message.role == "user"
         and message.client_context is None
         and isinstance(message.content, str)
