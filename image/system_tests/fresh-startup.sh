@@ -10,6 +10,7 @@ mkdir -p "$artifacts"
 artifacts=$(cd "$artifacts" && pwd)
 name="fresh-startup-$$"
 cleanup() {
+  docker logs "$name" > "${proof:-$artifacts}/boot.log" 2>&1 || true
   docker rm -f "$name" >/dev/null 2>&1 || true
   docker volume rm "$name" >/dev/null 2>&1 || true
 }
@@ -49,6 +50,16 @@ for sample in $(seq 1 "$samples"); do
     docker exec "$name" /opt/hermes/.venv/bin/python /opt/distribution/image/system_tests/check-intake.py > "$proof/intake.txt" 2>&1
     docker exec "$name" /opt/hermes/.venv/bin/python -c \
       'import json; from pathlib import Path; root=Path("/workspace/host"); print(json.dumps({str(p.relative_to(root)):p.read_text() for p in root.rglob("gateway.log")}))' > "$proof/gateway.json"
+    # Exporters batch asynchronously and intentionally do not flush at process exit.
+    # Collect both parent and application-process spans before stopping either process.
+    # This observation wait is outside the SDK-timestamped startup duration.
+    deadline=$((SECONDS + 30))
+    while ! grep -q '"name": "workspace.startup"' "$proof/boot.log" || \
+          ! grep -q '"name": "workspace.application_ready"' "$proof/boot.log"; do
+      (( SECONDS < deadline ))
+      sleep 1
+      docker logs "$name" > "$proof/boot.log" 2>&1
+    done
     docker stop --time 30 "$name" >/dev/null
     test "$(docker inspect --format '{{.State.ExitCode}}' "$name")" = 0
     docker logs "$name" > "$proof/boot.log" 2>&1
