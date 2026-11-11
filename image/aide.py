@@ -250,6 +250,7 @@ class Admission(BaseModel):
 
     op_id: str
     session_id: str
+    origin: str
     status: str
     input: dict[str, JsonValue] | None
     error: str | None
@@ -458,6 +459,15 @@ class Session(Wire):
     pending: list[Pending]
     scope: Scope
     requests: list[ChatRequest]
+    title: str | None = None
+
+
+class NativeSession(BaseModel):
+    title: str | None = None
+
+
+class NativeSessionReply(BaseModel):
+    session: NativeSession
 
 
 class Record(Wire):
@@ -976,6 +986,47 @@ class Backend:
             scope=scope,
             requests=[chat_request(r, scope) for r in mine if r.op_id in embedded],
         )
+
+    async def title_sessions(self, sessions: list[Session], requests: list[Admission]) -> None:
+        """Prefer Hermes titles and use the first user text for chats Hermes left untitled."""
+        if not sessions:
+            return
+        first_text: dict[str, str] = {}
+        for request in requests:
+            if (
+                request.origin != "client"
+                or request.input is None
+                or request.session_id in first_text
+            ):
+                continue
+            content = request.input["content"]
+            if isinstance(content, str):
+                text = content
+            else:
+                text = " ".join(part["text"] for part in content if part["type"] == "text")
+            if text := " ".join(text.split()):
+                first_text[request.session_id] = text[:80]
+
+        replies = await asyncio.gather(
+            *(
+                self.gateway.get(f"api/sessions/{quote(session.id, safe='')}", timeout=3)
+                for session in sessions
+            ),
+            return_exceptions=True,
+        )
+        for session, reply in zip(sessions, replies, strict=True):
+            if isinstance(reply, httpx.TransportError):
+                log.warning("Could not read Hermes session title: %s", type(reply).__name__)
+            elif isinstance(reply, BaseException):
+                raise reply
+            elif reply.is_success:
+                title = NativeSessionReply.model_validate_json(reply.content).session.title
+                if title and title.strip():
+                    session.title = title.strip()
+                    continue
+            elif reply.status_code != 404:
+                log.warning("Could not read Hermes session title: HTTP %s", reply.status_code)
+            session.title = first_text.get(session.id)
 
     async def board(
         self, coworld: str, resource: str, item_id: str | None = None
@@ -1693,6 +1744,7 @@ class Backend:
         page = rows[offset : offset + params.limit]
         if params.resource == "sessions":
             page = [await self.project(row, snapshot.records.requests) for row in page]
+            await self.title_sessions(page, snapshot.records.requests)
         count = fitting(page)
         following = offset + count
         return {
@@ -1710,6 +1762,7 @@ class Backend:
             snapshot = await self.scoped(params.scope, session_id=params.id)
             (row,) = snapshot.records.sessions
             item, revision = await self.project(row, snapshot.records.requests), self.revision
+            await self.title_sessions([item], snapshot.records.requests)
         elif params.resource == "requests":
             found = await self.scoped(params.scope, request_id=params.id)
             (session,) = found.records.sessions
