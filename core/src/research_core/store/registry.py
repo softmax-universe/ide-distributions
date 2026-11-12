@@ -151,8 +151,10 @@ CLAIM_STATUSES = ("active", "superseded", "refuted")
 CHAMPION_STATES = ("pending", "processing", "placed", "rejected", "champion", "none")
 CAPABILITY_STATUSES = ("unknown", "ok", "broken")
 INTENT_KINDS = ("upload", "submit", "xp", "forum", "wiki", "run", "champion")
-# Why a wake's ``ui.tell`` should reach the user now; ``chat_updates.categories`` picks which do.
+# Why a wake's ``chat_update`` should interrupt the user's chat; ``chat_updates.categories`` picks
+# which do. ``progress`` never does: it is always a notice, so the setting cannot list it.
 CHAT_UPDATE_CATEGORIES = ("decision", "outcome", "submission", "failure", "merge")
+CHAT_UPDATE_PROGRESS = "progress"
 INTENT_STATES = ("pending", "done", "failed")
 WAIT_KINDS = (
     "question",
@@ -644,7 +646,7 @@ INTENT = _spec(
 NOTICE = _spec(
     "notice",
     "notices",
-    "A message to the user through ui.notify; it informs and never asks.",
+    "A message the user sees at their next chat turn; it informs and never asks.",
     [
         _f("id", "id", "The notice's id, shown as N-<n>."),
         _f("text", "text", "The notice, in plain language.", required=True),

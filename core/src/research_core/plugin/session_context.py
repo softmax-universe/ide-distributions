@@ -31,7 +31,7 @@ OPENING_GOAL = (
 
 def no_client_text(role: str, kind: str) -> str:
     """What to do when no client declared what it can show. Only a chat has someone reading it, and
-    a Researcher has no ``ui`` tool."""
+    a Researcher never reaches the user directly."""
     if role == "researcher":
         return (
             "No client is attached and the user does not read this Session: you reach the "
@@ -39,12 +39,12 @@ def no_client_text(role: str, kind: str) -> str:
         )
     if kind == "wake":
         return (
-            "No client is attached and nobody reads this Session: ui.tell what the user should "
-            "hear now, ask a decision plainly with it, and ui.notify routine progress."
+            "No client is attached and nobody reads this Session: chat_update what the user "
+            "should hear, ask a decision plainly with it, and leave routine progress as progress."
         )
     return (
-        "No client capabilities are known: use ui.notify for news and ask in chat when only the "
-        "user can answer."
+        "No client capabilities are known: give news in your reply, and ask in chat when only "
+        "the user can answer."
     )
 
 

@@ -999,25 +999,35 @@ def github_repositories(situation: Situation, args: dict) -> dict:
     }
 
 
-def ui_notify(situation: Situation, args: dict) -> dict:
-    return {
-        "record": {
+def chat_update(situation: Situation, args: dict) -> dict:
+    """An interrupting category is a pending update; ``progress`` and ``merge`` (left out of the
+    default ``chat_updates.categories``) are written as a notice at once."""
+    refs = args.get("refs") or []
+    if args.get("category") in ("progress", "merge"):
+        notice = {
             "id": "N-1",
-            "text": args["text"],
-            "refs": args.get("refs") or [],
-            "urgency": args.get("urgency") or "normal",
+            "text": args.get("text"),
+            "refs": refs,
+            "urgency": "normal",
             "created": NOW,
             "created_by": "session:orchestrator",
             "read_at": None,
             "read_by": None,
             "coworld_id": usability_context.COWORLD,
         }
+        return {"notice": notice, "next": "written as a notice, not a chat message"}
+    update = {
+        "id": 1,
+        "coworld_id": usability_context.COWORLD,
+        "category": args.get("category"),
+        "text": args.get("text"),
+        "refs": refs,
+        "created": NOW,
+        "created_by": "session:orchestrator",
+        "admission_id": None,
+        "notice_id": None,
     }
-
-
-def ui_show(situation: Situation, args: dict) -> dict:
-    target = {key: args[key] for key in ("ref", "view") if args.get(key)}
-    return {"conversation": "workspace", "show": {**target, "at": NOW}, "version": 1}
+    return {"update": update, "next": "recorded; it reaches the user's most recent chat"}
 
 
 # --- the platform ---------------------------------------------------------------------------------
@@ -1459,8 +1469,7 @@ ACTIONS: dict[str, Callable[[Situation, dict], dict]] = {
     "workspace.capabilities": workspace_capabilities,
     "workspace.environment_guide": workspace_environment_guide,
     "github.repositories": github_repositories,
-    "ui.notify": ui_notify,
-    "ui.show": ui_show,
+    "chat_update": chat_update,
     "upload": uploaded,
     "softmax_api": softmax_get,
     **{f"platform.{action}": handler for action, handler in PLATFORM.items()},

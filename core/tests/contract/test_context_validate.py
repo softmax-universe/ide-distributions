@@ -78,5 +78,5 @@ def test_context_schema_command(capsys):
     assert json.loads(capsys.readouterr().out)["title"] == "Turn context"
     assert cli.main(["context-schema", "--name", "events"]) == 0
     assert json.loads(capsys.readouterr().out)["title"] == "Event"
-    for name in ("context", "events", "ui-state"):
+    for name in ("context", "events"):
         assert contract.schema(name)["contract_version"] == 1

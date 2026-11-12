@@ -47,8 +47,8 @@ reason}` queues its merge again.
 ## Outcome 3: the user
 
 When the conflict is a decision (two Researchers changed the same strategy in opposite ways;
-the merge would undo something the user asked for): `ui.tell {category: decision, text, refs:
-["T-n", "T-m"]}` asking plainly between the two outcomes; the merge waits for their answer in the
+the merge would undo something the user asked for): `chat_update {category: decision, text,
+refs: ["T-n", "T-m"]}` asking plainly between the two outcomes; the merge waits for their answer in the
 chat. Ask only when the user alone can decide; most conflicts are outcome 1.
 
 ## Always
@@ -58,5 +58,5 @@ chat. Ask only when the user alone can decide; most conflicts are outcome 1.
 - A failed check that is not the branch's fault (the platform is down, a toolchain vanished) is
   a capability failure: `workspace.capabilities {check: true}` reruns the checks next tick and
   the `repair` skill applies.
-- End the wake naming the Task and the outcome: a `ui.tell` `failure` when it needs the user,
-  otherwise `ui.notify`.
+- End the wake naming the Task and the outcome: a `failure` `chat_update` when it needs the
+  user, otherwise `progress`.

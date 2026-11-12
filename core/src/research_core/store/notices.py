@@ -1,12 +1,12 @@
-"""Notices (design A.8 ``ui.notify``): the store side, in the workspace store only (A2.4).
+"""Notices (design A.8): the store side, in the workspace store only (A2.4).
 
-A notice is workspace-level news for the user (a wake's routine progress; what the user should
-hear now goes to their chat through ``ui.tell``, ``chat_updates.py``), rendered by every
-client, and unread notices open the next chat turn's context. ``add`` writes the row and an
-``events`` row of kind ``notice`` in one transaction, so attached clients see it at once and the
-away summary finds it in the log. ``unread`` serves the chat turn: the newest ``limit`` unread
-notices in chronological order (a limit drops the oldest). ``mark_read`` records who read them
-and when, once; it is bookkeeping and emits no event.
+A notice is workspace-level news for the user (a wake's ``progress`` ``chat_update``, what the
+system's own writes report; what the user should hear now goes to their chat through
+``chat_updates.py``), and unread notices open the next chat turn's context. ``add`` writes the
+row and an ``events`` row of kind ``notice`` in one transaction, so attached clients see it at
+once and the away summary finds it in the log. ``unread`` serves the chat turn: the newest
+``limit`` unread notices in chronological order (a limit drops the oldest). ``mark_read`` records
+who read them and when, once; it is bookkeeping and emits no event.
 """
 
 from __future__ import annotations

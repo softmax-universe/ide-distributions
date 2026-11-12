@@ -84,12 +84,12 @@ def test_register_again_updates_without_a_second_event(workspace_store, harness,
         kind="chat",
         coworld_id="cow_x",
         session_context={"client": "coplay"},
-        client_capabilities=["ui.notify"],
+        client_capabilities=["views"],
     )
     assert record["created"] is False
     assert record["coworld_id"] == "cow_x"
     assert record["session_context"] == {"client": "coplay"}
-    assert record["client_capabilities"] == ["ui.notify"]
+    assert record["client_capabilities"] == ["views"]
     assert record["started"] == T0
     assert record["last_seen"] == T1
     # A re-registered Session is live again.

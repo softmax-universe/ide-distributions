@@ -206,7 +206,7 @@ def test_the_tick_keeps_running_its_paused_steps_without_the_newer_store(tmp_pat
     second = Coordinator(observed.ws, observed.hermes).advance(observed)
     assert settings.get(observed.wstore, "paused") is True
     assert first["store_checks"] == {"workspace": {}, "cow_fake": {"schema_newer": 99}}
-    assert set(second) == {"store_checks", "heartbeat", "context_panel", "drain"}
+    assert set(second) == {"store_checks", "heartbeat", "drain"}
     assert second["drain"]["errors"] == [
         {"coworld": "cow_fake", "error": "store schema is newer than this runtime"}
     ]

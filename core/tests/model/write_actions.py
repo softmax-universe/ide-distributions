@@ -17,16 +17,15 @@ plugin's request middleware sends it, with only the latest of identical refused 
 refusal and 22/60 after three, so both depths are measured.
 
 Which write actions are covered. One case per write action, of the record tools (claim, goal,
-task, experiment, directive, settings, ui), that has at least two required fields, so the model
-has to compose arguments rather than pass one reference; plus ``ui.notify``, the incident wake's
-other write. Left out, to keep a run small:
+task, experiment, directive, settings), that has at least two required fields, so the model
+has to compose arguments rather than pass one reference. Left out, to keep a run small:
   - actions with the same shape as a covered one: task.reject for the Orchestrator (task.answer),
     task.link (two references), and the Researcher's claim.retire and experiment.abandon (covered
     for the Orchestrator);
   - workspace.change_complete, which needs a worktree the instruction cannot make plausible;
-  - the tools without actions (submit, upload, wiki_edit, softmax_api): their schemas mark required
-    fields as required at the top level, so a provider can enforce them, which the action tools
-    cannot;
+  - the tools without actions (submit, upload, wiki_edit, softmax_api, chat_update): their schemas
+    mark required fields as required at the top level, so a provider can enforce them, which the
+    action tools cannot;
   - the other tools (version, xp, platform, forum_post, github): ``test_tool_call_format.py``
     sends each one instruction;
   - actions whose only required field is one reference (task.approve, experiment.start, ...).
@@ -127,9 +126,6 @@ ASSIGN_READS = json.dumps(
         "workers": [{"profile": "researcher", "capabilities": ["replays", "xp"], "slots": 1}],
     }
 )
-# "Send a notice", not "tell the user": in a chat, answering in text is a correct way to tell them,
-# which measured 3/5 on correct behaviour.
-UI_NOTIFY = "Send the user a notice that pv-42 is the new champion of league L-7."
 ORCHESTRATOR = [
     Case("orchestrator", "claim", "write", CHAMPION_CLAIM),
     Case(
@@ -200,18 +196,6 @@ ORCHESTRATOR = [
         "settings",
         "update",
         "Set max_researchers to 2, as the user asked in message m-40.",
-    ),
-    Case(
-        "orchestrator",
-        "ui",
-        "notify",
-        UI_NOTIFY,
-    ),
-    Case(
-        "orchestrator",
-        "ui",
-        "panel_set",
-        "Show a markdown panel named 'standings' with the text '1. pv-42  2. pv-39'.",
     ),
 ]
 RESEARCHER = [

@@ -12,11 +12,11 @@
     "seq": {"type": "integer", "minimum": 1},
     "at": {"type": "string", "description": "ISO 8601 UTC with microseconds."},
     "actor": {"type": "string", "description": "session:<hermes id> | user:<id> | harness"},
-    "kind": {"type": "string", "description": "Dotted event kind, such as task.completed, notice or ui.patch."},
+    "kind": {"type": "string", "description": "Dotted event kind, such as task.completed or notice."},
     "subject": {"type": "string", "description": "The record the event is about, in display form (T-42), or a name."},
     "payload": {
       "type": "object",
-      "description": "Kind-specific data. A notice carries text, refs and urgency. A ui.patch carries ops (RFC 6902) and the conversation."
+      "description": "Kind-specific data. A notice carries text, refs and urgency."
     }
   }
 }

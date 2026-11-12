@@ -1,4 +1,4 @@
-"""The coordinator delivers a wake's ``ui.tell`` updates into the Coworld's latest chat."""
+"""The coordinator delivers a wake's ``chat_update`` updates into the Coworld's latest chat."""
 
 from __future__ import annotations
 
@@ -43,6 +43,7 @@ def test_advance_coalesces_a_burst_into_one_followup_after_the_quiet_window(tmp_
     tell(ctx, "T-3 finished")
     advance(ctx, 30)
     tell(ctx, "V-7 merged", category="merge")  # off by default: a notice now, not in the batch
+    tell(ctx, "Smoke test passed", category="progress")  # always a notice, never in a batch
     tell(ctx, "Submit V-7?", category="decision")
     advance(ctx, 100)
     assert owner.advance(ctx)["chat_updates"] == {}
@@ -54,7 +55,11 @@ def test_advance_coalesces_a_burst_into_one_followup_after_the_quiet_window(tmp_
     assert admission["session_id"] == "chat1" and admission["native_key"] == "chat-updates:1-2"
     assert "T-3 finished" in admission["message"] and "Submit V-7?" in admission["message"]
     assert "V-7 merged" not in admission["message"]
-    assert [n["text"] for n in notices.unread(ctx.wstore, coworld_id=COWORLD)] == ["V-7 merged"]
+    assert "Smoke test passed" not in admission["message"]
+    assert [n["text"] for n in notices.unread(ctx.wstore, coworld_id=COWORLD)] == [
+        "V-7 merged",
+        "Smoke test passed",
+    ]
 
     # The queued admission reaches the chat through the ordinary dispatcher.
     dispatch_inputs(ctx)

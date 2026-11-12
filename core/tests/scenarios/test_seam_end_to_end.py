@@ -146,20 +146,6 @@ def test_notice_opens_next_turn(scenario):
     assert "Submitted V-1" not in scenario.agent.rendered[again["run_id"]]
 
 
-def test_reaction_never_starts_run(scenario):
-    submit_the_starter(scenario)
-    before = scenario.starts()
-    result = scenario.client.react("m-1", "👍")
-    assert result["accepted"] is True and result["delivered"] == "none"
-    assert scenario.starts() == before
-    # ...but the agent sees it at its next turn.
-    reply = scenario.client.say("ok", wait=True)
-    assert (
-        "[reactions since your last turn]\n- message m-1: 👍"
-        in scenario.agent.rendered[reply["run_id"]]
-    )
-
-
 def test_concurrent_chat_and_wakes_never_touch_the_chat_session(scenario):
     """A6.1 and B.13: while the chat run is live, the watcher's wakes run in their own
     Sessions, and a second user message steers the live run instead of starting another."""

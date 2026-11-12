@@ -1,4 +1,4 @@
-"""Notices (A.8 ui.notify): the store side; workspace store only; each adds a notice event."""
+"""Notices (A.8): the store side; workspace store only; each adds a notice event."""
 
 from __future__ import annotations
 

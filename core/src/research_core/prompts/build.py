@@ -66,7 +66,7 @@ WRITERS: dict[str, tuple[tuple[str, str], ...]] = {
         ("forum_post", "forum_post"),
         ("wiki_edit", "wiki_edit"),
     ),
-    "notice": (("ui.notify", "ui.notify"),),
+    "notice": (("chat_update", "chat_update"),),
     "session": (),
     "coworld": (("workspace.coworld_switch", "workspace.coworld_switch"),),
 }

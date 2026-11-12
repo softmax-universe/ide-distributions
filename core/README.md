@@ -14,7 +14,7 @@ is still open.
   which the image build installs there, and no Softmax client. Everything the plugin touches in
   process must import with only those: `layout`, `refs`, `store/*`,
   `plugin/*`, `tools/base.py` and the in-process tools (`goal`, `task`, `directive`, `claim`,
-  `settings`, `ui`, and those split from their actions; `experiment_create` is not, as `experiment`
+  `settings`, `chat_update`, and those split from their actions; `experiment_create` is not, as `experiment`
   is not). `core/tests/test_package.py` imports the plugin and catalog without the Softmax client.
   `agent_telemetry/` and `plugin/capture.py` import only the standard library.
   The catalog imports every tool module, and a module that fails to import stops whatever asked for the tools: the prompt build,
@@ -32,7 +32,7 @@ is still open.
 |---|---|
 | `layout.py` | The workspace on disk: `tools/`, `.state/store.db`, one folder per Coworld (`code/`, `source/`, `worktrees/`, `documents/`, `.state/`). |
 | `refs.py` | The one reference parser: `G-3`, `T-42#failure`, platform ids, policy labels, URLs. |
-| `store/` | The record store: SQLite per Coworld plus a workspace store; numbered migrations; token-marked transactions with an append-only `events` table and `change_log` detection; schema check and rebuild. One module per record kind (`goals`, `tasks`, `claims`, `experiments`, `versions`, `champion`, `directives`, `settings`, `capabilities`, `intents`, `sessions`, `ui_state`, `notices`, `chat_updates` (a wake's `ui.tell`, delivered by the coordinator into the user's latest chat), `pins`, `coworlds`), the field `registry`, `events.KINDS`, and `cli.py` (`research store apply|export|snapshot|events|backup|restore-check|quiesce`). |
+| `store/` | The record store: SQLite per Coworld plus a workspace store; numbered migrations; token-marked transactions with an append-only `events` table and `change_log` detection; schema check and rebuild. One module per record kind (`goals`, `tasks`, `claims`, `experiments`, `versions`, `champion`, `directives`, `settings`, `capabilities`, `intents`, `sessions`, `notices`, `chat_updates` (a wake's `chat_update`, delivered by the coordinator into the user's latest chat), `pins`, `coworlds`), the field `registry`, `events.KINDS`, and `cli.py` (`research store apply|export|snapshot|events|backup|restore-check|quiesce`). |
 | `tools/` | The profile tools. `base.py` defines `ToolSpec`/`ActionSpec`/`ToolContext` and `run_tool` (validates every problem at once, never raises, scrubs store paths); `catalog.py` lists the modules and the role sets; one module per tool. |
 | `plugin/` | The Hermes plugin: `register.py` (tools, hooks, prompt sections per role), `executor.py` (in-process or workspace subprocess), `briefing.py` and `session_context.py` (prompt sections), `turn.py` (the Orchestrator's chat-turn hook: context block, notices, changed-since, away summary), `advisory.py` + `rules.py` (the never-blocking advisory hook and the last-error hook), `repeats.py` (each request keeps only the latest of identical refused calls, a short refusal in place of a repeated identical one, and a notice when Hermes's loop guard halts a turn), `inference_hook.py` (the `api_request_error` hook that records failed model calls in the inference state, and `bound_output_request`, the `llm_request` middleware that caps output), `hermes_prompt.py` (the `llm_request` middleware that drops Hermes's `<mandatory_tool_use>` block from each request). |
 | `platform/` | The Softmax platform behind one `Platform` protocol: `real.py` on the official clients, `fake.py` (a persistent test double with fault injection), `identity.py`, `errors.py`, `wait.py` (retries, then a Task wait), `submission.py` (status ladder and the autonomous quality bar), `xp.py`, `experience_changes.py` (Observatory's experience request change feed), `credits.py`, `cli.py` (`research softmax`, `research platform check`). |
@@ -41,12 +41,12 @@ is still open.
 | `mixin.py`, `gitops.py`, `locks.py` | `MIXIN.md` front matter and mixin commands (detached runs with a resume token); git helpers (worktrees, pinned clones, `--no-ff` merges in a temporary worktree, citation staleness); file locks. |
 | `coworld_setup.py`, `environment_guide.py` | Coworld switch, source fetch at the pinned commit, mixin import with prefixed skills, lesson import as claims; the environment guide the agents consult first. |
 | `watcher/` | Model-free coordinator helpers run by `research serve`: observation, waits, messages, wakes, domain checks, sleep and drain. `research watcher status` reports durable state; `research workspace sleep|wake|drain|recover` exposes lifecycle operations. |
-| `contract/` | The client contract files (`context`, `events`, `ui-state` schemas, `CONTRACT.md`), the stdlib validator and `research context-schema`. |
+| `contract/` | The client contract files (`context` and `events` schemas, `CONTRACT.md`), the stdlib validator and `research context-schema`. |
 | `serve.py`, `client.py` | `research serve`, the local seam server that plays the bridge (plus `GET /` for the client page and `GET /status` for the watcher's status), and the scripted client used by the end-to-end tests. |
 | `xp_followups.py` | An Orchestrator chat's pending `xp.request` results (`xp_followups` table): `research serve` watches each batch on the change feed and, when every request is terminal, admits one follow-up turn in that chat (`docs/hosting.md`, "Coordinator and pause"). |
 | `run_failures.py` | Why a chat run failed (budget, rate limit, provider down, too large, misconfigured), from the inference state, the run's `turn_exit_reason` and its error text; `research serve` holds a budget, rate-limit or provider failure as a `waiting` message and resumes it with a continuation prompt. Stdlib only. |
 | `profile_models.py` | Each profile's model for the bridge's `/models` routes: read from the profile's `config.yaml`, checked against OpenRouter's tool-capable models, written with `hermes config set`. |
-| `ui/` | `index.html`, the self-contained client page `research serve` serves at `/`: chat with context, the event streams, UI state (show, panels, asks), notices, the records, user edits and a raw request form, in the Ink & Print house style. `docs/local-end-to-end.md` ("A client page") says how to open it. |
+| `ui/` | `index.html`, the self-contained client page `research serve` serves at `/`: chat with context, the event streams, the records, user edits and a raw request form, in the Ink & Print house style. `docs/local-end-to-end.md` ("A client page") says how to open it. |
 | `scripted_agent.py` | `ScriptedAgent`, the model-free Orchestrator that plays the runs of `FakeHermesRuns` with real tool calls: the acceptance scenario and `tools/ui_dev.py` (the page's development stack) share it. |
 | `prompts/` | The SOUL parts per role, `vocabulary.md` (from metta) and `build.py`; `tools/build_prompts.py` renders `orchestrator/SOUL.md` and `researcher/SOUL.md` and syncs the plugin manifests. |
 | `skills/` | The shipped skills: `common/<category>/<skill>/`, `orchestrator/<skill>/`, `researcher/<skill>/`; `prepare.py` points `skills.external_dirs` at them. |
@@ -112,7 +112,7 @@ nowhere.
 
 - **Tool:** a module under `tools/` with `SPEC = tool(ToolSpec(...))`, listed in
   `catalog.TOOL_MODULES`; in-process tools import only what Hermes's interpreter has; `core/tests/test_tool_budget.py`
-  pins the role sets (24 Orchestrator, 23 Researcher) and the executor table; run
+  pins the role sets (23 Orchestrator, 23 Researcher) and the executor table; run
   `uv run python tools/build_prompts.py --write --manifests`. Describe the tool, every field
   and every key, shortly: every request carries the whole list. Build field schemas with
   `tools/_args.py`: an object field lists its keys (`obj`, `objects`; `free_object` only for

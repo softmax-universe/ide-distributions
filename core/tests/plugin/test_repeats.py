@@ -58,8 +58,8 @@ def test_second_identical_refusal_is_replaced_and_the_first_and_successes_are_no
     second = json.loads(call(refusal))
     assert second["ok"] is False
     assert second["error"] == (
-        "This exact call was refused 2 times. Supply summary, tags, or report the problem with "
-        "ui.notify and end the run."
+        "This exact call was refused 2 times. Supply summary, tags, or report the problem to the "
+        "user (from a wake, a failure chat_update) and end the run."
     )
     assert "usage" not in second and len(json.dumps(second)) < len(refusal)
     assert '"error"' in json.dumps(second)[:500], "Hermes's guard still counts it as a failure"

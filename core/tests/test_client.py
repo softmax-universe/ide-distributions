@@ -86,10 +86,11 @@ def test_notices_are_the_notice_events_of_the_workspace_stream(seam):
 
 
 def test_seam_error_carries_status_body_headers_and_route(seam):
+    seam.client.session_id = "api_0_missing"
     with pytest.raises(SeamError) as info:
-        seam.client.answer("ask_x", "yes", session_id="api_0_missing")
+        seam.client.say("hello")
     error = info.value
-    assert error.status == 404 and error.route == "POST /ui-action"
+    assert error.status == 404 and error.route == "POST /message"
     assert error.body["ok"] is False and "unknown session" in error.body["error"]
     assert error.headers["Content-Type"].startswith("application/json")
     assert "HTTP 404" in str(error)
@@ -97,11 +98,8 @@ def test_seam_error_carries_status_body_headers_and_route(seam):
 
 def test_client_actor_is_recorded_on_writes(seam):
     client = ScriptedClient(seam.server.url, actor="user:james")
-    session_id = client.open(client_id="ide-2", kind="ide")
-    from research_core.store import ui_state
-
-    client.react("m-1", "+1")
-    assert ui_state.get(seam.wstore, session_id)["doc"]["reactions"]["m-1"]["by"] == "user:james"
+    client.open(client_id="ide-2", kind="ide")
+    client.say("hello")
     assert seam.wstore.one("SELECT actor FROM events ORDER BY seq DESC LIMIT 1")[0] == "user:james"
     with pytest.raises(SeamError) as info:
         ScriptedClient(seam.server.url, actor="session:api_1_x").open()

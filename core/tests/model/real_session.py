@@ -125,7 +125,6 @@ ORCHESTRATOR_CASES = [
     ),
     # A number of its own per run: asking for the value already set leaves nothing to change.
     Case("orchestrator", "settings", "update", "Set max_researchers to <run>, please."),
-    Case("orchestrator", "ui", "notify", write_actions.UI_NOTIFY),
 ]
 RESEARCHER_CASES = [
     Case("researcher", "claim", "write", write_actions.CHAMPION_CLAIM),
