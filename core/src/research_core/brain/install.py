@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from research_core import layout
+from research_core.brain import seeds
 from research_core.prompts import build
 
 TEMPLATE = Path(__file__).resolve().parent / "template"
@@ -37,12 +38,17 @@ def install(workspace: Path, template: Path = TEMPLATE) -> list[str]:
 
 
 def apply(profile_home: Path, role: str, env: Mapping[str, str] | None = None) -> list[str]:
-    """The prepare hook. With IDE_BRAIN=1: install the template into the workspace and write the
-    profile's installed SOUL.md with the learning section. Otherwise do nothing at all."""
+    """The prepare hook. With IDE_BRAIN=1: install the template, mirror seed skills into the
+    profile's skills/ dir and write the profile's SOUL.md with the learning section. Otherwise
+    do nothing at all."""
     env = os.environ if env is None else env
     if not enabled(env):
         return []
     actions = [f"brain: created {name}" for name in install(layout.workspace_root(env))]
+    actions += [
+        f"brain: seed skill visible to Hermes: {path}"
+        for path in seeds.mirror_to_profile(layout.workspace_root(env), profile_home)
+    ]
     soul = Path(profile_home) / "SOUL.md"
     wanted = build.render(role, brain=True)
     if not soul.exists() or soul.read_text(encoding="utf-8") != wanted:

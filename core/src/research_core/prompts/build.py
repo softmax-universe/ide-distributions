@@ -29,6 +29,9 @@ OPTIONAL_DIR = PROMPTS_DIR / "optional"
 
 # Word budgets from the design (D.7 and Appendix H).
 BUDGETS: dict[str, int] = {"orchestrator": 2500, "researcher": 2000}
+# The optional brain section (IDE_BRAIN=1) is its own small allowance on top of BUDGETS: the base
+# SOULs are already at their budgets (orchestrator 2499 of 2500). Details live in the brain files.
+BRAIN_ALLOWANCE: dict[str, int] = {"orchestrator": 250, "researcher": 150}
 RECORDS_RANGE = (300, 500)
 VOCABULARY_BUDGET = 350
 RECORDS_TITLE = "Records and how you use them"
@@ -261,13 +264,17 @@ def records_words(role: Role) -> int:
     return 0
 
 
-def check(role: Role) -> list[str]:
-    """Every problem with a role's SOUL; empty when it is fit to ship."""
+def check(role: Role, *, brain: bool = False) -> list[str]:
+    """Every problem with a role's SOUL; empty when it is fit to ship. ``brain=True`` checks the
+    SOUL with the optional learning section, within BUDGETS plus BRAIN_ALLOWANCE."""
     problems: list[str] = []
-    text = render(role)
+    text = render(role, brain=True) if brain else render(role)
     count = words(text)
-    if count > BUDGETS[role]:
-        problems.append(f"{role}: {count} words, over the budget of {BUDGETS[role]}")
+    budget = BUDGETS[role] + (BRAIN_ALLOWANCE[role] if brain else 0)
+    if brain and words(brain_section(role)) > BRAIN_ALLOWANCE[role]:
+        problems.append(f"{role}: the brain section is over {BRAIN_ALLOWANCE[role]} words")
+    if count > budget:
+        problems.append(f"{role}: {count} words, over the budget of {budget}")
     low, high = RECORDS_RANGE
     recorded = records_words(role)
     if not low <= recorded <= high:

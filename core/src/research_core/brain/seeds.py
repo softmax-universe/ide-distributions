@@ -80,3 +80,31 @@ def install_all(workspace, coworld: str, skills_dir=None, howto=None) -> dict[st
     if howto:
         result["howto"] = install_howto(workspace, coworld, Path(howto).read_bytes())
     return result
+
+
+def mirror_to_profile(workspace, profile_home) -> list[str]:
+    """Copy every Coworld's seed SKILL.md into ``<profile>/skills/seed/<coworld folder>/<name>/``.
+
+    Hermes scans the profile's own ``skills/`` directory natively, so seeds become discoverable
+    without touching ``skills.external_dirs`` (set by core prepare). A mirrored copy is replaced
+    only while it still matches its marker, so a hand edit survives. Returns paths written.
+    """
+    written: list[str] = []
+    ws, dest_root = Path(workspace), Path(profile_home) / "skills" / "seed"
+    for skill in sorted(ws.glob("*/skills/seed/*/SKILL.md")):
+        if not (skill.parent / ".seed").exists():
+            continue  # not installed by us
+        coworld_dir, name = skill.parents[3].name, skill.parent.name
+        dest = dest_root / coworld_dir / name
+        data = skill.read_bytes()
+        target, marker = dest / "SKILL.md", dest / ".seed"
+        if target.exists():
+            if _hash(target.read_bytes()) == _hash(data):
+                continue
+            if not marker.exists() or _hash(target.read_bytes()) != marker.read_text().strip():
+                continue
+        dest.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        marker.write_text(_hash(data) + "\n")
+        written.append(str(target))
+    return written

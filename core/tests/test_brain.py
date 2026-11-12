@@ -36,10 +36,21 @@ def test_flag_off_soul_is_byte_identical():
 
 def test_brain_soul_within_budget_and_safe():
     for role in build.ROLES:
-        assert build.words(build.render(role, brain=True)) <= build.BUDGETS[role] + 800
+        assert build.words(build.brain_section(role)) <= build.BRAIN_ALLOWANCE[role]
+        assert build.words(build.render(role, brain=True)) <= (
+            build.BUDGETS[role] + build.BRAIN_ALLOWANCE[role]
+        )
+        assert build.check(role, brain=True) == []
     text = build.brain_section("orchestrator")
     assert "skill_manage" in text and "unverified" in text and "quarantine" in text
+    assert "brain/index.md" in text and "learning-loop" in text
     assert "Do not write to `brain/`" in build.brain_section("researcher")
+
+
+def test_detail_lives_in_the_brain_files():
+    loop = (bb.TEMPLATE / "playbooks" / "learning-loop.md").read_text()
+    assert "Wrap-up" in loop and "Practice turns" in loop and "skill_manage" in loop
+    assert "learning-loop" in (bb.TEMPLATE / "brain" / "index.md").read_text()
 
 
 def test_apply_installs_and_writes_soul(tmp_path):
@@ -171,3 +182,30 @@ def test_tidy_rule_cap_moves_oldest(tmp_path):
     brain_tidy.tidy(ws, TODAY)
     assert (ws / "brain/rules.md").read_text().count("\n- rule") == 40
     assert "rule 44" in (ws / "brain/archive/rules.md").read_text()
+
+
+def test_seeds_mirror_into_profile_skills_dir(tmp_path):
+    src = tmp_path / "src" / "opening"
+    src.mkdir(parents=True)
+    (src / "SKILL.md").write_text("v1")
+    ws, home = tmp_path / "ws", tmp_path / "home"
+    home.mkdir()
+    (home / "SOUL.md").write_text("x")
+    si.install_all(ws, "pudge-wars", tmp_path / "src")
+    env = {**ON, "IDE_WORKSPACE": str(ws)}
+    actions = bb.apply(home, "researcher", env)
+    mirrored = home / "skills/seed/pudge_wars/opening/SKILL.md"
+    assert mirrored.read_text() == "v1" and any("seed skill" in a for a in actions)
+    (src / "SKILL.md").write_text("v2")
+    si.install_all(ws, "pudge-wars", tmp_path / "src")
+    bb.apply(home, "researcher", env)
+    assert mirrored.read_text() == "v2"
+    mirrored.write_text("hand edit")
+    (src / "SKILL.md").write_text("v3")
+    si.install_all(ws, "pudge-wars", tmp_path / "src")
+    bb.apply(home, "researcher", env)
+    assert mirrored.read_text() == "hand edit"
+    off = tmp_path / "home2"
+    off.mkdir()
+    assert bb.apply(off, "researcher", {"IDE_WORKSPACE": str(ws)}) == []
+    assert not (off / "skills").exists()

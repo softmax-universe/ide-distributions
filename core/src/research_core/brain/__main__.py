@@ -25,5 +25,8 @@ if a.cmd == "install":
 elif a.cmd == "seed":
     for key, status in seeds.install_all(ws, a.coworld, a.skills, a.howto).items():
         print(f"{key}: {status}")
+    if os.environ.get("HERMES_HOME"):
+        for path in seeds.mirror_to_profile(ws, os.environ["HERMES_HOME"]):
+            print(f"mirrored: {path}")
 else:
     print(tidy.tidy(ws, dt.date.fromisoformat(a.today) if a.today else None))
