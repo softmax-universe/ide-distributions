@@ -676,7 +676,25 @@ def test_status_marks_a_broken_evaluate_invalid_and_reports_the_capability(
     )
     result = run("xp", {"action": "status", "experiment": "X-1"})
     second = [r for r in result["runs"] if r["seed"] == 2][0]
-    assert second["validity"].startswith("invalid: evaluate output: evaluate output line 1")
+    assert second["validity"].startswith("invalid: evaluate output: no row for seat 0")
+
+    set_evaluate_command(mixin_dir, "echo '{\"episode\": 0,'")
+    run(
+        "xp",
+        {"action": "request", "experiment": "X-1", **ROSTER, "seeds": [3], "arms": ["candidate"]},
+    )
+    result = run("xp", {"action": "status", "experiment": "X-1"})
+    third = [r for r in result["runs"] if r["seed"] == 3][0]
+    assert third["validity"].startswith("invalid: evaluate output: evaluate output line 1")
+
+
+def test_log_lines_on_stderr_do_not_break_evaluate(run, ctx, running, mixin_dir):
+    """stderr shares the log; a uv or warning line there is not a broken evaluate."""
+    set_evaluate_command(mixin_dir, f'echo "Installed 3 packages" >&2; {EVALUATE_COMMAND}')
+    args = {"action": "request", "experiment": "X-1", **ROSTER, "seeds": [1], "arms": ["candidate"]}
+    run("xp", args)
+    (run_record,) = run("xp", {"action": "status", "experiment": "X-1"})["runs"]
+    assert run_record["validity"] == "valid" and len(run_record["results"]["rows"]) == 1
 
 
 def test_status_backgrounds_a_slow_evaluate_and_resumes(run, ctx, running, mixin_dir, monkeypatch):

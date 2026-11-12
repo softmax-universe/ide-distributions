@@ -60,34 +60,43 @@ def rows_from_evaluate_output(
     - ``status`` (``"completed"`` or ``"failed"``, optional, default ``"completed"``).
     - ``reason`` (string, optional): why a failed episode failed.
 
-    Blank lines are skipped; any other key, or a wrong type, raises ``ValueError`` naming the
-    line. ``episode_id`` is ``<request_id>:<episode>:s<seat>`` (``<episode>:s<seat>`` without a
-    ``request_id``); pass the platform request id so rows from different requests never share
-    an id, because ``ingest_rows`` drops a repeated ``episode_id`` as a duplicate. The caller
-    names the ``policy_version`` and ``game_version`` the request played; every row carries that
+    Lines that do not start with ``{`` are log output and skipped: stderr shares the log the
+    output is read from, so a warning or a ``uv`` progress line must not break evaluate. In an
+    object line, any other key, or a wrong type, raises ``ValueError`` naming the line, and so
+    does a second line for the same episode and seat (``ingest_rows`` would silently keep only
+    the first, losing every later episode a mixin numbered alike). ``episode_id`` is
+    ``<request_id>:<episode>:s<seat>`` (``<episode>:s<seat>`` without a ``request_id``); pass
+    the platform request id so rows from different requests never share an id, because
+    ``ingest_rows`` drops a repeated ``episode_id`` as a duplicate. The caller names the
+    ``policy_version`` and ``game_version`` the request played; every row carries that
     ``policy_version``, so the caller relabels the rows of seats our policy did not sit in.
     """
     prefix = f"{request_id}:" if request_id else ""
     rows = []
+    seen: dict[str, int] = {}
     for number, line in enumerate(text.splitlines(), start=1):
-        if not line.strip():
-            continue
+        if not line.lstrip().startswith("{"):
+            continue  # a log line: the command's stderr shares the output (mixin.run_command)
         try:
             entry = json.loads(line)
         except json.JSONDecodeError as error:
             raise ValueError(f"evaluate output line {number} is not JSON: {error.msg}") from error
         try:
-            rows.append(_row_from_entry(entry, prefix, policy_version, game_version))
+            row = _row_from_entry(entry, prefix, policy_version, game_version)
         except ValueError as error:
             raise ValueError(f"evaluate output line {number}: {error}") from error
+        if row.episode_id in seen:
+            raise ValueError(
+                f"evaluate output line {number} repeats episode {entry['episode']!r} seat"
+                f" {entry['seat']} of line {seen[row.episode_id]}; episode must tell the"
+                " request's episodes apart (its episode request id, or its index)"
+            )
+        seen[row.episode_id] = number
+        rows.append(row)
     return rows
 
 
-def _row_from_entry(
-    entry: object, prefix: str, policy_version: str, game_version: str
-) -> EpisodeRow:
-    if not isinstance(entry, dict):
-        raise ValueError("not a JSON object")
+def _row_from_entry(entry: dict, prefix: str, policy_version: str, game_version: str) -> EpisodeRow:
     for key in ("episode", "seed", "seat"):
         if key not in entry:
             raise ValueError(f"missing key {key!r}")
