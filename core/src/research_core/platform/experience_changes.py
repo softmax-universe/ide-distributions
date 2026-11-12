@@ -19,18 +19,14 @@ if TYPE_CHECKING:
     from research_core.layout import Workspace
 
 log = logging.getLogger(__name__)
-PATH = "/v2/episode-requests/changes"
 MAX_ROOTS = 50
 WAIT_SECONDS = 25
+TERMINAL_STATES = {"completed", "failed", "cancelled"}
 
 
 class BatchProgress(BaseModel):
     id: str
     status: Literal["pending", "submitted", "running", "completed", "failed", "cancelled"]
-
-    @property
-    def terminal(self) -> bool:
-        return self.status in {"completed", "failed", "cancelled"}
 
 
 class ChangePage(BaseModel):
@@ -78,7 +74,7 @@ async def connect(env: Mapping[str, str], ws: Workspace) -> AsyncIterator[ReadCh
             if cursor is not None:
                 params["cursor"] = cursor
             response = await client.get(
-                PATH.lstrip("/"),
+                "v2/episode-requests/changes",
                 params=params,
                 headers={"Authorization": f"Bearer {identity.player_token(env)}"},
             )
@@ -93,35 +89,36 @@ async def wait_for_terminal(read: ReadChanges, ids: tuple[str, ...]) -> None:
     cursor = None
     backoff = 1
     while True:
-        (page,) = await asyncio.gather(read(ids, cursor), return_exceptions=True)
-        if isinstance(page, ChangePage) and {batch.id for batch in page.batches} == expected:
-            if all(batch.terminal for batch in page.batches):
-                return
-            cursor = page.next_cursor
-            backoff = 1
-            continue
-        status = page.response.status_code if isinstance(page, httpx.HTTPStatusError) else None
-        if status in {409, 410} and cursor is not None:
-            # The platform invalidates cursors on selection changes and expiry.
+        (result,) = await asyncio.gather(read(ids, cursor), return_exceptions=True)
+        if isinstance(result, ChangePage):
+            if {batch.id for batch in result.batches} == expected:
+                if all(batch.status in TERMINAL_STATES for batch in result.batches):
+                    return
+                cursor = result.next_cursor
+                backoff = 1
+                continue
             cursor = None
-            continue
-        delay = backoff
-        if isinstance(page, httpx.HTTPStatusError) and status == 429:
-            retry_after = page.response.headers.get("Retry-After", "")
-            if retry_after.isascii() and retry_after.isdecimal() and len(retry_after) <= 9:
-                delay = max(delay, int(retry_after))
-        if isinstance(page, ChangePage):
             problem = "batch selection mismatch"
-            cursor = None
-        elif isinstance(page, (httpx.HTTPError, PlatformError, ValidationError)):
-            problem = type(page).__name__
+        elif isinstance(result, (httpx.HTTPError, PlatformError, ValidationError)):
+            problem = type(result).__name__
         else:
-            raise page
-        log.warning(
-            "Experience change feed failed (%s, status=%s); reconnecting in %ss",
-            problem,
-            status,
-            delay,
-        )
+            raise result
+
+        delay = backoff
+        if isinstance(result, httpx.HTTPStatusError):
+            status = result.response.status_code
+            if status in {409, 410} and cursor is not None:
+                cursor = None
+                continue
+            problem = f"HTTP {status}"
+            retry_after = result.response.headers.get("Retry-After", "")
+            if (
+                status == 429
+                and retry_after.isascii()
+                and retry_after.isdecimal()
+                and len(retry_after) <= 9
+            ):
+                delay = max(delay, int(retry_after))
+        log.warning("Experience change feed failed (%s); reconnecting in %ss", problem, delay)
         await asyncio.sleep(delay)
         backoff = min(backoff * 2, 60)
