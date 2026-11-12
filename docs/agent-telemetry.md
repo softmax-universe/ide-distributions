@@ -11,7 +11,7 @@ a Session from Datadog alone. Capture is always on, and there is no setting.
 
 | Source | What |
 |---|---|
-| Gateway plugin | Each model request and reply, one per outer attempt, with reasoning and token usage (not the billed cost: see "Known holes"). System prompt sections and context parts. Tool calls as proposed, what ran, and each result as the model got it. Every committed row's ID and its text, except a tool row's, which is on its result. Approvals, compaction, subagents, lifecycle, and each log line but the access line of a successful seam poll (a 200 for `GET /p/<profile>/v1/runs/<id>` from its urllib client), which comes once a second per live run. A failed poll and the AIDE backend's run read are sent. All text goes through Hermes's secret scanner first. |
+| Gateway plugin | Each model request and reply, one per outer attempt, with reasoning and token usage (not the billed cost: see "Known holes"). System prompt sections and context parts. Tool calls as proposed, what ran, and each result as the model got it. Every committed row's ID and its text. Approvals, compaction, subagents, lifecycle, and each log line but the access line of a successful seam poll (a 200 for `GET /p/<profile>/v1/runs/<id>` from its urllib client), which comes once a second per live run. A failed poll and the AIDE backend's run read are sent. All text goes through Hermes's secret scanner first. |
 | `research serve` | Each POST to a route in `RECORDED_ROUTES`, whatever its outcome: `/session-open`, `/message`, `/message-cancel`, `/ui-action`, `/store/apply`, `/models`. Also committed store events, coordinator passes, attachment outcomes, wakes and successors. Metadata only, with Softmax tokens masked. |
 | Other `research` commands | Their committed store events and tool completions. Metadata only, with Softmax tokens masked. |
 
@@ -29,7 +29,9 @@ Text is sent once per process, by digest. A request is a manifest that lists dig
 In the gateway and `research serve` a caller only copies what it was given and puts it on a bounded queue, which drops and
 counts what does not fit. A background thread redacts, hashes and writes, so a stuck stream holds up no callback and no
 commit through this path. That thread also does the reads whose result it records: the `state.db` rows a turn committed,
-read after the turn's end, and `SOUL.md`, read when the request that sends it is written. A short command, such as a
+read after the turn's end, and `SOUL.md`, read when the request that sends it is written. A store event's
+row (an admission, a durable command or a Session) is the exception: `observed.py` reads it on the committing thread, just
+after the COMMIT, with one `SELECT` by key. A short command, such as a
 workspace tool's process, writes each record to the stream before the capture returns, as any process logs to stdout, and
 exits with nothing left to write. The container runtime drains the stream into the pod's log file whether or not the
 Datadog Agent reads it, so such a write waits only while the runtime itself stops draining; a tool call then waits too. No
@@ -58,9 +60,9 @@ each lost nothing with no wait, one run each. A line is searchable 12 to 27 seco
 | Loss | Why it is accepted |
 |---|---|
 | Nothing confirms delivery. A line that never arrives is not noticed, and a stream that cannot be opened stays closed for the life of that process | There is no sender to tell. Rebuild reports what a surviving record refers to |
-| Any exit of the gateway or `research serve`, graceful or not, loses what the memory queue still holds: across 20 turns of a real gateway with tool results of 40,000 characters, 629 captures found at most 4 records queued (median 1), at most 945 KB. A short command has no queue. A request is written before its call, so a process killed during a call keeps the request, and with it the user's message, once the writer has written it (`test_a_kill_during_a_call_keeps_its_request`, `test_a_kill_during_the_first_call_keeps_the_users_message`). The turn's committed rows are lost, because they are read at the turn's end. A kill while the request is still queued can leave `model_request` / `started` alone, and rebuild names that call `call_with_no_attempt` | The queue empties as records arrive, and nothing on the agent's path may wait for it |
+| Any exit of the gateway or `research serve`, graceful or not, loses what the memory queue still holds: across 20 turns of a real gateway with tool results of 40,000 characters, 629 captures found at most 4 records queued (median 1), at most 945 KB. A short command has no queue. A request is written before its call, so a process killed during a call keeps the request, and with it the user's message, once the writer has written it, and rebuild lists the attempt in `unended_attempts` (`test_a_kill_during_a_call_keeps_its_request`, `test_a_kill_during_the_first_call_keeps_the_users_message`). The turn's committed rows are lost, because they are read at the turn's end. A kill while the request is still queued can leave `model_request` / `started` alone, and rebuild names that call `call_with_no_attempt` | The queue empties as records arrive, and nothing on the agent's path may wait for it |
 | The Agent falling behind by more than the retained log files would lose lines. Untested | 240 MB over about 15 rotations lost nothing with the Agent keeping up |
-| A full queue drops records, which a stream that has stopped soon causes. The writer's thread logs the count each time it changes. A capture over the 64 MiB byte limit goes in only when nothing is queued, so a request that large captured just after another record, such as its own context parts, is dropped, and rebuild shows `call_with_no_attempt` | A caller must never wait |
+| A full queue drops records, which a stream that has stopped soon causes. The writer's thread logs the count each time it changes. A capture over the 64 MiB byte limit goes in only when nothing is queued, so a request that large captured just after another record, such as its own context parts, is dropped, and rebuild shows `call_with_no_attempt` and, for its reply, `reply_with_no_request` | A caller must never wait |
 | Any process in the workspace can write a line that looks like ours | James: restriction work matters very little here |
 
 ## Read a Session
@@ -81,7 +83,8 @@ python3 ~/coding/metta/scripts/token_broker_client.py exec --scope datadog.conte
 Add `--workspace <id>` if the command says several workspaces hold that ID. `--session` takes any ID of
 the Session, first or after compaction. The command needs only `DD_API_KEY` and `DD_APP_KEY`: no
 state.db, volume or workspace API. It exits 0 when nothing was missing, 1 when something was, and 2 when
-it could not start, which includes Datadog refusing the search or not answering.
+it could not start, which includes Datadog refusing the search, not answering, or answering that a search did not
+finish (`meta.status` other than `done`, such as `timeout`), because such an answer can hold part of the results.
 
 It prints one JSON object. Each entry is the record as written, with the text of what it refers to under
 each reference's name:
@@ -89,6 +92,7 @@ each reference's name:
 - `requests`: each model request in wire order, whole, with `response`, `failed` or `unread` (the record
   of how the attempt ended), `partial_responses` (what each broken stream of the attempt had shown),
   `tools` (its tool activity, including each `result`), and `tokens_by_source`.
+- `unended_attempts`: the `model_attempt_id` of each request with no reply, failure or `unread` record (a partial reply is no end, because Hermes can retry the stream): a process killed during the call, a cancel (Hermes's interrupt fires no hook), or a call still running. It is not a loss, so it does not change the exit code.
 - `rows`: each committed native row, with `message` as it was first sent and `rewritten_to` if a prune
   later changed it. `message` means "first sent" only when `missing` is empty: if a row's original was
   lost, it shows the first form that survived. A row no request lists never reached a model, such as a
@@ -115,9 +119,12 @@ characters only.
 | `chunk_gap` | Entries exist, but no sending of the object supplied these chunks: `missing_chunks` names them |
 | `digest_failure` | The joined chunks do not match the digest or size |
 | `row_without_text` | A committed row that no request lists and whose own text is unknown: its commit text or a tool row's result was lost, or two results with no row ID share its call ID |
-| `call_with_no_attempt` | A call started and no attempt was written: the process probably died during it |
+| `call_with_no_attempt` | A call started and no attempt was written: its request record was dropped or lost |
+| `reply_with_no_request` | A reply, failure or partial reply names an attempt whose request record is lost. One dropped oversized request shows as this and `call_with_no_attempt`: one loss, not two |
 
 A missing object blocks each request that needs it, and that request shows `blocked_by`. Nothing is guessed.
+
+A line becomes searchable 12 to 27 seconds after it is written, not always in order, so a rebuild within about 30 seconds of a Session's last record can show a `call_with_no_attempt` or `reply_with_no_request` that clears when it is run again.
 
 **An empty list is not proof that a Session is complete.** It says only that every reference found could
 be followed. A record that never reached Datadog leaves no reference to follow. A Session older than 15
@@ -155,15 +162,16 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 | Auxiliary requests and replies are Hermes's capped hook payloads (`HERMES_PLUGIN_PAYLOAD_MAX_CHARS`, 50,000 characters, 8,000 per string). | `agent/auxiliary_hooks.py` |
 | Prompt sections name SOUL and this plugin's own sections, found by their text. Hermes's guidance, the project's rules and the skill index are unattributed. | `plugin/capture.py`, `_sections` |
 | Committed rows are read from `state.db` on the writer's thread after each turn's end. Rows of a turn that a killed gateway never ended are not recorded (they stay in `state.db`), and a new process records only rows written after it started. Any gateway exit, graceful or not, also loses what the writer still had queued. | `plugin/capture.py`, `_capture_commits` |
+| A compaction partway through a turn, done in place as the pinned Hermes's `compression.in_place: true` default does, may leave the rows that turn committed before it uncaptured (Hermes archives them as `compacted`, which the turn's read skips) and capture the kept tail twice, as the fresh copies Hermes inserts. Unverified: read from the code only. | `plugin/capture.py`, `_capture_commits`; Hermes `agent/conversation_compression.py` |
 | `extra_headers` and `extra_query` are not captured, because they are not part of the request body. | `plugin/capture.py`, `wire_request` |
 | After a restart the first Session ID is lost too. Rebuild follows `parent_session_id` on `compaction` records. | `test_compaction_is_followed_in_both_directions_after_a_restart` |
 | Hermes gives a row ID only to rows committed since its last prune or restart, so a `full` manifest after one names few rows. Text is not lost: rebuild joins by row ID first, and a listing with none through its tool call ID, unless the row's own result has other text. | `test_each_committed_row_equals_state_db` |
+| A listing with no row ID joins the row that last held its tool call ID, so when a later, different row reuses that ID (Kimi does across turns) and is listed with no row ID, the older row can show a false `rewritten_to`. | `agent_telemetry/rebuild.py`, `_rows` |
 | The row Hermes makes to keep a pruned original has no commit record, and neither does a `session_meta` row. The original's text is the first form of the pruned row. | `test_each_committed_row_equals_state_db` |
 | A Session's report does not name its subagents' Sessions, because their records have another Session's ID. Search `service:ide-agent-telemetry @parent_session_id:<id>`, then rebuild each. | `agent_telemetry/rebuild.py`, `_Finder.owned` |
 | An auxiliary call outside a turn has session ID `no-session`, and a log line with no Session tag has none, so a Session's report does not show them. | `plugin/capture.py` |
 | Hermes sends a tool call's arguments as compact JSON and its row keeps the model's text. A request shows the first, and `tool` / `proposed` keeps the second. | `_comparable` in `test_rebuild_real.py` |
 | Across a restart, requests are ordered by each process's earliest time, because `sequence` compares only inside one process. This assumes one gateway process at a time and a clock that did not go back. | `agent_telemetry/rebuild.py`, `_order` |
-| A Datadog search that answers `status: timeout` returns partial results and is not flagged. What it left out shows as `no_content`, or not at all. | `agent_telemetry/rebuild.py` handles only a 429 |
 
 ## Proof and cost
 

@@ -14,6 +14,7 @@ of its parent's turn.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 import time
@@ -83,7 +84,8 @@ def native_error_type(status: str, error_type: str | None, result: Any) -> str |
     if error_type != "tool_error":
         return error_type or status
     if isinstance(result, str) and result.startswith("{") and result.endswith("}"):
-        result = json.loads(result)
+        with contextlib.suppress(ValueError):  # Text that only looks like JSON stays text.
+            result = json.loads(result)
     if not isinstance(result, dict):
         return error_type
     # Tool results have no shared schema, so each field is optional.

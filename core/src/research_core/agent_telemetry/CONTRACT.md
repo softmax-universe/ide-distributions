@@ -174,9 +174,8 @@ unattributed. A part that could not be found has `source_type: unattributed` and
 
 `capture_request` writes an operation with `action: model_attempt`, `stage: request` and a `content_refs` entry named
 `request_manifest`. `capture_response` writes one with `stage: response`, an entry named `message` for the native assistant
-message, and `partial`, which is true when a stream failed and the message is what arrived before that. A reply that is not a
-message, such as a 200 of plain text, is stored as `{"unparsed_reply": <what came back>}`. Each carries the fields its caller
-passed. All other operations name their own action and stage.
+message, and `partial`, which is true when a stream failed and the message is what arrived before that. Each carries the
+fields its caller passed. All other operations name their own action and stage.
 
 ## What the gateway records
 
