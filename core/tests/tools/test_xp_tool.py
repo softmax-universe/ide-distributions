@@ -403,7 +403,7 @@ def test_credits_refusal_names_a_need_the_wait_can_read(
     assert "resumes you when the balance covers it" in result["next"]
 
 
-def test_credits_refusal_reports_the_balance_and_sets_no_wait(run, ctx, uploaded, researcher_task):
+def test_credits_refusal_sets_no_wait_until_acceptance(run, ctx, uploaded, researcher_task):
     make_experiment(ctx, task_id=1)
     result = run(
         "xp",
@@ -434,8 +434,10 @@ def test_credits_refusal_reports_the_balance_and_sets_no_wait(run, ctx, uploaded
     assert (
         intents.read(ctx.store, 1)["state"] == "done" and intents.read(ctx.store, 1)["attempt"] == 2
     )
-    assert "task_wait {task, kind: xp," in retried["next"]
-    assert tasks.read(ctx.store, 1)["waiting_on"] is None
+    assert retried["followup_scheduled"]
+    assert set(json.loads(ctx.store.one("SELECT request_ids FROM task_xp_waits")[0])) == set(
+        retried["requests"]
+    )
 
 
 def test_a_tasks_experiment_is_refused_for_anyone_but_its_holder_before_any_request(
@@ -452,8 +454,10 @@ def test_a_tasks_experiment_is_refused_for_anyone_but_its_holder_before_any_requ
         session_id="r1",
     )
     assert held["ok"] is True, held
-    # The wait takes the Task's open requests by itself, so the model copies no ids.
-    assert held["next"].startswith("task_wait {task, kind: xp, detail: 'XP requests for X-1'}")
+    assert held["followup_scheduled"]
+    assert set(json.loads(ctx.store.one("SELECT request_ids FROM task_xp_waits")[0])) == set(
+        held["requests"]
+    )
 
 
 def test_ask_above_warns_the_orchestrator_and_asks_the_researcher(run, ctx, uploaded):

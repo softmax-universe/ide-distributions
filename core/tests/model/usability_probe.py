@@ -314,7 +314,9 @@ class _OwnTaskRecords(write_actions.EveryRecordExists):
     def one(self, *_: object) -> dict:
         return {"id": 1, "proposed_by": usability_reads.SESSION, "goal_id": self.row["goal_id"]}
 
-    def q(self, *_: object) -> list:
+    def q(self, sql: str, *_: object) -> list:
+        if "FROM experiment_runs" in sql:
+            return []
         return [{"session_id": usability_reads.SESSION.removeprefix("session:")}]
 
 

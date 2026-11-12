@@ -9,6 +9,7 @@ import pytest
 from research_core.store import migrate
 
 COWORLD_TABLES = {
+    "task_xp_waits",
     "transition_commands",
     "task_views",
     "meta",
@@ -144,7 +145,7 @@ def test_migration_files_are_numbered_and_increasing():
 
 def test_apply_migrations_sets_user_version_and_meta():
     conn = memory_store("coworld")
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
     rows = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM meta")}
     assert rows["schema_kind"] == "coworld"
     assert rows["created"].endswith("Z")
@@ -158,7 +159,7 @@ def test_second_apply_is_a_noop():
     conn = memory_store("coworld")
     created = conn.execute("SELECT value FROM meta WHERE key = 'created'").fetchone()[0]
     conn.execute("INSERT INTO settings(key, value) VALUES ('paused', 'false')")
-    assert migrate.apply_migrations(conn, "coworld") == 3
+    assert migrate.apply_migrations(conn, "coworld") == 4
     assert conn.execute("SELECT value FROM meta WHERE key = 'created'").fetchone()[0] == created
     assert conn.execute("SELECT COUNT(*) FROM settings").fetchone()[0] == 1
 

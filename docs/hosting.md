@@ -166,6 +166,12 @@ batch reaches a terminal state, it admits one `origin="followup"` turn in the or
 admitted while `paused` is set. The AIDE event log and history carry its reply across client
 reconnects.
 
+A Researcher's `xp.request` records accepted work per experiment on the held Task. Each experiment can
+resume the Task independently of other experiments and explicit waits.
+The same change feed resolves it when the requests finish. The coordinator resumes the
+Researcher through the normal Task continuation path. The Researcher evaluates the results
+and reports through the Task. The Orchestrator decides what to tell the user.
+
 A background Orchestrator wake reaches the user's chat with `ui.tell {category, text, refs?}`
 (`core/src/research_core/store/chat_updates.py`). The tool is refused in a chat Session. It
 records a `chat_updates` row in the workspace store. A category that the workspace setting

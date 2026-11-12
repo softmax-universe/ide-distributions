@@ -1410,6 +1410,20 @@ def _completion_problems(
         row["status"] == "in-progress",
         f"{_t(row['id'])} is {row['status']}, not in-progress",
     )
+    from research_core.store.experiments import REQUEST_TERMINAL_STATES
+
+    pending = {
+        display_id("X", run["experiment_id"])
+        for run in store.q(
+            "SELECT r.experiment_id,r.state FROM experiment_runs r"
+            " JOIN experiments e ON e.id=r.experiment_id"
+            " WHERE e.task_id=? AND e.status='running' AND r.kind='xp'",
+            (row["id"],),
+        )
+        if run["state"] not in REQUEST_TERMINAL_STATES
+    }
+    if pending:
+        problems.append(f"{_t(row['id'])} has pending requests in {', '.join(sorted(pending))}")
     require(
         problems,
         isinstance(checklist, Mapping),

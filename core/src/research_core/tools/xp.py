@@ -19,10 +19,8 @@ seat is a broken evaluate. A row's ``game_version`` is the version the platform 
 on (``results.coworld_version``), so a Coworld release during an Experiment never mixes versions
 under one label; MIXIN.md's ``coworld_version`` stands in only for runs recorded without it.
 
-Rules the tool keeps (A4.4): it puts a Task on a wait only when the platform stays down (below);
-a Researcher calls
-``task_wait {kind: xp}`` and ends its run (``ref`` defaults to the open requests of the Task's
-Experiments; ``tools/task.py`` ``xp_wait_refs``), or ``task_wait {kind: credits}`` after a
+A Researcher Task follows each Experiment's accepted requests automatically. A Researcher
+calls ``task_wait {kind: credits}`` after a
 credits refusal. There is no local credits pre-check: the platform's refusal (402) is the
 refusal, reported with the balance, the held amount and the next refill. The
 ``xp.ask_above_requests_per_experiment`` setting: above it the Orchestrator gets a warning and
@@ -69,7 +67,7 @@ from research_core.platform import xp as xp_module
 from research_core.platform.errors import CreditsRefused, PlatformError
 from research_core.platform.protocol import Credits, Platform, XpRequest, with_retries
 from research_core.stats.ingest import EpisodeRow, rows_from_evaluate_output
-from research_core.store import experiments, intents, settings, tasks, versions
+from research_core.store import experiments, intents, sessions, settings, tasks, versions
 from research_core.store._common import parse_display_id
 from research_core.store.errors import StoreError
 from research_core.tools import _args as a
@@ -111,6 +109,14 @@ def handle_request(call: ToolCall) -> dict:
         store, a.record_number(call.get("experiment"), "experiment", "experiment")
     )
     n = parse_display_id(record["id"])[1]
+    session = (
+        sessions.read(ctx.wstore, actor.id)
+        if ctx.role == "researcher" and actor.is_session
+        else None
+    )
+    task_id = session["task_id"] if session is not None else None
+    if task_id is not None:
+        tasks.require_holder(store, task_id, actor)
     plan = _plan(call, record)
     platform = ctx.platform()
     warnings = list(plan["warnings"])
@@ -182,7 +188,10 @@ def handle_request(call: ToolCall) -> dict:
                 refusal = wait.tool_error(ctx, CREATE_ROUTE, error)
                 refusal.context.update(created=created, reconciled=reconciled)
                 raise refusal from error
-            run = _record_run(ctx, record, request, body, seed=seed, arm=arm, plan=plan)
+            with store.atomic(actor):
+                run = _record_run(ctx, record, request, body, seed=seed, arm=arm, plan=plan)
+                if task_id is not None and not request.terminal:
+                    xp_followups.register_task(store, actor, task_id, record["id"], request.id)
             (reconciled if intent["existing"] and not intent["retried"] else created).append(
                 request.id
             )
@@ -196,7 +205,12 @@ def handle_request(call: ToolCall) -> dict:
             )
     runs = _xp_runs(store, n)
     ids = [run["platform_request_id"] for run in runs if run["state"] not in TERMINAL_STATES]
-    followup = bool(
+    task_followup = task_id is not None and bool(
+        store.one(
+            "SELECT 1 FROM task_xp_waits WHERE task_id=? AND experiment=?", (task_id, record["id"])
+        )
+    )
+    orchestrator_followup = bool(
         ids
         and ctx.role == "orchestrator"
         and xp_followups.register(ctx.wstore, actor, ctx.hermes_session_id(), record["id"], ids)
@@ -211,12 +225,12 @@ def handle_request(call: ToolCall) -> dict:
         "credits": credits_module.describe(credits),
         "estimate": _estimate(ctx, credits, plan["episodes"] * len(new_pairs)),
         "warnings": warnings,
-        "followup_scheduled": followup,
+        "followup_scheduled": orchestrator_followup or task_followup,
         "next": (
             "AIDE will watch for updates while awake and check for results after waking, "
-            "then resume this chat when the results are ready."
-            if followup
-            else _next_after_request(ctx, record, ids)
+            "then resume this session when the results are ready."
+            if orchestrator_followup
+            else _next_after_request(ctx, record, ids, task_followup=task_followup)
         ),
     }
 
@@ -487,10 +501,17 @@ def _credits_refused(
     }
 
 
-def _next_after_request(ctx: ToolContext, record: dict, pending_ids: list[str]) -> str:
+def _next_after_request(
+    ctx: ToolContext, record: dict, pending_ids: list[str], *, task_followup: bool
+) -> str:
     if not pending_ids:
         return (
             f"every request is finished; xp.status {{experiment: {record['id']}}} stores the rows"
+        )
+    if task_followup:
+        return (
+            "AIDE will resume your Task when its requests finish. End your run when you have "
+            "no more work. On resume, use xp.status to evaluate and report to the Orchestrator."
         )
     if ctx.role == "researcher":
         # A Task's Experiment needs no ref: the wait defaults to the Task's open requests, so a
@@ -803,8 +824,7 @@ def _report(record: dict, note: str | None = None) -> dict:
         )
     elif pending:
         report["next"] = (
-            f"{len(pending)} requests still run; a Researcher calls task_wait {{task, kind: xp,"
-            " detail} and ends its run, an Orchestrator tries later"
+            f"{len(pending)} requests still run. End your run if a follow-up was scheduled."
         )
     return report
 
