@@ -63,8 +63,9 @@ def rows_from_evaluate_output(
     Lines that do not start with ``{`` are log output and skipped: stderr shares the log the
     output is read from, so a warning or a ``uv`` progress line must not break evaluate. In an
     object line, any other key, or a wrong type, raises ``ValueError`` naming the line, and so
-    does a second line for the same episode and seat (``ingest_rows`` would silently keep only
-    the first, losing every later episode a mixin numbered alike). ``episode_id`` is
+    does a second line for the same episode and seat with other values (``ingest_rows`` would
+    silently keep only the first, losing every later episode a mixin numbered alike); an
+    identical repeat is skipped. ``episode_id`` is
     ``<request_id>:<episode>:s<seat>`` (``<episode>:s<seat>`` without a ``request_id``); pass
     the platform request id so rows from different requests never share an id, because
     ``ingest_rows`` drops a repeated ``episode_id`` as a duplicate. The caller names the
@@ -73,7 +74,7 @@ def rows_from_evaluate_output(
     """
     prefix = f"{request_id}:" if request_id else ""
     rows = []
-    seen: dict[str, int] = {}
+    seen: dict[str, tuple[int, EpisodeRow]] = {}
     for number, line in enumerate(text.splitlines(), start=1):
         if not line.lstrip().startswith("{"):
             continue  # a log line: the command's stderr shares the output (mixin.run_command)
@@ -86,12 +87,15 @@ def rows_from_evaluate_output(
         except ValueError as error:
             raise ValueError(f"evaluate output line {number}: {error}") from error
         if row.episode_id in seen:
+            first_number, first = seen[row.episode_id]
+            if row == first:
+                continue  # the same episode read twice, as from a re-download's manifest lines
             raise ValueError(
                 f"evaluate output line {number} repeats episode {entry['episode']!r} seat"
-                f" {entry['seat']} of line {seen[row.episode_id]}; episode must tell the"
-                " request's episodes apart (its episode request id, or its index)"
+                f" {entry['seat']} of line {first_number} with other values; episode must tell"
+                " the request's episodes apart (its episode request id, or its index)"
             )
-        seen[row.episode_id] = number
+        seen[row.episode_id] = (number, row)
         rows.append(row)
     return rows
 
