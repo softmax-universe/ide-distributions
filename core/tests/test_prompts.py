@@ -104,7 +104,7 @@ def test_section_order_follows_the_design(role):
         "Vocabulary",
         "Your role: the Orchestrator" if role == "orchestrator" else "Your role: a Researcher",
         build.RECORDS_TITLE,
-        *(["Context and the UI"] if role == "orchestrator" else []),
+        *(["Context and the UI", "Your player"] if role == "orchestrator" else []),
         "How to act as your Player",
         *(["The User identity"] if role == "orchestrator" else []),
         "When something breaks",

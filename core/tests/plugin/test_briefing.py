@@ -364,3 +364,46 @@ def test_the_orchestrator_is_told_when_nothing_has_started_setup(tmp_path):
     coworlds.register(ctx.wstore, HARNESS, "cow_fake", folder="cow_fake")
     coworlds.mark_set_up(ctx.wstore, HARNESS, "cow_fake", mixin_version="1", tool_check_status="ok")
     assert "Coworld setup" not in briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
+
+
+# --- the cogent's own name (an `identity` claim the setup wake writes once) -----------------
+
+
+def write_name(ctx, name, summary=None):
+    return claims.write(
+        ctx.store,
+        HARNESS,
+        summary=summary or f"Name: {name}",
+        body="Chosen by the cogent at setup.",
+        tags=["identity"],
+        evidence=[CODE],
+    )
+
+
+def test_the_briefing_shows_the_cogents_name_and_a_missing_name_changes_nothing(tmp_path):
+    ctx = make_ctx(tmp_path)
+    before = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
+    assert "Name:" not in before
+
+    write_name(ctx, "Pip")
+    after = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
+    assert "Name: Pip" in after
+    assert after.replace("Name: Pip\n", "", 1) == before
+
+
+def test_a_later_identity_claim_never_renames_the_cogent(tmp_path):
+    ctx = make_ctx(tmp_path)
+    write_name(ctx, "Pip")
+    write_name(ctx, "Rex")
+    text = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
+    assert "Name: Pip" in text and "Rex" not in text
+
+
+def test_the_setup_wake_chooses_the_name_once_and_never_renames():
+    from research_core.watcher.wakes import TEMPLATES_DIR
+
+    text = " ".join((TEMPLATES_DIR / "setup.md").read_text(encoding="utf-8").split())
+    assert "Choose your own name once" in text
+    assert "keep it; never rename" in text
+    assert "`ui.ask` if they are present" in text
+    assert "tags `identity`" in text

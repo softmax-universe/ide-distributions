@@ -237,6 +237,9 @@ def _workspace_status(inputs: Inputs) -> Section:
         if player
         else "Your Player: id not known yet; platform.results gives it",
     ]
+    name = _own_name(inputs)
+    if name:
+        lines.insert(0, f"Name: {name}")
     stale = _cli_staleness(inputs.wstore)
     if stale:
         lines.append(stale)
@@ -246,6 +249,21 @@ def _workspace_status(inputs: Inputs) -> Section:
     if inputs.store is None:
         lines.append("No session Coworld: open a Coworld session to access game work.")
     return Section(lines=lines)
+
+
+def _own_name(inputs: Inputs) -> str | None:
+    """The cogent's own name: the summary of its oldest active claim tagged ``identity``, which
+    the setup wake writes once. The oldest wins so a later claim never renames it."""
+    from research_core.store import claims
+
+    if inputs.store is None:
+        return None
+    found = claims.search(inputs.store, "", tags=["identity"], include_retired=False, limit=50)
+    if not found:
+        return None
+    oldest = min(found, key=lambda claim: claim["id"])
+    summary = _clip(oldest["summary"], SUMMARY_CHARS)
+    return summary.removeprefix("Name:").strip() or None
 
 
 def _setup_status(inputs: Inputs) -> str | None:
