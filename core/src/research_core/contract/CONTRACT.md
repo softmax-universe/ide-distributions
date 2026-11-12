@@ -22,6 +22,9 @@ A client reads the current files from the installed profile with `research conte
 2. **UI output and state sync.** The `ui` tool and the watcher write UI state and notices into
    the store; every write is an `events` row. The bridge streams the rows to all attached
    clients as Server-Sent Events, so each client renders what it can and all stay in sync.
+   A background wake cannot write into a chat: its `ui.tell` is recorded in the store, and the
+   coordinator delivers it as a queued `followup` message admission into the user's most recent
+   chat for that Coworld, so it reaches the user as an ordinary assistant turn.
 3. **UI actions and edits back.** Answers to the agent's questions are queued to the Session
    like a message; reactions are feedback for the next turn; user edits go through `store apply`.
 
@@ -126,6 +129,12 @@ ends `failed` with the class rather than waiting: the one resume continues the w
 conversation, that message included. `POST /message-cancel` cancels a `waiting` admission at
 once; a cancelled message never waits. It answers `409` for a message that joined another
 admission's live run, since stopping that run would end the other admission too.
+
+The bridge also admits follow-up turns into a chat on its own (origin `followup`): the results of
+an `xp.request` the chat made, and a background wake's `ui.tell` updates. A follow-up fails, waits
+and resumes like a message. Its prompt is a user message in the native transcript that the user
+did not type, so `/messages/context` marks it `runtime_input: true`, and the AIDE backend shows it
+as a continuation, not as the user's message.
 
 `run_id` is the admission's current run: `null` while it is `waiting`, and a new run on each
 resume. A client follows the admission's `status` until it is `completed`,

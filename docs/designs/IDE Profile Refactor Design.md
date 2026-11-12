@@ -1,5 +1,11 @@
 # IDE Profile Refactor Design
 
+> **Superseded.** This is James's partial draft, added October 27, 2026 (#71). It was expanded into the full
+> design [ide-profile-refactor-2026-10-28-final.html](ide-profile-refactor-2026-10-28-final.html),
+> which was built as PR #106 (merged October 29, 2026, Pacific) and which has its own status
+> note on where the code has since moved on. Nothing below describes the current code; see
+> `README.md`, `core/README.md` and `docs/hosting.md` for that. Kept for history.
+
 > **How to use this document.** This is a partial design document. It sets out the general direction and the initial choices for a complete refactor of the IDE profiles in this repository, but it is not a finished design: some parts are settled decisions, some are sketches, and some are open questions. Treat the settled decisions as requirements, and the rest as starting points to develop.
 >
 > The result of this session should be a complete design document, rendered as HTML (use the `doc.generate-design-doc` skill if it is available) and saved in `docs/designs/`, which we will then iterate on together. To get there, read the current profiles and code to ground each part of the design in what exists today, fill in the parts sketched here, and turn the open questions into either decisions with their reasons or explicit questions for the owner. Where this document conflicts with itself or with the code, say so in the design rather than silently picking one side. This session is for designing, not implementing: don't change the profiles' code.

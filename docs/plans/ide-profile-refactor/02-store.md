@@ -1,5 +1,9 @@
 # Entry 2 — the store library
 
+> **Implemented.** Status as of November 12, 2026: built and merged in PR #106 on October 29,
+> 2026 (Pacific). The checkboxes were not kept up to date; the plan is historical. See
+> [STATUS.md](STATUS.md) and `core/README.md` for the current state.
+
 Read `00-overview.md` first. The store is the fixed machinery: SQLite per Coworld plus a small
 workspace store, numbered migrations, an append-only `events` table, token-marked writes with
 detection, a schema check on open, leases with epochs, and per-table rules that refuse bad writes

@@ -37,6 +37,11 @@ class AmbiguousSession(Exception):
     """More than one workspace has records under this Session ID."""
 
 
+class IncompleteSearch(Exception):
+    """Datadog answered a search with a status other than ``done``, such as ``timeout``, or with
+    warnings, so what it returned may be partial."""
+
+
 class LogsSearch:
     """Logs search over the Standard indexes. It waits out a 429 for as long as Datadog says."""
 
@@ -67,6 +72,13 @@ class LogsSearch:
             filters = {"query": query, **window}
             answer = self._post({"filter": filters, "page": page, "sort": "timestamp"})
             meta = answer.get("meta") or {}
+            status = meta.get("status")
+            if status not in (None, "done"):
+                raise IncompleteSearch(f"the search answered status {status!r}")
+            # Datadog warns, even with status ``done``, when the results may be partial.
+            if warnings := meta.get("warnings"):
+                titles = "; ".join(str(w.get("title") or w.get("code")) for w in warnings)
+                raise IncompleteSearch(f"the search answered with warnings: {titles}")
             for row in answer.get("data") or ():
                 yield row["attributes"]["attributes"]
             page["cursor"] = (meta.get("page") or {}).get("after")
@@ -74,8 +86,13 @@ class LogsSearch:
                 return
 
 
+def _quoted(value: str) -> str:
+    """A phrase in Datadog search syntax: a backslash escapes ``\\`` and ``"`` inside quotes."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _any_of(field: str, values: Iterable[str]) -> str:
-    return f"@{field}:(" + " OR ".join(f'"{value}"' for value in sorted(values)) + ")"
+    return f"@{field}:(" + " OR ".join(_quoted(value) for value in sorted(values)) + ")"
 
 
 def _batches(values: Iterable[str]) -> Iterator[list[str]]:
@@ -215,12 +232,13 @@ def _rebuild_request(finder: _Finder, manifest_digest: str) -> dict[str, Any]:
     chain = []
     digest = manifest_digest
     while (link := finder.json(digest)) is not None:
-        chain.insert(0, link)
+        chain.append(link)
         if link["operation"] != "append":
             break
         digest = link["parent_manifest_digest"]
     if link is None:
         return {"request": None, "blocked_by": [digest]}
+    chain.reverse()
     manifest = chain[-1]
     digests = [listed for part in chain for listed in part["messages"]]
     tool_list = finder.json(manifest.get("tool_list_digest"))
@@ -310,8 +328,9 @@ def _order(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """Oldest process first, then by time inside a process, where there is one clock.
 
     A restart makes a new ``source_instance`` and restarts ``sequence``. Within a process
-    ``sequence`` alone is not wire order: an attempt is written when it ends, and an auxiliary call
-    when it starts.
+    ``sequence`` alone is not wire order: a record carries the time of what it describes, not of
+    its writing (a request its start, a reply its end, a committed row its own timestamp, read
+    after the turn's end).
     """
     items = list(records)
     starts: dict[str, str] = {}
@@ -343,6 +362,10 @@ def _of_attempt(record: dict[str, Any]) -> bool:
     """A record of one model attempt. A call that failed before any attempt of it was recorded has
     a ``model_attempt`` / ``failed`` record with no attempt, which stays among the events."""
     return record["action"] == "model_attempt" and "model_attempt_id" in record
+
+
+# What ends an attempt. A partial reply does not: Hermes can retry the stream inside the attempt.
+_ATTEMPT_ENDS = ("response", "failed", "unread")
 
 
 def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> list[dict]:
@@ -378,6 +401,11 @@ def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> li
             chars = _source_chars(finder, manifest, entry["request"], places)
             entry["tokens_by_source"] = _token_rows(chars, reply.get("usage"))
         requests.append(entry)
+    # A reply, failure or partial reply whose request record was lost.
+    for attempt_id in sorted(replies.keys() | partials.keys()):
+        if "request" not in replies[attempt_id]:
+            problem = {"kind": "reply_with_no_request", "model_attempt_id": attempt_id}
+            finder.missing[attempt_id] = [problem]
     return requests
 
 
@@ -424,15 +452,15 @@ def _results_of_rows(operations: list[dict]) -> dict:
 
 
 def _unlisted_message(finder: _Finder, row: dict, result: dict | None) -> dict | None:
-    """A row no request lists: its commit holds its own text, and a tool row takes the result
-    recorded for it. ``None`` when that text is lost or was never recorded."""
-    own = _ref(row, "message")
-    if own:
-        return finder.json(own)
+    """A row no request lists. A tool row takes the result recorded for it, which is the text
+    Hermes passed on and can differ from the row's stored text; its commit's text stands in only
+    when there is no such result. Any other row takes its commit's text. ``None`` when that text
+    is lost or was never recorded."""
     text = finder.text(_ref(result, "result")) if result else None
-    if text is None:
-        return None
-    return {"role": "tool", "tool_call_id": row["tool_call_id"], "content": text}
+    if text is not None:
+        return {"role": "tool", "tool_call_id": row["tool_call_id"], "content": text}
+    own = _ref(row, "message")
+    return finder.json(own) if own else None
 
 
 def _rows(finder: _Finder, operations: list[dict], requests: list[dict]) -> list[dict]:
@@ -515,11 +543,15 @@ def rebuild_session(search: LogsSearch, session_id: str, workspace: str | None =
         for record in operations
         if record["action"] not in ("tool", "message") and not _of_attempt(record)
     ]
+    # No record says how these ended: a kill, a cancel (Hermes's interrupt fires no hook), or a
+    # call still running. None of these is a loss, so they stay out of ``missing``.
+    unended = [r["model_attempt_id"] for r in requests if not r.keys() & _ATTEMPT_ENDS]
     return {
         "session_id": session_id,
         "workspace_id": next(iter(finder.workspaces), None),
         "session_ids": sorted(finder.session_ids),
         "requests": requests,
+        "unended_attempts": unended,
         "rows": rows,
         "unattached_tools": unattached,
         "context": contexts,

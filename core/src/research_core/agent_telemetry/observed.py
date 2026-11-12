@@ -88,6 +88,16 @@ _ALLOWED: dict[str, _Allowed] = {
     ),
     "ui.patch": _Allowed(subject="conversation_id", details=("version",)),
     "notice": _Allowed(fields={"coworld_id": "coworld_id", "reason": "urgency"}),
+    "chat_update.recorded": _Allowed(fields={"coworld_id": "coworld_id", "reason": "category"}),
+    "chat_update.delivered": _Allowed(
+        fields={
+            "coworld_id": "coworld_id",
+            "session_id": "session_id",
+            "admission_id": "admission_id",
+            "reason": "via",
+        },
+        details=("updates",),
+    ),
     "recovery.failed": _Allowed(
         fields={
             "coworld_id": "coworld_id",

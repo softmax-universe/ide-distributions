@@ -25,6 +25,7 @@ DEFAULTS = {
     "recovery.delivery_backoff_seconds": 5,
     "recovery.receipt_timeout_seconds": 60,
     "anti_stall.hour": "04:00",
+    "chat_updates.categories": ["decision", "outcome", "submission", "failure"],
 }
 WORKSPACE_KEYS = {
     "paused",
@@ -33,6 +34,7 @@ WORKSPACE_KEYS = {
     "anti_stall.hour",
     "recovery.delivery_backoff_seconds",
     "recovery.receipt_timeout_seconds",
+    "chat_updates.categories",
 }
 
 
@@ -126,6 +128,9 @@ def test_update_requires_cites_and_reports_type_problems_together(workspace_stor
         ("workspace", "recovery.receipt_timeout_seconds", 1.5, ("int",)),
         ("workspace", "anti_stall.hour", "25:00", ("HH:MM",)),
         ("workspace", "anti_stall.hour", "4am", ("HH:MM",)),
+        ("workspace", "chat_updates.categories", "merge", ("list",)),
+        ("workspace", "chat_updates.categories", ["progress"], ("decision", "progress")),
+        ("coworld", "chat_updates.categories", ["merge"], ("workspace setting",)),
         ("coworld", "submissions.mode", "sometimes", ("ask", "autonomous")),
         ("coworld", "platform_writes.forum", "maybe", ("allowed", "ask", "never")),
         ("coworld", "submissions.until", "tonight", ("timestamp",)),
@@ -189,6 +194,7 @@ def test_update_accepts_the_workspace_keys(workspace_store, harness):
         "recovery.delivery_backoff_seconds": 10,
         "recovery.receipt_timeout_seconds": 90,
         "anti_stall.hour": "23:30",
+        "chat_updates.categories": ["decision", "outcome", "submission", "failure"],
     }
 
 

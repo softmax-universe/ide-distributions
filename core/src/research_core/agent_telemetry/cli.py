@@ -22,7 +22,7 @@ def run_rebuild(args: argparse.Namespace) -> int:
     except rebuild.AmbiguousSession as error:
         print(f"Several workspaces hold this Session ID, pick one: {error}", file=sys.stderr)
         return 2
-    except (OSError, http.client.HTTPException) as error:
+    except (OSError, http.client.HTTPException, rebuild.IncompleteSearch) as error:
         print(f"Could not search Datadog: {error}", file=sys.stderr)
         return 2
     json.dump(report, sys.stdout, ensure_ascii=False)

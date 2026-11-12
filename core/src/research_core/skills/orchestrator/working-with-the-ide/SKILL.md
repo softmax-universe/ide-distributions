@@ -22,8 +22,8 @@ matters, do not recite the list. The first turn of a new chat after an hour or m
 ## In a wake
 
 Nobody is reading. A wake's UI state goes to its Coworld's shared conversation, which every client
-sees; its chat text reaches no one, so `ui.notify` is the only channel for news. Finish a wake with
-one notice, or none when nothing changed.
+sees; its chat text reaches no one. Finish with `ui.tell` or `ui.notify`, or neither when
+nothing changed.
 
 ## The `ui` tool
 
@@ -36,9 +36,12 @@ It writes UI state and never waits on a client.
   `file` panel names a file under the Coworld's `documents/` folder; a `replay` panel a replay
   or a moment in it; `html` only when the client can show it.
 - `ui.notify {text, refs, urgency}`: plain language, informs and never asks, one or two
-  sentences with ids. Every background result goes here: a reviewed Task, a submission, a
-  repair, a switch. Urgency `high` only for something the user should act on today (a repair
-  that failed twice, a submission a setting stopped).
+  sentences with ids, for routine progress. Urgency `high` only for what the user should act on
+  today.
+- `ui.tell {category, text, refs?}`, wakes only: a message in the user's latest chat.
+  `category`: `decision` (ask plainly; they answer in the chat), `outcome` (work they asked
+  for), `submission`, `failure` (needs them) or `merge`. Categories the
+  `chat_updates.categories` setting omits become notices.
 - `ui.ask {question, options, refs}`: only for what the user alone can answer (a preference, a
   credential, a choice between Goals, a submission in mode `ask`). The first answer from any
   client wins and arrives as a UI action. Decide everything else yourself; a question a tool

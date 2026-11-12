@@ -1,12 +1,13 @@
 """The ``ui`` tool (design A.8, A.10): what the Orchestrator shows, tells and asks the user.
 
 Everything is a store write, never a wait on a browser: ``show`` and ``panel_set`` patch the
-conversation's UI state document, ``ask`` opens a question in it, and ``notify`` writes a
-notice. The conversation key follows A3.5: a chat Session writes under its own session id; a
-wake Session writes under its Coworld's shared conversation ``coworld:<id>``, and one with no
-Coworld under ``workspace``. The ``agent-context`` panel always lives in the Coworld's shared
-conversation, where the watcher keeps its computed part: a write sets only the needs. UI state and
-notices live in the workspace store.
+conversation's UI state document, ``ask`` opens a question in it, ``notify`` writes a notice,
+and ``tell`` (wakes only) records an update the coordinator delivers into the user's chat
+(``store/chat_updates.py``). The conversation key follows A3.5: a chat Session writes under its
+own session id; a wake Session writes under its Coworld's shared conversation ``coworld:<id>``,
+and one with no Coworld under ``workspace``. The ``agent-context`` panel always lives in the
+Coworld's shared conversation, where the watcher keeps its computed part: a write sets only the
+needs. UI state, notices and chat updates live in the workspace store.
 """
 
 from __future__ import annotations
@@ -18,7 +19,8 @@ from pathlib import Path
 from typing import Any
 
 from research_core import refs
-from research_core.store import notices, sessions, ui_state
+from research_core.store import chat_updates, notices, sessions, ui_state
+from research_core.store.registry import CHAT_UPDATE_CATEGORIES
 from research_core.tools import _args as a
 from research_core.tools.base import ActionSpec, ToolCall, ToolContext, ToolError, ToolSpec, tool
 
@@ -28,6 +30,23 @@ AGENT_CONTEXT_PANEL = "agent-context"
 ANSWER_NOTE = "the answer arrives as a UI action; if no client can answer, ask in chat"
 ANSWER_NOTE_NO_CHAT = (
     "nobody reads this Session: the answer arrives later as a UI action; end the run"
+)
+TELL_IN_CHAT = (
+    "you are in the chat; reply here, in your answer. ui.tell is for background wakes, whose "
+    "Session nobody reads"
+)
+TELL_NOT_A_WAKE = (
+    "ui.tell is for background wake Sessions and this Session is not one: answer in its "
+    "conversation, or use ui.notify"
+)
+TELL_NEXT = (
+    "recorded; it reaches the user's most recent chat in this Coworld once your updates have been "
+    "quiet for 2 minutes (10 at most), or becomes a notice when there is no chat. Do not repeat "
+    "it with ui.notify"
+)
+TELL_AS_NOTICE = (
+    "written as a notice, not a chat message: the chat_updates.categories setting does not include "
+    "{category}, so it will not interrupt the chat. Do not repeat it"
 )
 
 
@@ -70,6 +89,8 @@ def handle(call: ToolCall) -> dict:
             urgency=call.get("urgency") or "normal",
         )
         return {"record": record}
+    if call.action == "tell":
+        return tell(ctx, call.get("category"), call.get("text"), call.get("refs") or [])
     conversation = conversation_for(ctx)
     at = ctx.wstore.now()
     if call.action == "show":
@@ -123,6 +144,28 @@ def handle(call: ToolCall) -> dict:
             "next": ANSWER_NOTE if conversation == ctx.hermes_session_id() else ANSWER_NOTE_NO_CHAT,
         }
     raise AssertionError(call.action)
+
+
+def tell(ctx: ToolContext, category: Any, text: Any, given_refs: list[str]) -> dict:
+    """Record an update for the user's chat; only a wake may, because a chat answers itself.
+    A category the ``chat_updates.categories`` setting leaves out is written as a notice, and
+    the result says so."""
+    session_id = ctx.hermes_session_id()
+    session = sessions.read(ctx.wstore, session_id) if session_id else None
+    if session is None or session["kind"] != "wake":
+        in_chat = session is not None and session["kind"] == "chat"
+        raise ToolError(TELL_IN_CHAT if in_chat else TELL_NOT_A_WAKE)
+    result = chat_updates.add(
+        ctx.wstore,
+        ctx.actor,
+        coworld_id=session["coworld_id"],
+        category=category,
+        text=text,
+        refs=given_refs,
+    )
+    if "notice" in result:
+        return {**result, "next": TELL_AS_NOTICE.format(category=category)}
+    return {**result, "next": TELL_NEXT}
 
 
 def open_ask_about(
@@ -208,7 +251,8 @@ SPEC = tool(
         description=(
             "What the user sees in a client. Bring a record or view into view, send a notice, or "
             "ask a question the UI answers. Writes UI state; never waits on a client. Nobody "
-            "reads a wake's chat, so a wake reports with a notice."
+            "reads a wake's chat: a wake uses tell for what the user should hear now and notify "
+            "for routine progress."
         ),
         handler=handle,
         roles=ORCHESTRATOR,
@@ -250,6 +294,22 @@ SPEC = tool(
                     "urgency": a.string("Default normal.", enum=list(notices.URGENCIES)),
                 },
                 ("text",),
+            ),
+            ActionSpec(
+                "tell",
+                "From a background wake only: say something in the user's chat. Their latest "
+                "chat gets it as a message soon after; refused in a chat, where you reply.",
+                {
+                    "category": a.string(
+                        "Why the user should hear it now: decision (only they can decide; ask "
+                        "it plainly), outcome (work they asked for finished), submission, "
+                        "failure (something broke that needs them) or merge (a Version merged).",
+                        enum=list(CHAT_UPDATE_CATEGORIES),
+                    ),
+                    "text": a.string("What the user should hear now, in plain language."),
+                    "refs": a.strings("Records it is about, such as T-3."),
+                },
+                ("category", "text"),
             ),
             ActionSpec(
                 "ask",

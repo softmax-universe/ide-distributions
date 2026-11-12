@@ -26,8 +26,8 @@ a notice will follow; do not hold the chat open waiting.
 - Panels of every kind in the contract (`markdown`, `record`, `table`, `checklist`, `file`,
   `link`, `replay`; `html` only when its capabilities say so). `ui.show {ref}` opens a record on
   the desktop.
-- `ui.notify` notices appear in the chat and on the desktop; a wake's notice is how a
-  Researcher's result reaches the user here.
+- `ui.notify` notices appear in the chat and on the desktop. A wake's `ui.tell` arrives as a
+  message in the user's latest chat.
 - `ui.ask` renders with its options as buttons; the answer comes back as a UI action.
 
 ## Local files are not mounted

@@ -174,9 +174,8 @@ unattributed. A part that could not be found has `source_type: unattributed` and
 
 `capture_request` writes an operation with `action: model_attempt`, `stage: request` and a `content_refs` entry named
 `request_manifest`. `capture_response` writes one with `stage: response`, an entry named `message` for the native assistant
-message, and `partial`, which is true when a stream failed and the message is what arrived before that. A reply that is not a
-message, such as a 200 of plain text, is stored as `{"unparsed_reply": <what came back>}`. Each carries the fields its caller
-passed. All other operations name their own action and stage.
+message, and `partial`, which is true when a stream failed and the message is what arrived before that. Each carries the
+fields its caller passed. All other operations name their own action and stage.
 
 ## What the gateway records
 
@@ -195,7 +194,7 @@ reader follows `parent_session_id` on the `compaction` records.
 | `tool` / `result`                                     | `result`                     | The result as the model got it, from the first request that sends it, with its `hermes_message_id` |
 | `message` / `committed`                               | `message`                    | A row of `state.db`, read on the writer's thread after each turn's end (`on_session_end`), with `hermes_message_id`. `occurred_at` is the row's own timestamp. `message` holds the row's `role`, `content`, `tool_calls` and `reasoning_content`, because a turn's last rows reach no later request |
 | `approval` / `requested`, `decided`                   | `command`, `description`     | A human approval                                                      |
-| `system_prompt` / `built`, `compaction` / `committed` |                              | The prompt was assembled; the history was rewritten                   |
+| `compaction` / `committed`                            |                              | The history was rewritten                                             |
 | `session` / `started`, `turn` / `ended`, `subagent` / `started`, `stopped` | | Lifecycle |
 | `diagnostic` / `<log level>`                          | `message`                    | One log record, other than the access line of a successful seam poll (a 200 for `GET /p/<profile>/v1/runs/<id>` from its urllib client). `native_event_type` is the logger |
 

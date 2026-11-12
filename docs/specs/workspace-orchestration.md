@@ -4,6 +4,10 @@ The workspace coordinator owns execution admission, task transitions, recovery, 
 The Orchestrator selects tasks, worker profiles, context, and rationale. Workers report results
 through durable commands. Neither model selects replacement execution identities.
 
+**Status, November 12, 2026:** implemented. It landed as PR #146 on November 3, 2026
+(Pacific), with later changes in #156 and #180. Its links and the summary in `docs/hosting.md`
+("Coordinator and pause") agree with the code; the spec was not re-checked line by line.
+
 This is the implemented lifecycle contract. Merging relevant distribution changes to `main`
 triggers image publication and the hosted qualification pipeline. These changes are active
 through that release path; they are not a dormant migration.
@@ -110,7 +114,8 @@ Inference exhaustion is an intentional wait. It retains the queued identity with
 failure attempts. A spent-key wait ends when the normal lease owner installs a different key;
 provider backoff can end at its declared deadline.
 
-A chat message is the one admission that can outlive a run. When its run fails on the budget, a
+A chat message, and a follow-up admitted into a chat (origin `followup`: `xp.request` results
+or a wake's `ui.tell` updates), are the only admissions that can outlive a run. When its run fails on the budget, a
 rate limit or a provider outage (`run_failures.py`), the same `op_id` waits and resumes as a new
 run with a new native key and a continuation prompt, because the client follows the admission.
 This is a new execution, not a replay of the old one. The hold is the only change that may clear
@@ -178,6 +183,10 @@ The coordinator does not claim arbitrary shell or remote effects are reversible.
 change, private runtime patch, or alternate credential path supplies missing guarantees.
 
 ## Merge and deployment sequencing
+
+Done: the stack landed as one PR, #146, on November 3, 2026 (Pacific). The landing instruction
+below is kept as written. The release and qualification steps after it describe the release
+path; the Metta side of that path was not re-checked here.
 
 Merge the complete reviewed stack through one landing PR targeting `main`. Preserve the reviewed
 layer commits and update `main` once; do not merge review layers sequentially. Relevant `main`

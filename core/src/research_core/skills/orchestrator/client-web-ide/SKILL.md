@@ -29,7 +29,8 @@ points (a Version built, an Experiment started), not on a timer.
 - `ui_panel_set` fills a custom tab: `markdown`, `record`, `table`, `checklist`, `file` (a
   document under the Coworld's `documents/`), `link`, `replay` (an episode, or the moment the
   user is looking at), and `html` only when the capabilities include it; the client sandboxes it.
-- `ui.notify` lands in the IDE's notice area and, unread, in the next turn's context.
+- `ui.notify` lands in the IDE's notice area and, unread, in the next turn's context. A wake's
+  `ui.tell` arrives as a message in the user's latest chat.
 - `ui.ask` renders as a question card; the first answer from any client wins.
 
 ## The selected policy and league

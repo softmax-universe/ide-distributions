@@ -539,10 +539,11 @@
 <article id="doc">
 
   <header class="masthead">
-    <span class="eyebrow">Design · 2026-10-28 · Proposed</span>
+    <span class="eyebrow">Design · 2026-10-28 · Not adopted (status as of 2026-11-12)</span>
     <h1>Writable Agent Tooling in Hosted Hermes Workspaces</h1>
     <p class="context">Tooling that hosted agents can change, keep across releases, and run.</p>
   </header>
+<div class="callout callout-warn"><span class="callout-label">Not adopted · November 12, 2026</span>This design was written against the previous profiles (<code>ide_research_core</code>, game folders and profile links into the image), which the October 29 rebuild (#106) removed. The rebuild chose the opposite for the profile machinery: the store library, watcher, plugin and tool code stay read-only, and everything agents work on (game code, mixins, game tools, caches and skills) is writable in the workspace (decision Q24 in <a href="ide-profile-refactor-2026-10-28-final.html">ide-profile-refactor-2026-10-28-final.html</a>). Hosting mounts the core checkout read-only and <code>workspace.doctor</code> reports it as a problem when it is writable (<a href="../hosting.md">docs/hosting.md</a>, "What the image must contain"; <code>core/src/research_core/tools/workspace.py:319</code>). Profile folders are not git working trees, and releases do not merge into an agent's copy. The GitHub tool was kept, as read-only access through the Softmax broker (<code>core/src/research_core/tools/github.py</code>). For current behaviour read <a href="../hosting.md">docs/hosting.md</a> and <a href="../../core/README.md">core/README.md</a>.</div>
 
   <section id="summary">
     <h2>Executive Summary</h2>

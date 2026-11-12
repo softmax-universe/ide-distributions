@@ -1,7 +1,20 @@
 # Multi-game research and game creation
 
-Status: implemented on branch `multi-game-research` (2026-10-23). Living document: update it
-when the code moves.
+> **Retired (2026-11-12).** This design was implemented on branch `multi-game-research`
+> (2026-10-23) in the previous profiles, and all of that code was removed on October 29, 2026
+> by the profile rebuild (#106): `ide_research_core/games/scope.py`, `sources.py`,
+> `games/_template/`, the `game-create` skill, `game_install` and the `RESEARCH_GAME` variables
+> no longer exist. The rebuild
+> ([ide-profile-refactor-2026-10-28-final.html](ide-profile-refactor-2026-10-28-final.html))
+> meets the same need differently: one workspace folder per Coworld
+> (`core/src/research_core/layout.py`), and the `workspace` tool's `coworld_switch` action
+> (`core/src/research_core/tools/workspace.py:39`), which fetches the Coworld's source at the
+> pinned commit and imports its mixin with prefixed skills
+> (`core/src/research_core/coworld_setup.py`). There is no runtime game-folder scaffold; a
+> Coworld without a mixin gets the `mixin-from-scratch` skill instead. Nothing below describes
+> the current code; see `core/README.md` and `README.md` for that. Kept for history.
+
+Original status: implemented on branch `multi-game-research` (2026-10-23).
 
 ## Problem
 

@@ -163,7 +163,7 @@ def test_only_a_chat_is_told_to_ask_in_chat(tmp_path):
         )
     assert "ask in chat" in session_context.render(ctx, "chat2")
     wake = session_context.render(ctx, "wake1")
-    assert "ask in chat" not in wake and "nobody reads" in wake and "ui.ask" in wake
+    assert "ask in chat" not in wake and "nobody reads" in wake and "ui.tell" in wake
     assert "No session context" not in wake
     assert f"Work only in {ctx.coworld().root}." in wake
     researcher = ToolContext.from_env("researcher", ctx.env)

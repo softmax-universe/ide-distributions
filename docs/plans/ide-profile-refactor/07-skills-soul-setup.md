@@ -1,5 +1,10 @@
 # Entry 7 — forum and wiki tools, skills and client guides, SOUL generation, task types, setup wake, lesson import, CI checks, lock refresh, prepare final, docs
 
+> **Implemented.** Status as of November 12, 2026: built and merged in PR #106 on October 29,
+> 2026 (Pacific). The checkboxes were not kept up to date; the plan is historical. Since then
+> #198 reworked the tools, skills, prompts and docs so they agree. See [STATUS.md](STATUS.md),
+> `core/README.md` and the profile READMEs for the current state.
+
 Read `00-overview.md`, then entries 2–6. This entry makes the profiles *teachable*: the prompt
 text, the skills, the task type instructions and the wake prompts, plus the last two tools, the
 setup wake's model-side procedure, the release checks and the documentation.
