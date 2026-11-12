@@ -38,8 +38,8 @@ def setting_allows(call: ToolCall, key: str) -> None:
     not_a_message = f" ({cites} is a record, not their message)" if cites else ""
     if value == "ask":
         raise ToolError(
-            f"{key} is 'ask': ask the user first (ui.ask), then call again with cites naming "
-            f"their answer{not_a_message}",
+            f"{key} is 'ask': ask the user first (ui.ask; from a wake, a decision ui.tell), "
+            f"then call again with cites naming their answer{not_a_message}",
             ask_user=True,
             setting=key,
         )

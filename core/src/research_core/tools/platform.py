@@ -10,8 +10,11 @@ route, status and request id. Both roles have the tool; the Researcher acts as t
 fall back to the User identity).
 
 Files land under the Coworld's ``documents/`` folder: ``policies/<policy version id>.txt``
-for UTF-8 text (``.bin`` for binary files) and
-``replays/<episode>.replay`` (pinned as ``replay`` / ``episode:<id>``). Results are plain dicts.
+for UTF-8 text (``.bin`` for binary files), ``replays/<episode>.replay`` (pinned as
+``replay`` / ``episode:<id>``) and ``results/<episode>.json``.
+``episode_summaries`` reads up to 50 episodes in one request; ``replays`` and ``episode_results``
+fetch up to 20 artifacts at once (``platform.wait.read_platform_batch``) and report a failure per
+episode instead of refusing the call. Results are plain dicts.
 Runs in the workspace environment (``executor="workspace"``).
 """
 
@@ -431,6 +434,9 @@ def episode_summaries(call: ToolCall, platform: Platform) -> dict:
 
 
 def replay(call: ToolCall, platform: Platform) -> dict:
+    """Fetch an episode's replay once: the file lands in ``documents/replays/`` and a pin keyed
+    ``replay`` / ``episode:<id>`` records it; a later call returns the pin, and a pin whose file
+    is gone is fetched again to the same path."""
     episode_id = _id(call.get("episode"))
     pinned = _replay_pin(call.ctx, episode_id)
     if pinned is not None and Path(pinned["download"]["path"]).is_file():

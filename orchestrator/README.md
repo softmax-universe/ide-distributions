@@ -44,7 +44,7 @@ moves open chats onto a release's changed tools and instructions, builds the wor
 ## The watcher
 
 `research serve` owns observation and domain transitions. Its periodic workflow includes store checks, champion
-sync, resolved waits, run recovery, Researcher messages, merges of accepted work, Goal
+sync, resolved waits, run recovery, Researcher messages, wakes' `ui.tell` updates into the user's chat, merges of accepted work, Goal
 bookkeeping, capability checks, Task dispatch, wakes (setup, review, management, assignment,
 one daily anti-stall per Coworld with an active Goal: Sessions of this profile), the heartbeat and the agent-context panel. `research watcher status`
 prints the last tick; `workspace.doctor` reports it to the agent.
