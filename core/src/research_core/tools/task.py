@@ -17,7 +17,7 @@ from typing import Any
 
 from research_core import gitops, refs, task_types
 from research_core.coordinator import Coordinator
-from research_core.store import admissions, sessions, settings, tasks
+from research_core.store import admissions, experiments, sessions, settings, tasks
 from research_core.store.registry import TASK_STATUSES, TASK_TYPES, WAIT_KINDS
 from research_core.tools import _args as a
 from research_core.tools.base import ActionSpec, ToolCall, ToolContext, ToolError, ToolSpec
@@ -299,13 +299,15 @@ def handle(call: ToolCall) -> dict:
                 "a user wait needs ref: the setting or Task (T-n) the user's answer changes; "
                 "nothing else ends it. For a decision, use task_ask"
             )
+        if call.get("kind") == "xp":
+            ref = xp_wait_refs(store, n, ref)
         record = tasks.wait(
             store,
             actor,
             n,
             kind=call.get("kind"),
             detail=call.get("detail"),
-            ref=call.get("ref"),
+            ref=ref,
         )
         return {"record": record}
     if call.action == "ask":
@@ -319,6 +321,36 @@ def handle(call: ToolCall) -> dict:
         )
         return {"record": record}
     raise AssertionError(call.action)
+
+
+def xp_wait_refs(store, task_id: int, ref: Any) -> list[str]:
+    """The request ids an xp wait watches: those given, or by default the open requests of the
+    Task's Experiments.
+
+    Every id given must be one an Experiment run records. The watcher polls each id until it is
+    terminal, so an id the platform never issued (a typo, or a list sent as JSON text such as
+    '["xreq_1"]') used to keep the Task asleep for good; it is refused here instead, naming the
+    ids that would work.
+    """
+    open_ids = experiments.open_requests(store, task_id)
+    if ref in (None, "", []):
+        if not open_ids:
+            raise ToolError(
+                f"T-{task_id}'s Experiments have no open XP requests, so nothing would end this"
+                " wait; xp.status {experiment} reads finished ones, or give ref: the request ids"
+            )
+        return open_ids
+    given = [str(item) for item in (ref if isinstance(ref, list) else [ref])]
+    recorded = experiments.recorded_requests(store, given)
+    unknown = [item for item in given if item not in recorded]
+    if unknown:
+        raise ToolError(
+            f"no Experiment run records the XP request {', '.join(map(repr, unknown))}; give ref"
+            " as a list of request ids from xp.request, or omit ref to wait on"
+            f" T-{task_id}'s open requests ({', '.join(open_ids) or 'none'})",
+            open_requests=open_ids,
+        )
+    return given
 
 
 def execute(call: ToolCall) -> dict:
@@ -536,7 +568,8 @@ SPEC = durable_tool(
                     "kind": a.string("What kind of thing it waits on.", enum=TASK_WAIT_KINDS),
                     "detail": a.string("What exactly it waits for."),
                     "ref": a.any_of(
-                        "What to watch: a pid (process), request ids (xp), a policy version id "
+                        "What to watch: a pid (process), request ids (xp; omit for the Task's "
+                        "open requests), a policy version id "
                         "(submission), a route (permit), a setting key or Task (user; required: "
                         "nothing else ends a user wait).",
                         a.STRING,

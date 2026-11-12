@@ -520,7 +520,6 @@ def _evaluate_py() -> str:
                     "seed": episode.get("seed", results.get("seed")),
                     "status": "failed" if episode.get("failed") else "completed",
                     "metrics": {name: episode[name] for name in METRICS},
-                    "source": str(path),
                 })
             return out
 

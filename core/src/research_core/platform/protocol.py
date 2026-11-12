@@ -89,6 +89,7 @@ class XpRequest:
     created_at: str | None = None
     error: str | None = None
     title: str | None = None
+    coworld_version: str | None = None  # the game version the platform runs the request on
 
     @property
     def terminal(self) -> bool:

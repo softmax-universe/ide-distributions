@@ -4,7 +4,6 @@ status with download, evaluate and stored rows, a broken evaluate, a backgrounde
 from __future__ import annotations
 
 import json
-import textwrap
 import time
 
 import pytest
@@ -41,22 +40,8 @@ METRICS = [
     {"name": "score", "direction": "up", "role": "primary", "min_effect": 1.0},
     {"name": "errors", "direction": "down", "role": "guardrail", "tolerance": 1.0},
 ]
-# The fixture's evaluate.py takes the results folder on its command line and prints a
-# ``source`` key that ``ingest.rows_from_evaluate_output`` refuses (unknown keys), so the test
-# mixin passes ``$XP_RESULTS`` and pipes the rows through a filter that drops the key.
-EVALUATE_COMMAND = (
-    'python3 mixin/tools/evaluate.py "$XP_RESULTS" | python3 mixin/tools/rows_only.py'
-)
-ROWS_ONLY = textwrap.dedent(
-    """\
-    import json, sys
-    for line in sys.stdin:
-        if line.strip():
-            row = json.loads(line)
-            row.pop("source", None)
-            print(json.dumps(row, sort_keys=True))
-    """
-)
+# The fixture's evaluate.py, which prints every seat of every downloaded episode.
+EVALUATE_COMMAND = 'python3 mixin/tools/evaluate.py "$XP_RESULTS"'
 
 
 def policy_bytes(aggression: int, patience: int) -> bytes:
@@ -91,7 +76,6 @@ def mixin_dir(ctx):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
     set_evaluate_command(code / "mixin", EVALUATE_COMMAND)
-    (code / "mixin" / "tools" / "rows_only.py").write_text(ROWS_ONLY)
     return code / "mixin"
 
 
@@ -468,6 +452,8 @@ def test_a_tasks_experiment_is_refused_for_anyone_but_its_holder_before_any_requ
         session_id="r1",
     )
     assert held["ok"] is True, held
+    # The wait takes the Task's open requests by itself, so the model copies no ids.
+    assert held["next"].startswith("task_wait {task, kind: xp, detail: 'XP requests for X-1'}")
 
 
 def test_ask_above_warns_the_orchestrator_and_asks_the_researcher(run, ctx, uploaded):
@@ -539,6 +525,7 @@ def test_status_completes_downloads_evaluates_and_stores_rows(run, ctx, running,
         run_record = by_arm[arm]
         assert run_record["state"] == "completed" and run_record["validity"] == "valid"
         assert run_record["episodes_completed"] == 1
+        assert run_record["results"]["episodes_failed"] == 0
         request_id = run_record["platform_request_id"]
         rows = run_record["results"]["rows"]
         assert len(rows) == 1
@@ -591,28 +578,75 @@ def test_status_keeps_only_our_seats_rows(run, ctx, running, mixin_dir, tmp_path
     (run_record,) = result["runs"]
     rows = run_record["results"]["rows"]
     assert [row["seats"] for row in rows] == [[0]] and rows[0]["metrics"]["score"] == 1.0
-    other = run_record["results"]["other_seat_rows"]
-    assert other["count"] == 1 and other["seats"] == [1]
+    assert run_record["results"]["other_seats"]["rows"] == 1
 
 
-def test_rows_without_seat_zero_are_kept_as_they_are():
-    from research_core.stats.ingest import EpisodeRow
+def test_only_our_seat_counts_and_the_opponents_seats_are_kept_apart(run, ctx, running, mixin_dir):
+    """The fake scores both seats and the fixture's evaluate prints both. Seat 1 is pv_other's:
+    counted as ours it would pull both arms toward the opponent (a false tie)."""
+    requested = run("xp", {"action": "request", "experiment": "X-1", **ROSTER, "seeds": [1]})
+    assert requested["runs"][0]["results"]["seat"] == 0
+    assert requested["runs"][0]["results"]["roster"]["1"] == "pv_other"
+    result = run("xp", {"action": "status", "experiment": "X-1"})
+    for run_record in result["runs"]:
+        results = run_record["results"]
+        assert [row["seats"] for row in results["rows"]] == [[0]]
+        assert results["other_seats"]["rows"] == 1
+        with open(results["other_seats"]["file"], encoding="utf-8") as stream:
+            (other,) = [json.loads(line) for line in stream]
+        assert other["seats"] == [1] and other["policy_version"] == "pv_other"
+        assert other["episode_id"] == f"{run_record['platform_request_id']}:0:s1"
+    closed = run("experiment", {"action": "close", "experiment": "X-1"})
+    assert closed["ok"] is True, closed
+    assert closed["evaluation"]["rows"]["dropped"]["other_seats"] == 0
+    errors = next(m for m in closed["record"]["results"]["measurements"] if m["metric"] == "errors")
+    by_arm = {r["arm"]: r["results"]["rows"][0]["metrics"]["errors"] for r in result["runs"]}
+    assert (errors["baseline"], errors["candidate"]) == (by_arm["baseline"], by_arm["candidate"])
 
-    def row(seat):
-        return EpisodeRow(
-            episode_id=f"e:s{seat}",
-            game_version="1",
-            policy_version="V-1",
-            seed=1,
-            seats=(seat,),
-            opponents=(),
-            metrics={"score": 1.0},
-            status="completed",
-        )
 
-    rows = [row(1), row(2)]
-    assert xp_tool.our_seat_rows(rows) == (rows, [])
-    assert xp_tool.our_seat_rows([row(0), row(3)]) == ([row(0)], [row(3)])
+def test_rows_carry_the_game_version_the_platform_played(run, ctx, running, mixin_dir):
+    """MIXIN.md says what the mixin was written for; after a Coworld release it is stale."""
+    manifest = mixin_dir / "MIXIN.md"
+    stale = manifest.read_text().replace('coworld_version: "1"', 'coworld_version: "0"')
+    assert 'coworld_version: "0"' in stale
+    manifest.write_text(stale)
+    args = {"action": "request", "experiment": "X-1", **ROSTER, "seeds": [1], "arms": ["candidate"]}
+    (created,) = run("xp", args)["runs"]
+    assert created["results"]["coworld_version"] == fake.COWORLD_VERSION
+    (run_record,) = run("xp", {"action": "status", "experiment": "X-1"})["runs"]
+    assert run_record["results"]["rows"][0]["game_version"] == fake.COWORLD_VERSION
+
+
+def test_a_league_sampled_seat_is_labelled_as_such(run, ctx, running, mixin_dir):
+    args = {"action": "request", "experiment": "X-1", "seeds": [7], "arms": ["candidate"]}
+    run("xp", {**args, "league": fake.LEAGUE_ID})
+    (run_record,) = run("xp", {"action": "status", "experiment": "X-1"})["runs"]
+    assert run_record["results"]["roster"] == {"0": run_record["results"]["policy_version_id"]}
+    with open(run_record["results"]["other_seats"]["file"], encoding="utf-8") as stream:
+        (other,) = [json.loads(line) for line in stream]
+    assert other["policy_version"] == xp_tool.LEAGUE_SAMPLED
+
+
+def test_evaluate_without_a_row_for_our_seat_is_broken(run, ctx, running, mixin_dir):
+    """Rows of the other seats alone are never counted as ours."""
+    set_evaluate_command(mixin_dir, f'{EVALUATE_COMMAND} | grep -v "\\"seat\\": 0"')
+    args = {"action": "request", "experiment": "X-1", **ROSTER, "seeds": [1], "arms": ["candidate"]}
+    run("xp", args)
+    (run_record,) = run("xp", {"action": "status", "experiment": "X-1"})["runs"]
+    assert run_record["validity"].startswith("invalid: evaluate output: no row for seat 0")
+    assert "rows" not in run_record["results"]
+    assert capabilities.read(ctx.store, "evaluate")["status"] == "broken"
+
+
+def test_evaluate_is_told_our_seat_and_policy_version(run, ctx, running, mixin_dir):
+    told = 'echo "seat=$XP_SEAT pv=$XP_POLICY_VERSION_ID" > "$XP_RESULTS/told.txt"'
+    set_evaluate_command(mixin_dir, f"{told}; {EVALUATE_COMMAND}")
+    args = {"action": "request", "experiment": "X-1", **ROSTER, "seeds": [1], "arms": ["candidate"]}
+    (created,) = run("xp", args)["runs"]
+    run("xp", {"action": "status", "experiment": "X-1"})
+    dest = ctx.coworld().documents / "xp" / "X-1" / created["platform_request_id"]
+    told_text = (dest / "told.txt").read_text()
+    assert told_text == f"seat=0 pv={created['results']['policy_version_id']}\n"
 
 
 def test_status_marks_a_broken_evaluate_invalid_and_reports_the_capability(
@@ -640,7 +674,25 @@ def test_status_marks_a_broken_evaluate_invalid_and_reports_the_capability(
     )
     result = run("xp", {"action": "status", "experiment": "X-1"})
     second = [r for r in result["runs"] if r["seed"] == 2][0]
-    assert second["validity"].startswith("invalid: evaluate output: evaluate output line 1")
+    assert second["validity"].startswith("invalid: evaluate output: no row for seat 0")
+
+    set_evaluate_command(mixin_dir, "echo '{\"episode\": 0,'")
+    run(
+        "xp",
+        {"action": "request", "experiment": "X-1", **ROSTER, "seeds": [3], "arms": ["candidate"]},
+    )
+    result = run("xp", {"action": "status", "experiment": "X-1"})
+    third = [r for r in result["runs"] if r["seed"] == 3][0]
+    assert third["validity"].startswith("invalid: evaluate output: evaluate output line 1")
+
+
+def test_log_lines_on_stderr_do_not_break_evaluate(run, ctx, running, mixin_dir):
+    """stderr shares the log; a uv or warning line there is not a broken evaluate."""
+    set_evaluate_command(mixin_dir, f'echo "Installed 3 packages" >&2; {EVALUATE_COMMAND}')
+    args = {"action": "request", "experiment": "X-1", **ROSTER, "seeds": [1], "arms": ["candidate"]}
+    run("xp", args)
+    (run_record,) = run("xp", {"action": "status", "experiment": "X-1"})["runs"]
+    assert run_record["validity"] == "valid" and len(run_record["results"]["rows"]) == 1
 
 
 def test_status_backgrounds_a_slow_evaluate_and_resumes(run, ctx, running, mixin_dir, monkeypatch):
@@ -763,6 +815,17 @@ def test_a_repaired_evaluate_makes_a_failed_run_good_again(run, ctx, running, mi
     assert repaired["runs"][0]["validity"] == "valid"
     assert repaired["runs"][0]["results"]["rows"]
     assert repaired["complete"] is True
+
+
+def test_a_failure_the_watcher_recorded_still_makes_the_run_invalid(run, ctx, running):
+    """waits._xp writes the platform state onto runs it may write. A failed state it wrote used
+    to leave the run valid with no rows, so the Experiment never settled."""
+    args = {"action": "request", "experiment": "X-1", **ROSTER, "seeds": [1], "arms": ["candidate"]}
+    (created,) = run("xp", args)["runs"]
+    experiments.update_run(ctx.store, Actor.harness(), created["id"], state="failed")
+    result = run("xp", {"action": "status", "experiment": "X-1"})
+    assert result["runs"][0]["validity"] == "invalid: request failed"
+    assert result["complete"] is True
 
 
 def test_a_user_marked_invalid_run_stays_settled(run, ctx, running):

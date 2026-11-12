@@ -181,6 +181,28 @@ def test_rows_from_evaluate_output_without_request_id():
     assert rows_from_evaluate_output("\n  \n", policy_version="p", game_version="65") == []
 
 
+def test_lines_that_are_not_json_objects_are_log_output():
+    """stderr shares the log evaluate's output is read from: a uv or warning line is no row."""
+    output = "\n".join(
+        [
+            "Installed 3 packages in 4ms",
+            GOOD_LINE,
+            "warning: something deprecated",
+            "[1, 2]",
+        ]
+    )
+    rows = rows_from_evaluate_output(output, policy_version="p", game_version="65")
+    assert [r.episode_id for r in rows] == ["0:s0"]
+
+
+def test_an_identical_repeated_line_is_read_once():
+    """A re-download appends to the download manifest, so a mixin may read an episode twice."""
+    rows = rows_from_evaluate_output(
+        GOOD_LINE + "\n" + GOOD_LINE, policy_version="p", game_version="65"
+    )
+    assert [r.episode_id for r in rows] == ["0:s0"]
+
+
 def test_request_id_keeps_episode_ids_distinct_across_requests():
     """Without the request id, two requests' episode 0 share an id and ingest drops one."""
     base = rows_from_evaluate_output(GOOD_LINE, policy_version="pv-base", game_version="65")
@@ -212,8 +234,11 @@ def test_rows_from_evaluate_output_feed_ingest_and_pair():
 @pytest.mark.parametrize(
     "line, problem",
     [
-        ("not json", "line 2 is not JSON"),
-        ("[1, 2]", "line 2: not a JSON object"),
+        ('{"episode": 1, "seed": 1,', "line 2 is not JSON"),
+        (
+            '{"episode": 0, "seed": 1, "seat": 0, "metrics": {"score": 2}}',
+            "line 2 repeats episode 0 seat 0 of line 1 with other values",
+        ),
         ('{"seed": 1, "seat": 0, "metrics": {}}', "missing key 'episode'"),
         ('{"episode": 0, "seed": 1, "seat": 0}', "missing key 'metrics'"),
         ('{"episode": 0, "seed": 1, "seat": 0, "metrics": {}, "seats": [0]}', "unknown keys"),

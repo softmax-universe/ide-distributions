@@ -8,7 +8,8 @@ starts or steers a run.
 
 Kinds and what resolves them:
 
-- ``xp``: every request id in ``ref`` is terminal on the platform; progress is also written to
+- ``xp``: every request id in ``ref`` is terminal on the platform, or not found there (a 404
+  ends the wait with a note, as such a request never finishes); progress is also written to
   the Experiment runs that carry those ids when the store lets the watcher (a Task-scoped
   Experiment is written by its holder only, so that write is skipped and the Researcher
   records the results itself);
@@ -88,11 +89,20 @@ def _xp(ctx: TickContext, store: Store, task: dict, waiting: dict) -> str | None
     refs = _refs(waiting.get("ref"))
     if not refs:
         return "no XP request ids were recorded for this wait"
-    requests = [ctx.platform.xp_get(ref) for ref in refs]
+    requests, missing = [], []
+    for ref in refs:
+        try:
+            requests.append(ctx.platform.xp_get(ref))
+        except PlatformError as error:
+            if error.status != 404:
+                raise
+            missing.append(ref)  # it never finishes: waiting on it would sleep for good
     _record_runs(store, ctx, requests)
     if not all(request.terminal for request in requests):
         return None
-    return "XP requests " + ", ".join(f"{r.id} {r.status}" for r in requests)
+    parts = [f"{r.id} {r.status}" for r in requests]
+    parts += [f"{ref} not found on the platform" for ref in missing]
+    return "XP requests " + ", ".join(parts)
 
 
 def _record_runs(store: Store, ctx: TickContext, requests: list) -> None:

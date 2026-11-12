@@ -4,6 +4,7 @@ capability, link the Tasks that need it, and notify after two failed repairs (de
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -148,6 +149,54 @@ def test_failing_check_creates_one_repair_task_and_a_second_failure_joins_it(tmp
     assert checks.run(ctx)["broken"] == ["check"]
     assert len(tasks.list(ctx.store, type="maintenance")) == 1  # the repeat joined it
     assert len(events_of(ctx.store, "capability.failed")) == 1
+
+
+def write_results(folder, *, mtime: float | None = None, text: str | None = None) -> None:
+    """A downloaded request folder holding the fake platform's results for one two-seat episode."""
+    episodes = [{"episode": 0, "seat": seat, "score": 50.0, "errors": 1} for seat in (0, 1)]
+    folder.mkdir(parents=True)
+    path = folder / "results.json"
+    path.write_text(text or json.dumps({"seed": 1, "episodes": episodes}))
+    if mtime is not None:
+        os.utime(folder, (mtime, mtime))
+
+
+def test_evaluate_runs_on_the_newest_downloaded_request_only(tmp_path):
+    """All of documents/xp grows with every Experiment and would outgrow the check's budget; an
+    older request's results (here unreadable) are not evaluated."""
+    ctx = fake_ctx(tmp_path)
+    setup_code_repo(ctx)
+    xp = ctx.coworld.documents / "xp"
+    write_results(xp / "X-1" / "xreq_old", mtime=1_000_000, text="not json")
+    write_results(xp / "X-2" / "xreq_new")
+
+    report = checks.run(ctx)
+
+    assert "evaluate" in report["ok"], report
+    assert capabilities.read(ctx.store, "evaluate")["status"] == "ok"
+
+
+def test_evaluate_output_off_the_row_contract_breaks_the_check(tmp_path):
+    """An exit code of 0 used to pass output no Experiment could read."""
+    ctx = fake_ctx(tmp_path)
+    setup_code_repo(ctx)
+    path = ctx.coworld.code / "mixin" / "MIXIN.md"
+    text = path.read_text()
+    assert "  evaluate: python3 mixin/tools/evaluate.py\n" in text
+    opponent_only = json.dumps("python3 mixin/tools/evaluate.py | grep -v '\"seat\": 0'")
+    path.write_text(
+        text.replace(
+            "  evaluate: python3 mixin/tools/evaluate.py\n", f"  evaluate: {opponent_only}\n"
+        )
+    )
+    gitops.commit_all(ctx.coworld.code, "Score the opponent's seat only")
+    write_results(ctx.coworld.documents / "xp" / "X-1" / "xreq_1")
+
+    report = checks.run(ctx)
+
+    assert report["broken"] == ["evaluate"]
+    output = capabilities.read(ctx.store, "evaluate")["output"]
+    assert output.startswith("evaluate printed no row for seat 0")
 
 
 def test_dependents_gain_the_dependency_on_the_repair_task(tmp_path):

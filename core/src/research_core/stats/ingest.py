@@ -50,41 +50,57 @@ def rows_from_evaluate_output(
     - ``episode`` (integer or non-empty string, required): the episode's index or id within
       the request.
     - ``seed`` (integer, required): the game seed the episode played.
-    - ``seat`` (integer, required): the roster slot whose metrics this line reports. The run's
-      Version sits in slot 0, and ``xp.status`` stores only seat-0 rows as the run's own.
+    - ``seat`` (integer, required): the roster slot whose metrics this line reports: the game's
+      0-based player slot, as its results index players. Our policy sits in the seat
+      ``XP_SEAT`` names (0); ``xp.status`` keeps that seat's rows as the Version's and files the
+      other seats' rows as context, so a mixin may print every seat or only ``XP_SEAT``.
     - ``opponents`` (list of strings, optional, default ``[]``): the other seats' policy labels.
     - ``metrics`` (object of metric name to finite number): required unless ``status`` is
       ``"failed"``.
     - ``status`` (``"completed"`` or ``"failed"``, optional, default ``"completed"``).
     - ``reason`` (string, optional): why a failed episode failed.
 
-    Blank lines are skipped; any other key, or a wrong type, raises ``ValueError`` naming the
-    line. ``episode_id`` is ``<request_id>:<episode>:s<seat>`` (``<episode>:s<seat>`` without a
-    ``request_id``); pass the platform request id so rows from different requests never share
-    an id, because ``ingest_rows`` drops a repeated ``episode_id`` as a duplicate. The caller
-    names the ``policy_version`` and ``game_version`` the request played.
+    Lines that do not start with ``{`` are log output and skipped: stderr shares the log the
+    output is read from, so a warning or a ``uv`` progress line must not break evaluate. In an
+    object line, any other key, or a wrong type, raises ``ValueError`` naming the line, and so
+    does a second line for the same episode and seat with other values (``ingest_rows`` would
+    silently keep only the first, losing every later episode a mixin numbered alike); an
+    identical repeat is skipped. ``episode_id`` is
+    ``<request_id>:<episode>:s<seat>`` (``<episode>:s<seat>`` without a ``request_id``); pass
+    the platform request id so rows from different requests never share an id, because
+    ``ingest_rows`` drops a repeated ``episode_id`` as a duplicate. The caller names the
+    ``policy_version`` and ``game_version`` the request played; every row carries that
+    ``policy_version``, so the caller relabels the rows of seats our policy did not sit in.
     """
     prefix = f"{request_id}:" if request_id else ""
     rows = []
+    seen: dict[str, tuple[int, EpisodeRow]] = {}
     for number, line in enumerate(text.splitlines(), start=1):
-        if not line.strip():
-            continue
+        if not line.lstrip().startswith("{"):
+            continue  # a log line: the command's stderr shares the output (mixin.run_command)
         try:
             entry = json.loads(line)
         except json.JSONDecodeError as error:
             raise ValueError(f"evaluate output line {number} is not JSON: {error.msg}") from error
         try:
-            rows.append(_row_from_entry(entry, prefix, policy_version, game_version))
+            row = _row_from_entry(entry, prefix, policy_version, game_version)
         except ValueError as error:
             raise ValueError(f"evaluate output line {number}: {error}") from error
+        if row.episode_id in seen:
+            first_number, first = seen[row.episode_id]
+            if row == first:
+                continue  # the same episode read twice, as from a re-download's manifest lines
+            raise ValueError(
+                f"evaluate output line {number} repeats episode {entry['episode']!r} seat"
+                f" {entry['seat']} of line {first_number} with other values; episode must tell"
+                " the request's episodes apart (its episode request id, or its index)"
+            )
+        seen[row.episode_id] = (number, row)
+        rows.append(row)
     return rows
 
 
-def _row_from_entry(
-    entry: object, prefix: str, policy_version: str, game_version: str
-) -> EpisodeRow:
-    if not isinstance(entry, dict):
-        raise ValueError("not a JSON object")
+def _row_from_entry(entry: dict, prefix: str, policy_version: str, game_version: str) -> EpisodeRow:
     for key in ("episode", "seed", "seat"):
         if key not in entry:
             raise ValueError(f"missing key {key!r}")

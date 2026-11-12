@@ -52,6 +52,10 @@ METRIC_ROLES = ("primary", "guardrail", "performance")
 DECISION_RULE_KEYS = ("text", "n_min", "k")
 MEASUREMENT_KEYS = ("metric", "baseline", "candidate", "n", "effect")
 VERDICTS = ("confirmed", "refuted", "inconclusive")
+# A run's platform request states that never change again.
+REQUEST_TERMINAL_STATES = ("completed", "failed", "cancelled")
+# The validity xp.status gives a run whose episodes are fine but whose evaluate failed.
+EVALUATE_FAILED = "invalid: evaluate"
 SECTIONS = ("hypothesis", "methods", "results")
 SUMMARY_MAX_WORDS = 40
 
@@ -283,6 +287,42 @@ def add_run(
             },
         )
     return _run_record(store, run_id)
+
+
+def open_requests(store: Store, task_id: int) -> list[str]:
+    """The platform request ids of the Task's Experiments' runs that are not yet terminal."""
+    rows = store.q(
+        "SELECT r.platform_request_id, r.state FROM experiment_runs r"
+        " JOIN experiments e ON e.id = r.experiment_id WHERE e.task_id = ? ORDER BY r.id",
+        (task_id,),
+    )
+    return [row[0] for row in rows if row[1] not in REQUEST_TERMINAL_STATES]
+
+
+def unsettled(run: dict[str, Any]) -> str | None:
+    """Why a run's rows may still change, or None once they are final.
+
+    A request still running, a finished request ``xp.status`` has not evaluated, and a failed
+    evaluate (waiting for its repair) are unsettled. A run marked invalid for any other reason is
+    settled: its rows never count.
+    """
+    if run["state"] not in REQUEST_TERMINAL_STATES:
+        return f"request {run['state'] or 'not started'}"
+    if run["validity"].startswith(EVALUATE_FAILED):
+        return "evaluate failed; after the repair xp.status evaluates it again"
+    if run["validity"] == "valid" and "rows" not in (run.get("results") or {}):
+        return "finished but not evaluated; xp.status stores its rows"
+    return None
+
+
+def recorded_requests(store: Store, request_ids: list[str]) -> set[str]:
+    """Which of ``request_ids`` some Experiment run records."""
+    marks = ", ".join("?" for _ in request_ids)
+    rows = store.q(
+        f"SELECT platform_request_id FROM experiment_runs WHERE platform_request_id IN ({marks})",
+        tuple(request_ids),
+    )
+    return {row[0] for row in rows}
 
 
 def require_run_of(store: Store, run_id: int, experiment_id: int) -> None:

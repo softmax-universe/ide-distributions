@@ -30,13 +30,16 @@ on the run with ``update_run {results: {"rows": [...]}}``. Each row is an object
 - ``metrics`` (object of metric name to number; every metric named in ``methods.metrics``),
 - ``status`` (``"completed"`` by default, or ``"failed"``) and ``reason`` (string, optional).
 
-Rows of a run marked invalid do not count; the result names those runs in
-``evaluation.invalid_runs``. Rows with ``status: failed``, a repeated ``episode_id``, another game
-version or a missing metric are dropped and counted in ``evaluation.rows.dropped``. Several rows
-for one
-``(policy_version, game_version, seed, opponents)`` - per-seat rows from a mixin's ``evaluate``
-output, or several episodes on one seed - are averaged into one row whose seats are their
-union, so each seed makes exactly one baseline/candidate pair. The ``evaluation`` design's
+The computed close is refused while any run's rows may still change (``experiments.unsettled``:
+a request still running, a finished one ``xp.status`` has not evaluated, an evaluate awaiting
+repair), because a verdict is final and read early it would miss them. Rows of a run marked
+invalid do not count; the result names those runs in ``evaluation.invalid_runs``. Only rows of
+the run's own seat count (``results.seat``, which ``xp.request`` records; 0 for older runs): a
+row of another seat is an opponent's and is counted in ``evaluation.rows.dropped.other_seats``.
+Rows with ``status: failed``, a repeated ``episode_id``, another game version or a missing
+metric are dropped and counted in ``evaluation.rows.dropped`` too. Several rows for one
+``(policy_version, game_version, seed, opponents)`` - several episodes on one seed - are averaged
+into one row, so each seed makes exactly one baseline/candidate pair. The ``evaluation`` design's
 seats, opponents and game version are read from the first row; its seeds are the runs' seeds
 and the rows' seeds together.
 
@@ -50,6 +53,7 @@ import statistics
 from collections import Counter
 from typing import Any
 
+from research_core.platform.xp import OUR_SEAT
 from research_core.stats import decision_rule, ingest
 from research_core.stats.design import EvaluationDesign, MetricSpec
 from research_core.stats.ingest import EpisodeRow
@@ -278,10 +282,23 @@ def computed_close(call: ToolCall, experiment_id: int) -> dict:
         raise ToolError(
             f"{record['id']} is {record['status']}; an Experiment closes only while it is running"
         )
+    unsettled = {
+        run["id"]: reason for run in record["runs"] if (reason := experiments.unsettled(run))
+    }
+    if unsettled:
+        # A close is final: computed now, it would leave out rows still on their way (often
+        # n_short, so inconclusive for good) or the runs of an evaluate awaiting repair.
+        raise ToolError(
+            f"{record['id']} has {len(unsettled)} runs whose rows are not final, so the rule"
+            f" cannot be applied yet: xp.status {{experiment: {record['id']}}} refreshes and"
+            " evaluates them. A run that will never count: experiment.update_run {run,"
+            " validity: 'invalid: <reason>'}",
+            unsettled_runs=unsettled,
+        )
     candidate = candidate_version(record)
     counted = [run for run in record["runs"] if run["validity"] == "valid"]
     excluded = [run["id"] for run in record["runs"] if run["validity"] != "valid"]
-    rows = stored_rows(counted)
+    rows, other_seats = rows_by_seat(counted)
     if not rows:
         raise ToolError(NO_ROWS, invalid_runs=excluded)
     design = design_from(record["methods"], candidate, counted, rows)
@@ -294,11 +311,16 @@ def computed_close(call: ToolCall, experiment_id: int) -> dict:
             " seats, opponents and game version; close with an explicit verdict if the rows"
             " cannot be repaired",
             rows_by_policy=dict(Counter(row.policy_version for row in kept)),
-            dropped=dropped(report),
+            dropped=dropped(report, other_seats),
         )
     verdict = decision_rule.evaluate(design, pairs)
     measurements = measurements_from(design, pairs, verdict)
     interpretation = call.get("interpretation") or summarise(verdict, measurements, len(pairs))
+    failed = failed_episodes(record["runs"])  # invalid runs too: a request may fail whole
+    if any(failed.values()):
+        # A crash leaves no row, so the rule never sees it; the record must say so.
+        counts = ", ".join(f"{arm} {n}" for arm, n in sorted(failed.items()))
+        interpretation += f" Episodes the platform failed, not counted: {counts}."
     closed = experiments.close(
         store,
         actor,
@@ -312,32 +334,63 @@ def computed_close(call: ToolCall, experiment_id: int) -> dict:
         "record": closed,
         "evaluation": {
             "pairs": len(pairs),
-            "rows": {"kept": report.kept, "dropped": dropped(report)},
+            "rows": {"kept": report.kept, "dropped": dropped(report, other_seats)},
             "invalid_runs": excluded,
+            "failed_episodes": failed,
             "reason_codes": verdict.reason_codes,
         },
     }
 
 
+def failed_episodes(runs: list[dict]) -> dict[str, int]:
+    """Episodes the platform failed, per arm (``results.episodes_failed``, which ``xp.status``
+    records). Such an episode produces no results, so it is in no row: a candidate that crashes
+    more often loses nothing in the rule unless this is read."""
+    failed: Counter[str] = Counter()
+    for run in runs:
+        failed[run["arm"]] += (run.get("results") or {}).get("episodes_failed") or 0
+    return dict(failed)
+
+
 def stored_rows(runs: list[dict]) -> list[EpisodeRow]:
-    """Every row under ``results.rows`` of the runs given; every malformed row is named at once."""
+    """Every row of our seat under ``results.rows`` of the runs given (``rows_by_seat``)."""
+    return rows_by_seat(runs)[0]
+
+
+def rows_by_seat(runs: list[dict]) -> tuple[list[EpisodeRow], int]:
+    """The rows under ``results.rows`` that cover the run's own seat, and how many did not.
+
+    A run's seat is ``results.seat`` (``xp.request`` records it; runs from before default to
+    seat 0, where every request has put our policy). A row whose seats leave it out is an
+    opponent's:
+    ``xp.status`` once stored every seat a mixin scored under our Version, so those rows are left
+    out here and counted. Every malformed row is named at once.
+    """
     rows: list[EpisodeRow] = []
+    other_seats = 0
     problems: list[str] = []
     for run in runs:
-        stored = (run.get("results") or {}).get("rows")
+        results = run.get("results") or {}
+        stored = results.get("rows")
         if stored is None:
             continue
         if not isinstance(stored, list):
             problems.append(f"run {run['id']} results.rows must be a list")
             continue
+        seat = results.get("seat", OUR_SEAT)
         for index, data in enumerate(stored):
             try:
-                rows.append(row_from_dict(data))
+                row = row_from_dict(data)
             except ValueError as error:
                 problems.append(f"run {run['id']} results.rows[{index}] {error}")
+                continue
+            if seat in row.seats:
+                rows.append(row)
+            else:
+                other_seats += 1
     if problems:
         raise ToolError(problems)
-    return rows
+    return rows, other_seats
 
 
 def row_from_dict(data: Any) -> EpisodeRow:
@@ -439,8 +492,8 @@ def design_from(
 def one_row_per_seed(rows: list[EpisodeRow]) -> list[EpisodeRow]:
     """Average several rows of one policy, game version, seed and opponents into one row.
 
-    Per-seat rows (one per seat our policy sat in) and repeated episodes on one seed would
-    otherwise pair as several pairs for one seed, or not at all when the seats differ.
+    Repeated episodes on one seed would otherwise pair as several pairs for one seed. The rows
+    are our seat's only (``rows_by_seat``): averaging in other seats would mix opponents in.
     """
     groups: dict[tuple, list[EpisodeRow]] = {}
     for row in sorted(rows, key=lambda r: r.episode_id):
@@ -505,12 +558,13 @@ def summarise(verdict: decision_rule.Verdict, measurements: list[dict], pairs: i
     return line
 
 
-def dropped(report: ingest.IngestReport) -> dict:
+def dropped(report: ingest.IngestReport, other_seats: int = 0) -> dict:
     return {
         "duplicates": report.duplicates,
         "failed": report.failed,
         "wrong_version": report.wrong_version,
         "missing_metrics": report.missing_metrics,
+        "other_seats": other_seats,
     }
 
 

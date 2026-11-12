@@ -35,7 +35,7 @@ Never conclude from a rung below the question's weight.
 2. Pin seats by explicit policy version id: `platform.active_policies {league, exclude_player: true}` lists the field, `platform.policy_versions` ours. "Latest" in a roster is a reproducibility hole.
 3. Cost: `platform.credits`; the request result carries an `estimate` (`credits` skill). Shrink seeds or split into batches before you start, keeping both arms of a seed together.
 4. `xp.request`. Each accepted request is recorded as a run at once; the result lists `created`, `reconciled`, `requests` and `runs`. Repeating the call creates only the missing requests.
-5. `task_wait {task, kind: xp, detail: "X-n's requests", ref: [<request ids>]}` and end your run. Reading starts when the watcher resumes you: `xp.status {experiment}`.
+5. `task_wait {task, kind: xp, detail: "X-n's requests"}` and end your run (it waits on your Task's open requests). Reading starts when the watcher resumes you: `xp.status {experiment}`.
 6. Both arms of an A/B go out in the same window; when the binding gives a batch size, respect it.
 
 ## Footguns

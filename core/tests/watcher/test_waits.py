@@ -272,9 +272,34 @@ def test_a_dependency_wait_on_nothing_is_refused(tmp_path):
         waiting(ctx, "dependency", "something")
 
 
-def test_platform_errors_are_reported_and_leave_the_wait(tmp_path):
+def test_platform_errors_are_reported_and_leave_the_wait(tmp_path, monkeypatch):
     ctx = make_ctx(tmp_path)
-    task, session = waiting(ctx, "xp", "x", ref=["xreq_missing"])
+    task, session = waiting(ctx, "xp", "x", ref=["xreq_1"])
+
+    def down(_):
+        raise PlatformError("service unavailable", route="GET", status=503)
+
+    monkeypatch.setattr(ctx.platform, "xp_get", down)
     report = waits.run(ctx)
-    assert report["errors"][0]["task"] == "T-1" and "not found" in report["errors"][0]["error"]
+    assert report["errors"][0]["task"] == "T-1" and "unavailable" in report["errors"][0]["error"]
     assert not resolved(ctx, task)
+
+
+def test_an_xp_request_the_platform_does_not_know_ends_the_wait(tmp_path):
+    """A 404 never turns terminal: the wait used to poll it for good (a list sent as JSON text
+    became one such id). Waits stored before the task tool refused such ids end this way."""
+    ctx = make_ctx(tmp_path)
+    request = ctx.platform.xp_create(
+        {"coworld_id": "cow_fake", "roster": ROSTER, "num_episodes": 1}
+    )
+    ctx.platform.configure(polls_to_complete=1)
+    task, session = waiting(ctx, "xp", "x", ref=f'["{request.id}"]')
+    report = waits.run(ctx)
+    assert resolved(ctx, task) and report["errors"] == []
+    assert (
+        report["resolved"][0]["note"] == f'XP requests ["{request.id}"] not found on the platform'
+    )
+
+    task, session = waiting(ctx, "xp", "x", ref=[request.id, "xreq_gone"])
+    note = waits.run(ctx)["resolved"][0]["note"]
+    assert note == f"XP requests {request.id} completed, xreq_gone not found on the platform"

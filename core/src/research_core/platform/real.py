@@ -904,4 +904,5 @@ def _xp(row: coworld_api.ExperienceRequestRow, title: str | None = None) -> XpRe
         created_at=_iso(row.created_at),
         error=row.error,
         title=row.title or title,
+        coworld_version=row.coworld_version,
     )
