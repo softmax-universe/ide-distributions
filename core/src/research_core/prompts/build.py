@@ -25,6 +25,7 @@ from research_core.tools.catalog import ROLES, Role, tools_for
 
 PROMPTS_DIR = Path(__file__).resolve().parent
 VOCABULARY_PATH = PROMPTS_DIR / "vocabulary.md"
+OPTIONAL_DIR = PROMPTS_DIR / "optional"
 
 # Word budgets from the design (D.7 and Appendix H).
 BUDGETS: dict[str, int] = {"orchestrator": 2500, "researcher": 2000}
@@ -126,11 +127,19 @@ def render_part(part: Part, role: Role) -> str:
     return text
 
 
-def render(role: Role) -> str:
-    """The whole SOUL of a role."""
+def brain_section(role: Role) -> str:
+    """The optional learning section (IDE_BRAIN=1): ``optional/brain-<role>.md``."""
+    return (OPTIONAL_DIR / f"brain-{role}.md").read_text(encoding="utf-8").strip()
+
+
+def render(role: Role, *, brain: bool = False) -> str:
+    """The whole SOUL of a role. ``brain=False`` (the default, and what is committed) is exactly
+    the parts; ``brain=True`` appends the optional learning section."""
     if role not in ROLES:
         raise ValueError(f"unknown role {role!r}")
     blocks = [HEADER, *(render_part(part, role) for part in parts_for(role))]
+    if brain:
+        blocks.append(brain_section(role))
     return "\n\n".join(blocks) + "\n"
 
 
