@@ -7,7 +7,7 @@ description: Use in a review wake to judge a completed Task.
 
 A review wake starts you when a Task's completion passed its type checklist, or when a change
 of your own finished in its worktree. Code checked that the deliverables exist; you check that
-they mean what they say. Nobody is reading a chat: use `ui.notify`, or `ui.ask` for what only the user can answer.
+they mean what they say. Nobody is reading a chat: `ui.tell` news, `ui.notify` progress.
 
 ## Read before you judge
 
@@ -65,8 +65,8 @@ now rather than leaving it to the next wake.
    wake. Say in `reason` that V-n is a candidate pending merge. The watcher merges it within
    minutes and wakes a management Session (event `submission.candidate`), which submits it
    under the same rule.
-5. Mode `ask`: `ui.ask {question, options, refs: ["V-n", "X-n"]}` with what the Experiment
-   showed; the answer arrives as a UI action in a later Session.
+5. Mode `ask`: `ui.tell {category: decision, text, refs: ["V-n", "X-n"]}`: whether to submit,
+   with what the Experiment showed.
 6. A setting or the bar stops it: `ui.notify` why, with the ids, so the user can ask for it in
    chat. A user's request overrides every setting.
 
@@ -75,5 +75,5 @@ A submission the user already asked for in chat is never gated: carry it out as 
 
 ## End
 
-`ui.notify` the outcome in one or two sentences with the record ids (T-n, X-n, V-n), then end
-the run.
+Report the outcome in one or two sentences with the record ids (T-n, X-n, V-n), then end the
+run: an `outcome` `ui.tell` if the user asked for the work, else `ui.notify`.

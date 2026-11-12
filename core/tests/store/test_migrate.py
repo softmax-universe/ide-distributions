@@ -44,6 +44,7 @@ WORKSPACE_TABLES = {
     "client_admissions",
     "request_events",
     "xp_followups",
+    "chat_updates",
     "meta",
     "events",
     "change_log",
@@ -164,8 +165,8 @@ def test_second_apply_is_a_noop():
 
 def test_apply_migrations_returns_the_version_it_reached():
     conn = sqlite3.connect(":memory:", isolation_level=None)
-    assert migrate.apply_migrations(conn, "workspace") == 12
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 12
+    assert migrate.apply_migrations(conn, "workspace") == 13
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
 
 
 def test_admission_waiting_migration_keeps_rows_and_adds_no_hold():
@@ -183,7 +184,7 @@ def test_admission_waiting_migration_keeps_rows_and_adds_no_hold():
         " VALUES (7,'op','message','{}','s','hi',?,'failed','run_1',1,'boom','t',42,'client')",
         (payload,),
     )
-    assert migrate.apply_migrations(conn, "workspace") == 12
+    assert migrate.apply_migrations(conn, "workspace") == 13
     row = conn.execute("SELECT rowid, * FROM client_admissions").fetchone()
     assert (row["rowid"], row["op_id"], row["status"], row["error"]) == (7, "op", "failed", "boom")
     assert (row["payload"], row["native_message_id"], row["origin"]) == (payload, 42, "client")
@@ -207,7 +208,7 @@ def test_terminal_admissions_flagged_for_resolution_are_settled():
             " VALUES (?,'message','{}','s','hi','{}',?,1,1,'t')",
             (op_id, status),
         )
-    assert migrate.apply_migrations(conn, "workspace") == 12
+    assert migrate.apply_migrations(conn, "workspace") == 13
     flags = dict(conn.execute("SELECT op_id, resolution_required FROM client_admissions"))
     assert flags == {"ended": 0, "open": 1}
 
@@ -221,7 +222,7 @@ def test_scoped_notices_upgrade_keeps_existing_workspace_notices():
         "INSERT INTO notices(text,refs,urgency,created,created_by)"
         " VALUES ('Existing news','[]','normal','t','harness')"
     )
-    assert migrate.apply_migrations(conn, "workspace") == 12
+    assert migrate.apply_migrations(conn, "workspace") == 13
     row = conn.execute("SELECT * FROM notices").fetchone()
     assert row["text"] == "Existing news" and row["coworld_id"] is None
 

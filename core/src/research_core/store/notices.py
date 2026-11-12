@@ -1,6 +1,7 @@
 """Notices (design A.8 ``ui.notify``): the store side, in the workspace store only (A2.4).
 
-A notice is workspace-level news for the user: the only channel a wake has, rendered by every
+A notice is workspace-level news for the user (a wake's routine progress; what the user should
+hear now goes to their chat through ``ui.tell``, ``chat_updates.py``), rendered by every
 client, and unread notices open the next chat turn's context. ``add`` writes the row and an
 ``events`` row of kind ``notice`` in one transaction, so attached clients see it at once and the
 away summary finds it in the log. ``unread`` serves the chat turn: the newest ``limit`` unread

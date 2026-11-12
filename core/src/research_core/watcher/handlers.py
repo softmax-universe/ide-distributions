@@ -111,6 +111,8 @@ UNWATCHED_KINDS: frozenset[str] = frozenset(
         "session.started",
         "session.ended",
         "notice",
+        "chat_update.recorded",
+        "chat_update.delivered",
         "ui.patch",
         "coworld.registered",
         "coworld.switched",

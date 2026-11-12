@@ -39,8 +39,8 @@ def no_client_text(role: str, kind: str) -> str:
         )
     if kind == "wake":
         return (
-            "No client is attached and nobody reads this Session: report with ui.notify, and use "
-            "ui.ask when only the user can answer."
+            "No client is attached and nobody reads this Session: ui.tell what the user should "
+            "hear now, ask a decision plainly with it, and ui.notify routine progress."
         )
     return (
         "No client capabilities are known: use ui.notify for news and ask in chat when only the "

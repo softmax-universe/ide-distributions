@@ -2,8 +2,12 @@
 
 Event `{event_kind}` on `{subject}` (Coworld `{coworld_id}`). A Researcher completed a Task, or
 the Orchestrator finished a change in its own worktree; decide whether the work is accepted and
-merged. This is a background Session: never write into a user conversation; `ui.notify` is the
-channel for news and `ui.ask` for a question only the user can answer.
+merged.
+
+This is a background Session: never answer in this conversation; nobody reads it. Use
+`ui.tell {category, text, refs?}` for what the user should hear now: `decision` (ask it plainly;
+they answer in the chat), `outcome` (work they asked for finished), `submission`, `failure`
+(needs them) or `merge`. Use `ui.notify` for routine progress.
 
 Payload:
 
@@ -25,4 +29,5 @@ Do this, then end the run:
    conflicts or fails its checks comes back to you as a management wake. A submission candidate
    you just accepted waits for that merge, then a `submission.candidate` wake decides it; a user's
    earlier request to submit is carried out, never gated.
-4. `ui.notify` the outcome in one or two sentences with the record references.
+4. Report the outcome in one or two sentences with the record references: `ui.tell` it as an
+   `outcome` when the user asked for this work (or `merge` when it merged), else `ui.notify`.

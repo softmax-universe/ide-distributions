@@ -398,7 +398,7 @@ QUESTIONS: dict[str, list[Question]] = {
         ),
     ],
     "skill:working-with-the-ide": [
-        q("What is the only channel for news in a wake?", r"ui\.notify|notify|notice"),
+        q("What does a wake use for what the user should hear now?", r"ui\.tell|\btell\b"),
         q("When is urgency high?", r"today"),
         q("What part of the agent-context panel do you write?", r"need"),
     ],

@@ -85,6 +85,8 @@ KINDS: frozenset[str] = frozenset(
         "session.ended",
         "session.dead",
         "notice",
+        "chat_update.recorded",
+        "chat_update.delivered",
         "ui.patch",
         "coworld.registered",
         "coworld.switched",
