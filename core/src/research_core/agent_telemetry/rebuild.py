@@ -16,14 +16,14 @@ from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
 from research_core.agent_telemetry.encoder import message_text
-from research_core.agent_telemetry.records import EMPTY_DIGEST
+from research_core.agent_telemetry.records import EMPTY_DIGEST, format_time
 
 SEARCH_PATH = "/api/v2/logs/events/search"
 PAGE_LIMIT = 1000  # Datadog's largest page.
 # 200 digests make a 14,000-character query. Datadog answered one of 140,000 on 2026-11-04.
 VALUES_PER_SEARCH = 200
 # Agent content stays in the ``main`` index for 15 days, so nothing older can be there.
-SEARCH_WINDOW = "now-15d"
+SEARCH_WINDOW_S = 15 * 24 * 3600
 # What a structured body refers to, besides its lists.
 _SINGLE_REFERENCES = (
     "parent_manifest_digest",
@@ -43,7 +43,11 @@ class IncompleteSearch(Exception):
 
 
 class LogsSearch:
-    """Logs search over the Standard indexes. It waits out a 429 for as long as Datadog says."""
+    """Logs search over the Standard indexes. It waits out a 429 for as long as Datadog says.
+
+    The time window is fixed when this is made, one per rebuild, and every search and page uses
+    it: Datadog warns that a relative window such as ``now-15d`` can miss results across pages.
+    """
 
     def __init__(
         self, url: str, api_key: str, app_key: str, sleep: Callable[[float], None] = time.sleep
@@ -51,6 +55,8 @@ class LogsSearch:
         self._url = url.rstrip("/") + SEARCH_PATH
         self._keys = {"DD-API-KEY": api_key, "DD-APPLICATION-KEY": app_key}
         self._sleep = sleep
+        now = time.time()
+        self._window = {"from": format_time(now - SEARCH_WINDOW_S), "to": format_time(now)}
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         headers = {"Content-Type": "application/json", **self._keys}
@@ -66,7 +72,7 @@ class LogsSearch:
 
     def entries(self, query: str) -> Iterator[dict[str, Any]]:
         """Each log entry's own fields, which Datadog nests under ``attributes.attributes``."""
-        window = {"from": SEARCH_WINDOW, "to": "now", "storage_tier": "indexes"}
+        window = {**self._window, "storage_tier": "indexes"}
         page: dict[str, Any] = {"limit": PAGE_LIMIT}
         while True:
             filters = {"query": query, **window}
@@ -185,7 +191,6 @@ class _Finder:
             if self.chunks.get(digest):
                 data, problems = _join_object(digest, self.chunks[digest])
             self.objects[digest] = data
-            self.missing.pop(digest, None)
             if data is None:
                 self.missing[digest] = problems
         return self.objects[digest]
@@ -332,27 +337,15 @@ def _token_rows(chars: dict[str, int], usage: dict[str, Any] | None) -> list[dic
 
 
 def _order(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Oldest process first, then by time inside a process, where there is one clock.
+    """By time across all processes, so ``research serve``'s records interleave with the
+    gateway's that run beside it; ``sequence`` breaks a tie inside one process.
 
-    A restart makes a new ``source_instance`` and restarts ``sequence``. Within a process
-    ``sequence`` alone is not wire order: a record carries the time of what it describes, not of
-    its writing (a request its start, a reply its end, a committed row its own timestamp, read
-    after the turn's end).
+    A record carries the time of what it describes, not of its writing (a request its start, a
+    reply its end, a committed row its own timestamp, read after the turn's end), so ``sequence``
+    alone is not wire order. Requests come from one gateway process at a time, so their order is
+    their time order.
     """
-    items = list(records)
-    starts: dict[str, str] = {}
-    for record in items:
-        instance = record["source_instance"]
-        starts[instance] = min(starts.get(instance, record["occurred_at"]), record["occurred_at"])
-    return sorted(
-        items,
-        key=lambda r: (
-            starts[r["source_instance"]],
-            r["source_instance"],
-            r["occurred_at"],
-            r["sequence"],
-        ),
-    )
+    return sorted(records, key=lambda r: (r["occurred_at"], r["source_instance"], r["sequence"]))
 
 
 def _ref(record: dict[str, Any], name: str) -> str | None:
@@ -394,7 +387,9 @@ def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> li
             attempt_id = attempt["model_attempt_id"]
             problem = {"kind": "no_request_manifest", "model_attempt_id": attempt_id}
             finder.missing[attempt_id] = [problem]
-        entry.update(_rebuild_request(finder, manifest_digest or EMPTY_DIGEST))
+            entry.update({"request": None, "blocked_by": []})
+        else:
+            entry.update(_rebuild_request(finder, manifest_digest))
         stages = replies[attempt["model_attempt_id"]]
         reply = stages.get("response", {})
         if reply:
