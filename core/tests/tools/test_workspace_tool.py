@@ -277,7 +277,7 @@ def transcript(workspace_env, tmp_path):
 
 @pytest.fixture
 def register_session(ctx_factory):
-    def register(session_id, kind):
+    def register(session_id, kind, **extra):
         return sessions.register(
             ctx_factory().wstore,
             Actor.harness(),
@@ -285,6 +285,7 @@ def register_session(ctx_factory):
             session_id=session_id,
             profile="orchestrator",
             kind=kind,
+            **extra,
         )
 
     return register
@@ -340,8 +341,7 @@ def test_a_cite_must_be_a_stored_user_message_of_a_chat_with_a_matching_hash(
         "was not found": f"session:c1/999#{digest}",
         "not the user's": transcript("c1", "assistant", "I am Pip"),
         "does not match": good.split("#")[0] + "#" + "0" * 64,
-        "not a chat of this workspace": transcript("elsewhere", "user", "Keep Pip"),
-        "not a chat": transcript("w1", "user", "Keep Pip"),
+        "cite a message from this conversation": transcript("elsewhere", "user", "Keep Pip"),
     }
     for reason, cite in cases.items():
         refused = identity(call, confirm=True, cites=cite)
@@ -349,6 +349,33 @@ def test_a_cite_must_be_a_stored_user_message_of_a_chat_with_a_matching_hash(
     state = identity(call)["identity"]
     assert state["name"] == "Pip" and not state["name_confirmed"]
     kept = identity(call, confirm=True, cites=good)
+    assert kept["identity"]["name_confirmed"] is True
+
+
+def test_a_cite_from_a_task_session_is_refused(call, register_session, transcript):
+    register_session("t1", "task", task_id=1)
+    identity(call, "t1", name="Pip")
+    forged = transcript("t1", "user", "Keep Pip")
+    refused = identity(call, "t1", confirm=True, cites=forged)
+    assert refused["ok"] is False and "not a chat with the user" in str(refused)
+    assert identity(call, "t1")["identity"]["name_confirmed"] is False
+
+
+def test_a_cite_from_another_chat_of_the_workspace_is_refused(call, register_session, transcript):
+    register_session("c1", "chat")
+    register_session("c2", "chat")
+    identity(call, name="Pip")
+    other = transcript("c2", "user", "Keep Pip")
+    refused = identity(call, "c1", confirm=True, cites=other)
+    assert refused["ok"] is False and "this conversation" in str(refused)
+    assert identity(call)["identity"]["name_confirmed"] is False
+
+
+def test_a_cite_from_the_calling_chat_is_accepted(call, register_session, transcript):
+    register_session("c1", "chat")
+    register_session("c2", "chat")
+    identity(call, name="Pip")
+    kept = identity(call, "c2", confirm=True, cites=transcript("c2", "user", "Keep Pip"))
     assert kept["identity"]["name_confirmed"] is True
 
 

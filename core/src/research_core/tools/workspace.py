@@ -88,7 +88,13 @@ def identity_action(call: ToolCall) -> dict[str, Any]:
             if session["kind"] == "wake" and (cites or confirm or met or offered or name is None):
                 raise StoreError(["no user is present in a wake; do this in a chat with them"])
         if cites and (confirm or met or name is not None):
-            cites = identity.verify_cite(ctx.wstore, cites, state_db, "you are acting on")
+            cites = identity.verify_cite(
+                ctx.wstore,
+                cites,
+                state_db,
+                "you are acting on",
+                calling_session=ctx.hermes_session_id() or "",
+            )
         if name is not None and not cites and not confirm:
             wrote = True
             identity.choose(ctx.wstore, ctx.actor, name)
