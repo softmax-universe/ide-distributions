@@ -7,7 +7,7 @@ import json
 import pytest
 
 import research_core.tools.ui  # noqa: F401  (registers the tool)
-from research_core.store import notices, sessions, ui_state
+from research_core.store import chat_updates, notices, sessions, ui_state
 from research_core.store.actors import Actor
 from research_core.tools.base import run_tool
 from research_core.tools.ui import PANEL_KINDS
@@ -255,3 +255,50 @@ def test_a_chats_needs_join_the_shared_panel_and_keep_the_computed_part(
 
     refused = call("ui", args | {"content": {"goals": []}}, session_id="s1")
     assert refused["ok"] is False and "needs" in refused["error"]
+
+
+def test_tell_is_refused_in_a_chat_and_outside_a_wake(call, ctx_factory, register_session):
+    register_session("s1", "chat")
+    args = {"action": "tell", "category": "outcome", "text": "T-3 finished"}
+    in_chat = call("ui", args, session_id="s1")
+    assert in_chat["ok"] is False and "you are in the chat; reply here" in in_chat["error"]
+    unknown = call("ui", args, session_id="nobody")
+    assert unknown["ok"] is False and "not one" in unknown["error"]
+    assert chat_updates.pending(ctx_factory().wstore, "cow_fake") == []
+
+
+def test_a_wake_tells_the_users_chat(call, ctx_factory, register_session):
+    register_session("w1", "wake")
+    result = call(
+        "ui",
+        {"action": "tell", "category": "decision", "text": "Submit V-7?", "refs": ["V-7"]},
+        session_id="w1",
+    )
+    assert result["ok"] is True and "most recent chat" in result["next"]
+    assert result["update"]["category"] == "decision"
+    assert result["update"]["created_by"] == "session:w1"
+    [pending] = chat_updates.pending(ctx_factory().wstore, "cow_fake")
+    assert (pending["text"], pending["refs"]) == ("Submit V-7?", ["V-7"])
+
+    missing = call("ui", {"action": "tell", "text": "no category"}, session_id="w1")
+    assert missing["ok"] is False and "category" in missing["error"]
+    long = call(
+        "ui", {"action": "tell", "category": "outcome", "text": "x" * 4001}, session_id="w1"
+    )
+    assert long["ok"] is False and "at most 4000" in long["error"]
+
+
+def test_a_category_left_out_of_the_setting_is_a_notice_and_says_so(
+    call, ctx_factory, register_session
+):
+    register_session("w1", "wake")
+    result = call(
+        "ui",
+        {"action": "tell", "category": "merge", "text": "V-7 merged", "refs": ["V-7"]},
+        session_id="w1",
+    )
+    assert result["ok"] is True and result["notice"]["id"] == "N-1"
+    assert "not a chat message" in result["next"] and "merge" in result["next"]
+    wstore = ctx_factory().wstore
+    assert chat_updates.pending(wstore, "cow_fake") == []
+    assert [n["text"] for n in notices.unread(wstore, coworld_id="cow_fake")] == ["V-7 merged"]
