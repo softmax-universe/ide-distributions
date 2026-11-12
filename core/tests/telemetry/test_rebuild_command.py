@@ -26,6 +26,8 @@ from .fake_datadog import FakeDatadog
 SYSTEM = "You are a researcher. Be careful."
 TOOL = {"type": "function", "function": {"name": "read_file", "parameters": {}}}
 TRACE = "4bf92f3577b34da6a3ce929d0e0e4736"
+# As ``telemetry.correlation`` names a trace. Logs search returns only ``otel_trace_id``.
+IN_TRACE = {"trace_id": TRACE, "otel_trace_id": TRACE}
 LONG_RESULT = 'café 日本語 😀 "quoted"\n' * 2000
 USAGE = {"input_tokens": 1000, "output_tokens": 7}
 
@@ -54,7 +56,7 @@ def two_requests(writer, session: str = "ses_1", prefix: str = "") -> list[dict]
         "tool_calls": [call],
     }
     result = {"role": "tool", "tool_call_id": call["id"], "content": LONG_RESULT}
-    ids = {"session_id": session, "provider": "moonshot", "trace_id": f"{prefix}trace_1"}
+    ids = {"session_id": session, "provider": "moonshot", "otel_trace_id": f"{prefix}trace_1"}
     bodies = [request_body([user]), request_body([user, assistant, result])]
     for number, body in enumerate(bodies, start=1):
         attempt = f"{prefix}att_{number}"
@@ -80,7 +82,7 @@ def two_requests(writer, session: str = "ses_1", prefix: str = "") -> list[dict]
             reply,
             session_id=session,
             model_attempt_id=attempt,
-            trace_id=ids["trace_id"],
+            otel_trace_id=ids["otel_trace_id"],
             native_event_type="stream",
             outcome="completed",
             usage=USAGE if number == 1 else None,
@@ -89,7 +91,7 @@ def two_requests(writer, session: str = "ses_1", prefix: str = "") -> list[dict]
         "tool",
         "completed",
         session_id=session,
-        trace_id=ids["trace_id"],
+        otel_trace_id=ids["otel_trace_id"],
         tool_name="read_file",
         tool_call_id=call["id"],
         api_request_id=f"{prefix}call:api:1",
@@ -100,7 +102,7 @@ def two_requests(writer, session: str = "ses_1", prefix: str = "") -> list[dict]
         "tool",
         "result",
         session_id=session,
-        trace_id=ids["trace_id"],
+        otel_trace_id=ids["otel_trace_id"],
         tool_call_id=call["id"],
         hermes_message_id="3",
         content={"result": LONG_RESULT},
@@ -332,7 +334,7 @@ def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
         writer.capture_operation(
             "admission", "accepted", request_id=request_id, admission_id="adm_1"
         )
-    event("client.accepted", trace_id=TRACE)
+    event("client.accepted", **IN_TRACE)
     event("client.started", run_id="run_1")
     event("client.waiting", run_id="run_1", reason="provider_unavailable")
     event("client.resumed")
@@ -347,7 +349,7 @@ def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
         task_id="T-3",
     )
     # A record with only the message's trace, as a store event in a tool's process has.
-    writer.capture_operation("approval", "requested", trace_id=TRACE, content={"command": "ls"})
+    writer.capture_operation("approval", "requested", **IN_TRACE, content={"command": "ls"})
     sent(writer, stream_file, datadog)
     report = rebuild_session(search_of(datadog), "ses_1")
     admitted = [e for e in report["events"] if e.get("admission_id") == "adm_1"]
@@ -449,7 +451,7 @@ def committed(writer, row, kind="tool", trace="trace_1", **fields):
         "message",
         "committed",
         session_id="ses_1",
-        trace_id=trace,
+        otel_trace_id=trace,
         kind=kind,
         hermes_message_id=row,
         **fields,
@@ -464,13 +466,13 @@ def asked(writer, attempt, reply):
         native_event_type="stream",
         session_id="ses_1",
         provider="moonshot",
-        trace_id="trace_1",
+        otel_trace_id="trace_1",
     )
     writer.capture_response(
         reply,
         session_id="ses_1",
         model_attempt_id=attempt,
-        trace_id="trace_1",
+        otel_trace_id="trace_1",
         native_event_type="stream",
     )
 
@@ -496,7 +498,7 @@ def test_a_guard_halt_rebuilds_the_text_hermes_committed_and_not_the_last_reply(
         "tool",
         "result",
         session_id="ses_1",
-        trace_id="trace_1",
+        otel_trace_id="trace_1",
         tool_call_id="call_1",
         content={"result": "it failed"},
     )
@@ -551,7 +553,7 @@ def test_a_lost_final_text_is_reported_and_no_earlier_reply_takes_its_place(
             "tool",
             "result",
             session_id="ses_1",
-            trace_id="trace_1",
+            otel_trace_id="trace_1",
             tool_call_id="call_1",
             content={"result": lost},
         )
@@ -610,7 +612,7 @@ def test_a_reused_tool_call_id_does_not_join_two_rows(writer, stream_file, datad
             session_id="ses_1",
             provider="moonshot",
             model_attempt_id=f"att_{number}",
-            trace_id="trace_1",
+            otel_trace_id="trace_1",
             native_event_type="stream",
         )
     committed(writer, "10", tool_call_id="call_1")
@@ -629,7 +631,7 @@ def _result(writer, row, call, text):
         "tool",
         "result",
         session_id="ses_1",
-        trace_id="trace_1",
+        otel_trace_id="trace_1",
         tool_call_id=call,
         **({"hermes_message_id": row} if row else {}),
         content={"result": text},
@@ -645,7 +647,7 @@ def test_a_new_row_with_a_reused_call_id_keeps_its_own_result(writer, stream_fil
         session_id="ses_1",
         provider="moonshot",
         model_attempt_id="att_1",
-        trace_id="trace_1",
+        otel_trace_id="trace_1",
     )
     _result(writer, "10", "call_1", "OLD result")
     committed(writer, "10", tool_call_id="call_1")
@@ -694,11 +696,11 @@ def test_results_with_no_row_id_sharing_a_call_id_stand_in_for_no_row(writer, st
 )
 def test_repeated_text_counts_each_character_once(writer, stream_file, datadog, second_parts):
     """The same text twice in a Session is one digest with two observations of its parts."""
-    fields = {"session_id": "ses_1", "provider": "moonshot", "trace_id": "trace_1"}
+    fields = {"session_id": "ses_1", "provider": "moonshot", "otel_trace_id": "trace_1"}
     writer.capture_context_parts(
-        "hello", [ContextPart("user_text", "hello")], session_id="ses_1", trace_id="trace_1"
+        "hello", [ContextPart("user_text", "hello")], session_id="ses_1", otel_trace_id="trace_1"
     )
-    writer.capture_context_parts("hello", second_parts, session_id="ses_1", trace_id="trace_1")
+    writer.capture_context_parts("hello", second_parts, session_id="ses_1", otel_trace_id="trace_1")
     writer.capture_request(
         {"model": "m", "messages": [{"role": "user", "content": "hello"}]},
         model_attempt_id="att_1",
@@ -731,7 +733,7 @@ def test_what_was_recorded_stays_in_the_report(writer, stream_file, datadog):
         "workspace_tool",
         "completed",
         session_id="ses_1",
-        trace_id="trace_1",
+        otel_trace_id="trace_1",
         tool_name="goal",
         tool_call_id="call_b",
         duration_ms=12.5,

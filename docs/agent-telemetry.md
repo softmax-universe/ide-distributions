@@ -38,7 +38,9 @@ process waits for telemetry at exit, as for spans and logs in [`image/README.md`
 
 A record written inside an OpenTelemetry span carries that span's `trace_id` and `span_id`, read from memory, under the
 names Datadog joins logs to traces by ([Datadog: correlate OpenTelemetry traces and
-logs](https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/opentelemetry/)). One user message is one
+logs](https://docs.datadoghq.com/tracing/other_telemetry/connect_logs_and_traces/opentelemetry/)): the spans also reach
+APM over OTLP, as service `ide-distributions`. Datadog takes those two names off a log's attributes, so Logs search
+never returns them, and the record carries the trace again as `otel_trace_id`, which the rebuild reads. One user message is one
 trace: its admission, the seam's dispatch and every Hermes turn that works on it, including one that resumes it
 (`plugin/tracing.py`). Records join on these IDs, not on Hermes's runs.
 
