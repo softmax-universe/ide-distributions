@@ -10,7 +10,7 @@ from sqlite3 import Row
 from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, uuid5
 
-from research_core.store import admissions, sessions, settings, tasks
+from research_core.store import admissions, sessions, settings
 from research_core.store.actors import Actor
 from research_core.store.db import Store
 
@@ -45,6 +45,25 @@ def register(
             (key, session_id, experiment, request_ids, tx.at),
         )
     return True
+
+
+def register_task(
+    store: Store, actor: Actor, task_id: int, experiment: str, request_id: str
+) -> None:
+    """Join the run-record transaction so an accepted request cannot lose its follow-up."""
+    with store.tx(actor) as tx:
+        row = tx.one(
+            "SELECT request_ids FROM task_xp_waits WHERE task_id=? AND experiment=?",
+            (task_id, experiment),
+        )
+        ids = json.loads(row["request_ids"]) if row is not None else []
+        if request_id in ids:
+            return
+        tx.execute(
+            "INSERT INTO task_xp_waits(task_id,experiment,request_ids) VALUES (?,?,?)"
+            " ON CONFLICT(task_id,experiment) DO UPDATE SET request_ids=excluded.request_ids",
+            (task_id, experiment, json.dumps([*ids, request_id])),
+        )
 
 
 async def deliver(read: ReadChanges, store_path: Path, row: Row) -> None:
@@ -97,7 +116,7 @@ class Watches:
         self.read = read
         self.group = group
         self.tasks: dict[str, asyncio.Task[None]] = {}
-        self.task_waits: dict[tuple[Path, int, str, str], asyncio.Task[None]] = {}
+        self.task_waits: dict[tuple[Path, int, str], asyncio.Task[None]] = {}
         self.version: int | None = None
 
     def sync(self) -> None:
@@ -134,55 +153,52 @@ class Watches:
             store = stores.get(row["coworld_id"])
             if store is None:
                 continue
-            task = store.one(
-                "SELECT waiting_on FROM tasks WHERE id=? AND status='in-progress' AND held_by=?",
+            for wait in store.q(
+                "SELECT x.* FROM task_xp_waits x JOIN tasks t ON t.id=x.task_id"
+                " WHERE t.id=? AND t.status='in-progress' AND t.held_by=?",
                 (row["task_id"], row["session_id"]),
-            )
-            if task is None or task["waiting_on"] is None:
-                continue
-            waiting = json.loads(task["waiting_on"])
-            if waiting["kind"] != "xp":
-                continue
-            key = (store.path, row["task_id"], row["session_id"], task["waiting_on"])
-            active.add(key)
-            if key not in self.task_waits:
-                self.task_waits[key] = self.group.create_task(
-                    self.resolve_task_wait(
-                        store, row["task_id"], row["session_id"], task["waiting_on"], waiting["ref"]
+            ):
+                key = (store.path, wait["id"], wait["request_ids"])
+                active.add(key)
+                if key not in self.task_waits:
+                    self.task_waits[key] = self.group.create_task(
+                        self.resolve_task_wait(store, wait)
                     )
-                )
         for key in self.task_waits.keys() - active:
             self.task_waits.pop(key).cancel()
 
-    async def resolve_task_wait(
-        self, store: Store, task_id: int, holder: str, waiting: str, refs: list[str] | str | None
-    ) -> None:
+    async def resolve_task_wait(self, store: Store, wait: Row) -> None:
         from research_core.platform.experience_changes import MAX_ROOTS, wait_for_terminal
 
-        ids = [refs] if isinstance(refs, str) else refs or []
+        ids = json.loads(wait["request_ids"])
         async with asyncio.TaskGroup() as group:
             batches = [
                 group.create_task(wait_for_terminal(self.read, selection))
                 for selection in batched(ids, MAX_ROOTS)
             ]
+        experiment = wait["experiment"]
         reason = (
-            "Experiment requests finished."
+            f"{experiment} requests finished."
             if all(batch.result() for batch in batches)
-            else "Some experiment requests are no longer accessible. Check what finished."
+            else f"Some {experiment} requests are no longer accessible. Check what finished."
         )
-
-        actor = Actor.harness()
-        with store.atomic(actor) as tx:
-            if tx.one(
-                "SELECT 1 FROM tasks WHERE id=? AND status='in-progress'"
-                " AND held_by=? AND waiting_on=?",
-                (task_id, holder, waiting),
-            ):
-                tasks.resolve_wait(
-                    store,
-                    actor,
-                    task_id,
-                    note=f"{reason} Use xp.status to evaluate, then report to the Orchestrator.",
+        with store.tx(Actor.harness()) as tx:
+            deleted = tx.execute(
+                "DELETE FROM task_xp_waits WHERE id=? AND request_ids=?"
+                " AND EXISTS (SELECT 1 FROM tasks WHERE id=task_xp_waits.task_id"
+                " AND status='in-progress')",
+                (wait["id"], wait["request_ids"]),
+            )
+            if deleted.rowcount:
+                tx.event(
+                    "task.wait_resolved",
+                    f"T-{wait['task_id']}",
+                    {
+                        "kind": "xp",
+                        "experiment": experiment,
+                        "ref": ids,
+                        "note": f"{reason} Evaluate with xp.status and report the findings.",
+                    },
                 )
 
     def cancel(self) -> None:

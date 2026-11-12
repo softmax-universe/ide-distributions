@@ -47,7 +47,7 @@ claim to write, how to fix a broken build. A question you can answer with a tool
 
 ## 5. Wait, then END YOUR RUN
 
-`xp.request` records your wait. After other async work, use `task_wait {task, kind, detail, ref}`:
+`xp.request` tracks each experiment. Finish every pending experiment before closing the Task. After other async work, use `task_wait {task, kind, detail, ref}`:
 `credits` after a 402, `process` with the PID, `permit` with the route, `submission` with the
 policy version, `user` with the setting or Task, or `dependency` with its Task. Platform failures
 record their own wait. End your run. On resume, read `directive.list`, evaluate XP with

@@ -435,7 +435,9 @@ def test_credits_refusal_sets_no_wait_until_acceptance(run, ctx, uploaded, resea
         intents.read(ctx.store, 1)["state"] == "done" and intents.read(ctx.store, 1)["attempt"] == 2
     )
     assert retried["followup_scheduled"]
-    assert set(tasks.read(ctx.store, 1)["waiting_on"]["ref"]) == set(retried["requests"])
+    assert set(json.loads(ctx.store.one("SELECT request_ids FROM task_xp_waits")[0])) == set(
+        retried["requests"]
+    )
 
 
 def test_a_tasks_experiment_is_refused_for_anyone_but_its_holder_before_any_request(
@@ -453,7 +455,9 @@ def test_a_tasks_experiment_is_refused_for_anyone_but_its_holder_before_any_requ
     )
     assert held["ok"] is True, held
     assert held["followup_scheduled"]
-    assert set(tasks.read(ctx.store, 1)["waiting_on"]["ref"]) == set(held["requests"])
+    assert set(json.loads(ctx.store.one("SELECT request_ids FROM task_xp_waits")[0])) == set(
+        held["requests"]
+    )
 
 
 def test_ask_above_warns_the_orchestrator_and_asks_the_researcher(run, ctx, uploaded):

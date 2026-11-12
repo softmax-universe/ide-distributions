@@ -770,6 +770,10 @@ def complete(
     with store.tx(actor) as tx:
         row = _row(store, n)
         _check_holder(store, row, actor)
+        pending_xp = tx.q("SELECT experiment FROM task_xp_waits WHERE task_id=?", (n,))
+        if pending_xp:
+            pending = ", ".join(wait["experiment"] for wait in pending_xp)
+            raise StoreError([f"{_t(n)} is still waiting on {pending}"])
         problems, accepted, experiment_n = _completion_problems(
             store,
             row,

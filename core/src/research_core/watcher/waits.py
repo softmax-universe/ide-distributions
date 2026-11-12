@@ -52,7 +52,7 @@ PERMIT_FINAL_STATUSES = frozenset(
 NOTE_LIMIT = 200
 
 
-def run(ctx: TickContext, *, xp_change_feed: bool = False) -> dict[str, Any]:
+def run(ctx: TickContext) -> dict[str, Any]:
     """Check every wait of the active Coworld's in-progress Tasks; resolve those that are over."""
     if ctx.store is None:
         return {"skipped": "no active Coworld"}
@@ -63,9 +63,6 @@ def run(ctx: TickContext, *, xp_change_feed: bool = False) -> dict[str, Any]:
         if not waiting:
             continue
         kind = waiting.get("kind")
-        if kind == "xp" and xp_change_feed:
-            report["waiting"].append({"task": task["id"], "kind": kind})
-            continue
         resolver = RESOLVERS.get(kind)
         if resolver is None:
             report["errors"].append(

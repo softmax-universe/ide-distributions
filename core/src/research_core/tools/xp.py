@@ -19,10 +19,8 @@ seat is a broken evaluate. A row's ``game_version`` is the version the platform 
 on (``results.coworld_version``), so a Coworld release during an Experiment never mixes versions
 under one label; MIXIN.md's ``coworld_version`` stands in only for runs recorded without it.
 
-Rules the tool keeps (A4.4): it puts a Task on a wait only when the platform stays down (below);
-a Researcher calls
-``task_wait {kind: xp}`` and ends its run (``ref`` defaults to the open requests of the Task's
-Experiments; ``tools/task.py`` ``xp_wait_refs``), or ``task_wait {kind: credits}`` after a
+A Researcher Task follows each Experiment's accepted requests automatically. A Researcher
+calls ``task_wait {kind: credits}`` after a
 credits refusal. There is no local credits pre-check: the platform's refusal (402) is the
 refusal, reported with the balance, the held amount and the next refill. The
 ``xp.ask_above_requests_per_experiment`` setting: above it the Orchestrator gets a warning and
@@ -193,7 +191,7 @@ def handle_request(call: ToolCall) -> dict:
             with store.atomic(actor):
                 run = _record_run(ctx, record, request, body, seed=seed, arm=arm, plan=plan)
                 if task_id is not None and not request.terminal:
-                    _wait_for_task_xp(ctx, task_id, request.id)
+                    xp_followups.register_task(store, actor, task_id, record["id"], request.id)
             (reconciled if intent["existing"] and not intent["retried"] else created).append(
                 request.id
             )
@@ -207,10 +205,11 @@ def handle_request(call: ToolCall) -> dict:
             )
     runs = _xp_runs(store, n)
     ids = [run["platform_request_id"] for run in runs if run["state"] not in TERMINAL_STATES]
-    task_followup = task_id is not None and bool(ids)
-    if task_followup:
-        with store.tx(actor):
-            _wait_for_task_xp(ctx, task_id, *ids)
+    task_followup = task_id is not None and bool(
+        store.one(
+            "SELECT 1 FROM task_xp_waits WHERE task_id=? AND experiment=?", (task_id, record["id"])
+        )
+    )
     orchestrator_followup = bool(
         ids
         and ctx.role == "orchestrator"
@@ -500,18 +499,6 @@ def _credits_refused(
         "runs": _xp_runs(ctx.store, n),
         "next": next_step,
     }
-
-
-def _wait_for_task_xp(ctx: ToolContext, task_id: int, *ids: str) -> None:
-    waiting = tasks.read(ctx.store, task_id)["waiting_on"]
-    previous = waiting["ref"] if waiting and waiting["kind"] == "xp" else []
-    if isinstance(previous, str):
-        previous = [previous]
-    pending = sorted(set(previous or ()) | set(ids))
-    if pending != previous:
-        tasks.wait(
-            ctx.store, ctx.actor, task_id, kind="xp", detail="Experiment requests", ref=pending
-        )
 
 
 def _next_after_request(
@@ -837,8 +824,7 @@ def _report(record: dict, note: str | None = None) -> dict:
         )
     elif pending:
         report["next"] = (
-            f"{len(pending)} requests still run; a Researcher calls task_wait {{task, kind: xp,"
-            " detail} and ends its run, an Orchestrator tries later"
+            f"{len(pending)} requests still run. End your run if a follow-up was scheduled."
         )
     return report
 

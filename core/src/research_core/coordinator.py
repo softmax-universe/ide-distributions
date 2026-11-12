@@ -658,7 +658,7 @@ class Coordinator:
         task = tasks.read(store, event.subject)
         if task["status"] != "in-progress":
             return {"skipped": f"{event.subject} is {task['status']}, not in progress"}
-        if task["waiting_on"]:
+        if task["waiting_on"] and "experiment" not in event.payload:
             return {"skipped": f"{event.subject} waits again on {task['waiting_on']['kind']}"}
         session = holder_session(ctx, task)
         if session is None:
@@ -672,10 +672,20 @@ class Coordinator:
             key=f"event:{ctx.coworld.coworld_id}:{event.seq}",
         )
 
-    def _recoverable(self, task: dict[str, Any], session_id: str | None) -> bool:
+    @staticmethod
+    def _pending_task_xp(store: Store, task: str) -> bool:
+        return (
+            store.one(
+                "SELECT 1 FROM task_xp_waits WHERE task_id=?", (int(task.removeprefix("T-")),)
+            )
+            is not None
+        )
+
+    def _recoverable(self, store: Store, task: dict[str, Any], session_id: str | None) -> bool:
         return (
             task["status"] == "in-progress"
             and (not task["waiting_on"])
+            and not self._pending_task_xp(store, task["id"])
             and (task["held_by"] is not None)
             and (task["held_by"] == session_id)
         )
@@ -924,7 +934,11 @@ class Coordinator:
                     {"session": session["id"], "reason": "no Task to continue"}
                 )
                 continue
-            if task["id"] in ready_xp or (task["waiting_on"] or {}).get("kind") == "xp":
+            if (
+                task["id"] in ready_xp
+                or (task["waiting_on"] or {}).get("kind") == "xp"
+                or self._pending_task_xp(ctx.store, task["id"])
+            ):
                 sessions.mark_drained(ctx.wstore, ctx.actor, [session["id"]], False)
                 continue
             if report["slots"] <= 0:
@@ -1294,7 +1308,7 @@ class Coordinator:
                 )[0] + int(not row["failure_counted"])
                 if (
                     task is not None
-                    and self._recoverable(task, snapshot["id"])
+                    and self._recoverable(ctx.store, task, snapshot["id"])
                     and failures < int(settings.get(ctx.stores, "recovery.max_attempts"))
                 ):
                     history = self.native.session_messages(
@@ -1409,7 +1423,7 @@ class Coordinator:
                         )
                     ):
                         task = self._task_of(ctx, session)
-                        if task is not None and self._recoverable(task, session["id"]):
+                        if task is not None and self._recoverable(ctx.store, task, session["id"]):
                             if settings.get(ctx.stores, "paused"):
                                 continue
                             self.retry_worker(
@@ -1756,7 +1770,7 @@ class Coordinator:
             due = ctx.meta(workflow_key)
             if due is None or ctx.now - parse_iso(due) >= timedelta(seconds=60):
                 report["champion_sync"] = champion_sync.run(ctx)
-                report["waits"] = waits.run(ctx, xp_change_feed=True)
+                report["waits"] = waits.run(ctx)
                 report["merge"] = merge.run(ctx)
                 report["goals"] = goals.run(ctx)
                 report["checks"] = checks.run(ctx)
