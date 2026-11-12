@@ -74,13 +74,21 @@ def identity_action(call: ToolCall) -> dict[str, Any]:
     name, cites = call.get("name"), call.get("cites")
     met, confirm, offered = call.get("met_user"), call.get("confirm"), call.get("offer_made")
     wrote = False
+    writing = bool(name is not None or confirm or met or offered)
+    hermes_home = ctx.env.get("HERMES_HOME")
+    state_db = Path(hermes_home).expanduser() / "state.db" if hermes_home else None
     try:
-        if cites or confirm or met:
-            # The user's word: only a chat has a user in it, never a wake.
+        if writing:
+            # Only a registered session may write (fail closed), and a wake has no user in it:
+            # its one write is the setup wake's uncited choose of the first name.
             session_id = ctx.hermes_session_id()
             session = sessions.read(ctx.wstore, session_id) if session_id else None
-            if session is not None and session["kind"] == "wake":
+            if session is None:
+                raise StoreError(["this session is not registered; identity writes are refused"])
+            if session["kind"] == "wake" and (cites or confirm or met or offered or name is None):
                 raise StoreError(["no user is present in a wake; do this in a chat with them"])
+        if cites and (confirm or met or name is not None):
+            cites = identity.verify_cite(ctx.wstore, cites, state_db, "you are acting on")
         if name is not None and not cites and not confirm:
             wrote = True
             identity.choose(ctx.wstore, ctx.actor, name)
@@ -454,7 +462,9 @@ SPEC = durable_tool(
                 "identity",
                 "Read the cogent's own name and whether it has met the user. name alone "
                 "(setup only) is refused once a name exists; name or confirm with cites (the "
-                "user's own chat message, never a record id or a wake) is the user's one rewrite, "
+                "user's own chat message as session:<id>/<message id>#<sha256 of its content>, "
+                "checked against the stored transcript; never a record id or a wake) is the "
+                "user's one rewrite, "
                 "then locked, and also names a cogent that has none; met_user with cites records "
                 "the first get-to-know-you chat; offer_made records the one rename offer.",
                 {
@@ -462,7 +472,9 @@ SPEC = durable_tool(
                     "confirm": a.boolean("The user kept the name you have (needs cites)."),
                     "met_user": a.boolean("Record that you have met the user (needs cites)."),
                     "offer_made": a.boolean("Record that you made the one rename offer."),
-                    "cites": a.string("The user's message reference."),
+                    "cites": a.string(
+                        "The user's message: session:<id>/<message id>#<sha256 of its content>."
+                    ),
                 },
                 (),
                 ORCHESTRATOR,

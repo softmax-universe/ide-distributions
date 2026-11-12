@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -237,32 +239,40 @@ def test_coworld_switch_offers_the_source_a_listed_coworld_does_not_need():
     assert {"source", "commit"} <= set(spec.properties("orchestrator"))
 
 
-def test_identity_action_names_once_then_the_user_rewrites_once(call):
-    named = call("workspace", {"action": "identity", "name": "Pip"})
-    assert named["identity"] == {
-        "name": "Pip",
-        "name_confirmed": False,
-        "met_user": False,
-        "offer_made": False,
-    }
-    again = call("workspace", {"action": "identity", "name": "Rex"})
-    assert again["ok"] is False and "already named" in str(again)
-    assert call("workspace", {"action": "identity"})["identity"]["name"] == "Pip"
-    renamed = call("workspace", {"action": "identity", "name": "Rex", "cites": "msg:1"})
-    assert renamed["identity"]["name"] == "Rex" and renamed["identity"]["name_confirmed"]
-    locked = call("workspace", {"action": "identity", "name": "Ace", "cites": "msg:2"})
-    assert locked["ok"] is False and "cannot change" in str(locked)
-    met = call("workspace", {"action": "identity", "met_user": True, "cites": "msg:3"})
-    assert met["identity"]["met_user"] is True
-    researcher = call("workspace", {"action": "identity", "name": "Zed"}, role="researcher")
-    assert researcher["ok"] is False
+IDENTITY_SCHEMA = """
+CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, started_at REAL NOT NULL);
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    role TEXT NOT NULL,
+    content TEXT,
+    timestamp REAL NOT NULL
+);
+"""
 
 
-def test_the_settings_tool_cannot_write_the_name(call):
-    refused = call(
-        "settings", {"action": "update", "key": "identity.name", "value": "Rex", "cites": "m:1"}
-    )
-    assert refused["ok"] is False
+@pytest.fixture
+def transcript(workspace_env, tmp_path):
+    """A Hermes state.db for the workspace; ``say(session, role, text)`` stores a message and
+    returns the transcript reference ``session:<id>/<message id>#<sha256>`` that cites it."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    workspace_env["HERMES_HOME"] = str(home)
+    conn = sqlite3.connect(home / "state.db")
+    conn.executescript(IDENTITY_SCHEMA)
+
+    def say(session, role, text):
+        conn.execute("INSERT OR IGNORE INTO sessions VALUES (?, 'api', 1.0)", (session,))
+        cursor = conn.execute(
+            "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, 2.0)",
+            (session, role, text),
+        )
+        conn.commit()
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        return f"session:{session}/{cursor.lastrowid}#{digest}"
+
+    yield say
+    conn.close()
 
 
 @pytest.fixture
@@ -280,54 +290,119 @@ def register_session(ctx_factory):
     return register
 
 
-def test_identity_cites_must_be_the_users_message_and_never_come_from_a_wake(
-    call, register_session
-):
-    call("workspace", {"action": "identity", "name": "Pip"})
-    for bad in ("setup", "C-5"):
-        for args in ({"name": "Rex"}, {"confirm": True}, {"met_user": True}):
-            refused = call("workspace", {"action": "identity", "cites": bad, **args})
-            assert refused["ok"] is False and "user's own message" in str(refused)
-    no_cites = call("workspace", {"action": "identity", "confirm": True})
-    assert no_cites["ok"] is False and "cites" in str(no_cites)
-    register_session("w1", "wake")
-    for args in ({"name": "Rex"}, {"confirm": True}, {"met_user": True}):
-        woke = call("workspace", {"action": "identity", "cites": "msg:1", **args}, session_id="w1")
-        assert woke["ok"] is False and "no user is present in a wake" in str(woke)
-    state = call("workspace", {"action": "identity"})["identity"]
-    assert state["name"] == "Pip" and not state["name_confirmed"] and not state["met_user"]
+def identity(call, session_id="c1", **args):
+    return call("workspace", {"action": "identity", **args}, session_id=session_id)
+
+
+def test_identity_names_once_then_the_user_rewrites_once(call, register_session, transcript):
     register_session("c1", "chat")
-    real = call(
-        "workspace", {"action": "identity", "name": "Rex", "cites": "msg:1"}, session_id="c1"
+    named = identity(call, name="Pip")
+    assert named["identity"] == {
+        "name": "Pip",
+        "name_confirmed": False,
+        "met_user": False,
+        "offer_made": False,
+    }
+    again = identity(call, name="Rex")
+    assert again["ok"] is False and "already named" in str(again)
+    assert identity(call)["identity"]["name"] == "Pip"
+    renamed = identity(call, name="Rex", cites=transcript("c1", "user", "Call yourself Rex"))
+    assert renamed["identity"]["name"] == "Rex" and renamed["identity"]["name_confirmed"]
+    locked = identity(call, name="Ace", cites=transcript("c1", "user", "No, Ace"))
+    assert locked["ok"] is False and "cannot change" in str(locked)
+    met = identity(call, met_user=True, cites=transcript("c1", "user", "I am Sam"))
+    assert met["identity"]["met_user"] is True
+    researcher = call("workspace", {"action": "identity", "name": "Zed"}, role="researcher")
+    assert researcher["ok"] is False
+
+
+def test_the_settings_tool_cannot_write_the_name(call):
+    refused = call(
+        "settings", {"action": "update", "key": "identity.name", "value": "Rex", "cites": "m:1"}
     )
-    assert real["identity"]["name"] == "Rex" and real["identity"]["name_confirmed"]
+    assert refused["ok"] is False
 
 
-def test_a_wake_may_still_choose_the_first_name_without_cites(call, register_session):
+def test_a_cite_must_be_a_stored_user_message_of_a_chat_with_a_matching_hash(
+    call, register_session, transcript
+):
+    register_session("c1", "chat")
     register_session("w1", "wake")
-    named = call("workspace", {"action": "identity", "name": "Pip"}, session_id="w1")
+    identity(call, name="Pip")
+    for bad in ("setup", "C-5", "msg:99", "the user agreed"):
+        for args in ({"name": "Rex"}, {"confirm": True}, {"met_user": True}):
+            refused = identity(call, cites=bad, **args)
+            assert refused["ok"] is False, (bad, args)
+    assert identity(call, confirm=True)["ok"] is False
+    good = transcript("c1", "user", "Keep Pip")
+    digest = good.split("#")[1]
+    cases = {
+        "was not found": f"session:c1/999#{digest}",
+        "not the user's": transcript("c1", "assistant", "I am Pip"),
+        "does not match": good.split("#")[0] + "#" + "0" * 64,
+        "not a chat of this workspace": transcript("elsewhere", "user", "Keep Pip"),
+        "not a chat": transcript("w1", "user", "Keep Pip"),
+    }
+    for reason, cite in cases.items():
+        refused = identity(call, confirm=True, cites=cite)
+        assert refused["ok"] is False and reason in str(refused), reason
+    state = identity(call)["identity"]
+    assert state["name"] == "Pip" and not state["name_confirmed"]
+    kept = identity(call, confirm=True, cites=good)
+    assert kept["identity"]["name_confirmed"] is True
+
+
+def test_a_cite_to_a_message_that_is_not_in_state_db_is_refused(call, register_session):
+    register_session("c1", "chat")
+    refused = identity(call, name="Rex", cites=f"session:c1/1#{'a' * 64}")
+    assert refused["ok"] is False and "cannot verify" in str(refused)
+
+
+def test_wakes_and_unknown_sessions_write_nothing_but_the_first_name(
+    call, register_session, transcript
+):
+    register_session("w1", "wake")
+    cite = transcript("w1", "user", "hi")
+    state = identity(call, "w1")["identity"]
+    assert state["name"] is None
+    named = identity(call, "w1", name="Pip")
     assert named["identity"]["name"] == "Pip"
+    for args in (
+        {"name": "Rex", "cites": cite},
+        {"confirm": True, "cites": cite},
+        {"met_user": True, "cites": cite},
+        {"offer_made": True},
+    ):
+        woke = identity(call, "w1", **args)
+        assert woke["ok"] is False and "no user is present in a wake" in str(woke), args
+    state = identity(call)["identity"]
+    assert state == {
+        "name": "Pip",
+        "name_confirmed": False,
+        "met_user": False,
+        "offer_made": False,
+    }
+    unknown = identity(call, "nobody", offer_made=True)
+    assert unknown["ok"] is False and "not registered" in str(unknown)
+    assert identity(call, "nobody", name="Zed")["ok"] is False
+    assert identity(call, "nobody")["identity"]["name"] == "Pip"
 
 
 def test_a_nameless_existing_workspace_is_named_by_a_user_cited_call_then_locked(
-    call, register_session
+    call, register_session, transcript
 ):
     register_session("c1", "chat")
-    assert call("workspace", {"action": "identity"})["identity"]["name"] is None
-    named = call(
-        "workspace", {"action": "identity", "name": "Pip", "cites": "msg:1"}, session_id="c1"
-    )
+    assert identity(call)["identity"]["name"] is None
+    named = identity(call, name="Pip", cites=transcript("c1", "user", "Be Pip"))
     assert named["identity"]["name"] == "Pip" and named["identity"]["name_confirmed"]
-    again = call(
-        "workspace", {"action": "identity", "name": "Rex", "cites": "msg:2"}, session_id="c1"
-    )
+    again = identity(call, name="Rex", cites=transcript("c1", "user", "Be Rex"))
     assert again["ok"] is False and "cannot change" in str(again)
 
 
-def test_the_rename_offer_is_recorded_once_whether_or_not_it_is_answered(call, register_session):
+def test_the_rename_offer_is_recorded_once_in_a_chat(call, register_session):
     register_session("c1", "chat")
-    call("workspace", {"action": "identity", "name": "Pip"})
-    offered = call("workspace", {"action": "identity", "offer_made": True}, session_id="c1")
+    identity(call, name="Pip")
+    offered = identity(call, offer_made=True)
     assert offered["identity"]["offer_made"] is True and offered["identity"]["name"] == "Pip"
-    refused = call("workspace", {"action": "identity", "name": "Rex"})
+    refused = identity(call, name="Rex")
     assert refused["ok"] is False and "name and cites" in str(refused)

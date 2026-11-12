@@ -369,10 +369,22 @@ def test_the_orchestrator_is_told_when_nothing_has_started_setup(tmp_path):
 # --- the cogent's own name (workspace identity, written once; store.identity) ---------------
 
 
+def register(ctx, session_id, kind="chat"):
+    sessions.register(
+        ctx.wstore,
+        HARNESS,
+        session_id=session_id,
+        profile="orchestrator",
+        kind=kind,
+        coworld_id="cow_fake",
+    )
+
+
 def test_a_workspace_session_and_every_coworld_show_the_same_name(tmp_path):
     from research_core.store import identity
 
     ctx = make_ctx(tmp_path)
+    register(ctx, "chat1")
     before = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
     assert "Name:" not in before
     assert "Met the user: no" in before
@@ -384,6 +396,7 @@ def test_a_workspace_session_and_every_coworld_show_the_same_name(tmp_path):
     text = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
     assert "Name: Pip (chosen at setup, not yet confirmed by the user: offer once" in text
     assert "{offer_made}" in text and "No name yet" not in text
+    assert "not yet confirmed" not in briefing.render(ctx, "chat1", role="researcher", now=NOW)
     identity.mark_offered(ctx.wstore, HARNESS)
     offered = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
     assert "Name: Pip (chosen at setup; rename offer made)" in offered
@@ -398,10 +411,28 @@ def test_a_workspace_session_and_every_coworld_show_the_same_name(tmp_path):
     assert "Name: Pip" in briefing.render(other, "chat1", role="orchestrator", now=NOW)
 
 
+def test_a_wake_sees_only_the_bare_name_never_the_identity_instructions(tmp_path):
+    from research_core.store import identity
+
+    ctx = make_ctx(tmp_path, session_id="wake1")
+    register(ctx, "wake1", "wake")
+    text = briefing.render(ctx, "wake1", role="orchestrator", now=NOW)
+    assert "No name yet" not in text and "Met the user" not in text
+    identity.choose(ctx.wstore, HARNESS, "Pip")
+    text = briefing.render(ctx, "wake1", role="orchestrator", now=NOW)
+    assert "Name: Pip\n" in text + "\n"
+    assert "offer_made" not in text and "Met the user" not in text
+    # An unregistered session is not known to be a chat, so it gets no instructions either.
+    unknown = make_ctx(tmp_path, session_id="nobody")
+    text = briefing.render(unknown, "nobody", role="orchestrator", now=NOW)
+    assert "offer_made" not in text and "Met the user" not in text
+
+
 def test_a_confirmed_name_loses_the_note_and_a_claim_never_sets_the_name(tmp_path):
     from research_core.store import identity
 
     ctx = make_ctx(tmp_path)
+    register(ctx, "chat1")
     claims.write(
         ctx.store,
         HARNESS,
@@ -421,6 +452,7 @@ def test_met_the_user_shows_only_to_the_orchestrator_and_only_until_met(tmp_path
     from research_core.store import identity
 
     ctx = make_ctx(tmp_path)
+    register(ctx, "chat1")
     assert "Met the user: no" in briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
     researcher = make_ctx(tmp_path, role="researcher", session_id="task-run-1")
     assert "Met the user" not in briefing.render(
@@ -428,6 +460,41 @@ def test_met_the_user_shows_only_to_the_orchestrator_and_only_until_met(tmp_path
     )
     identity.mark_met(ctx.wstore, HARNESS, cites="msg:2")
     assert "Met the user" not in briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
+
+
+def test_the_intro_is_offered_once_per_chat_not_every_turn(tmp_path):
+    import sqlite3
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    conn = sqlite3.connect(home / "state.db")
+    conn.executescript(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL);"
+        "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT,"
+        " role TEXT, content TEXT, timestamp REAL);"
+    )
+    ctx = make_ctx(tmp_path, HERMES_HOME=str(home))
+    register(ctx, "chat1")
+    first = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
+    assert "introduce yourself briefly" in first
+    conn.execute("INSERT INTO messages(session_id, role, content) VALUES ('chat1', 'user', 'hi')")
+    conn.commit()
+    assert "introduce yourself briefly" in briefing.render(
+        ctx, "chat1", role="orchestrator", now=NOW
+    )
+    conn.execute(
+        "INSERT INTO messages(session_id, role, content) VALUES ('chat1', 'assistant', 'Hello')"
+    )
+    conn.commit()
+    later = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
+    assert "introduce yourself briefly" not in later
+    assert "Met the user: no (you already introduced yourself" in later
+    register(ctx, "chat2")
+    ctx2 = make_ctx(tmp_path, session_id="chat2", HERMES_HOME=str(home))
+    assert "introduce yourself briefly" in briefing.render(
+        ctx2, "chat2", role="orchestrator", now=NOW
+    )
+    conn.close()
 
 
 def test_the_setup_wake_chooses_the_name_itself_and_never_asks_the_user():
@@ -447,7 +514,7 @@ def test_the_companion_section_gates_on_the_never_met_signal_and_says_the_user()
 
     soul = build.render("orchestrator")
     section = soul.split("## Your name\n")[1].split("\n## ")[0]
-    assert "never a wake or record id" in section
+    assert "never a wake" in section
     assert "cite it" in section and "`preference` claims" in section
     assert "User preferences" not in section
     assert "player" not in section.lower()

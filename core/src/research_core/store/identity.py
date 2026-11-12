@@ -17,6 +17,8 @@ from research_core.store._common import json_field, parse_json
 from research_core.store.errors import StoreError
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from research_core.store.actors import Actor
     from research_core.store.db import Store
 
@@ -57,6 +59,38 @@ def user_cites(cites: Any, what: str) -> str:
         raise StoreError(
             [f"cites must be the user's own message that {what}, not a record or a placeholder"]
         )
+    return text
+
+
+def verify_cite(store: Store, cites: Any, state_db: Path | None, what: str) -> str:
+    """``cites`` as the user's own stored message: ``session:<id>/<message>#<sha256>``.
+
+    Checked against Hermes's transcript (the form ``evidence_types`` inspects): the message
+    exists, its role is ``user``, its session is a registered chat or task session of this
+    workspace (not a wake), and the sha256 matches the stored content."""
+    from research_core.store import evidence_types, sessions
+
+    text = user_cites(cites, what)
+    match = evidence_types._TRANSCRIPT.match(text)
+    if match is None:
+        raise StoreError(
+            [
+                "cites must be the user's message as session:<id>/<message id>#<sha256 of its "
+                f"content> (the transcript reference), not {text!r}"
+            ]
+        )
+    session = sessions.read(store, match["session"])
+    if session is None or session["kind"] == "wake":
+        raise StoreError([f"session {match['session']} is not a chat of this workspace"])
+    found = evidence_types.inspect_evidence(
+        "transcript", text, evidence_types.InspectEnv(store=store, hermes_state_db=state_db)
+    )
+    if found.get("problem"):
+        raise StoreError([f"cannot verify the cite: {found['problem']}"])
+    if found.get("role") != "user":
+        raise StoreError([f"{text} is a {found.get('role')} message, not the user's"])
+    if not found.get("hash_matches"):
+        raise StoreError([f"{text}: the sha256 does not match the stored message"])
     return text
 
 
