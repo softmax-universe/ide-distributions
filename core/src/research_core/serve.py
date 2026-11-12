@@ -574,6 +574,7 @@ class SeamServer:
                 coworld_id=stores.coworld_id,
                 session_context=session_context,
                 client_capabilities=body.get("capabilities"),
+                client={"id": client["id"], "kind": client["kind"]},
             )
             current.add_event("metadata.prepared")
             receipt = intake.accept(

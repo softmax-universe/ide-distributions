@@ -107,6 +107,7 @@ extend-exclude = ["play"]
   ```python
   def test_version():
       import research_core
+
       assert research_core.__version__ == "0.1.0"
   ```
 - [ ] **Step 4:** `uv lock && uv sync` from the repo root (Python 3.12 is installed via uv; `coworld 0.1.66` resolves). `uv run pytest -q` → 1 passed. `uv run ruff check .` → clean.
@@ -287,15 +288,19 @@ provides_hooks: [transform_tool_result, post_tool_call, pre_llm_call]
 prepare.py records the release's core source path in local/core-path.txt; this shim puts it on
 sys.path and delegates to research_core. If research_core is already importable (installed into
 Hermes's interpreter), that copy wins only when it reports the same version."""
+
 import os, sys
 from pathlib import Path
+
 
 def _home() -> Path:
     try:
         from hermes_constants import get_hermes_home
+
         return Path(get_hermes_home())
     except ImportError:
         return Path(os.environ.get("HERMES_HOME") or Path(__file__).resolve().parents[2])
+
 
 def _add_core_path(home: Path) -> None:
     marker = home / "local/core-path.txt"
@@ -304,8 +309,10 @@ def _add_core_path(home: Path) -> None:
         if path and path not in sys.path:
             sys.path.insert(0, path)
 
+
 _add_core_path(_home())
 from research_core.plugin.register import make_register  # noqa: E402
+
 register = make_register("orchestrator")
 ```
 
@@ -314,16 +321,21 @@ register = make_register("orchestrator")
 ```python
 """Prepare this profile after install or update. Usage: prepare.py --source <folder> --hermes <exe> [--activate-supervisor]
 Loads research_core from <source>/../core/src (the release checkout) so an agent's edits cannot stop preparation."""
+
 import argparse, sys
 from pathlib import Path
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--source", required=True, type=Path)
 parser.add_argument("--hermes", required=True)
-parser.add_argument("--activate-supervisor", action="store_true")   # hosting's flag name; enables the watcher once
+parser.add_argument(
+    "--activate-supervisor", action="store_true"
+)  # hosting's flag name; enables the watcher once
 args = parser.parse_args()
-core_src = (args.source.resolve().parent / "core/src")
+core_src = args.source.resolve().parent / "core/src"
 sys.path.insert(0, str(core_src))
 from research_core.prepare import prepare  # noqa: E402
+
 prepare(source=args.source.resolve(), hermes=args.hermes, activate_watcher=args.activate_supervisor)
 ```
 

@@ -377,7 +377,26 @@ def register(ctx, session_id, kind="chat"):
         profile="orchestrator",
         kind=kind,
         coworld_id="cow_fake",
+        client={"id": "aide", "kind": "ide"},
     )
+
+
+def test_a_game_session_gets_no_identity_instructions(tmp_path):
+    from research_core.store import identity
+
+    ctx = make_ctx(tmp_path)
+    sessions.register(
+        ctx.wstore,
+        HARNESS,
+        session_id="g1",
+        profile="orchestrator",
+        kind="chat",
+        coworld_id="cow_fake",
+        client={"id": "orb-minecraft", "kind": "web"},
+    )
+    identity.choose(ctx.wstore, HARNESS, "Pip")
+    text = briefing.render(ctx, "g1", role="orchestrator")
+    assert "Name: Pip" in text and "workspace.identity" not in text
 
 
 def test_a_workspace_session_and_every_coworld_show_the_same_name(tmp_path):

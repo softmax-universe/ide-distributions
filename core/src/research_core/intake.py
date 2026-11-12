@@ -21,6 +21,7 @@ class OpenRegistration(BaseModel):
     coworld_id: str | None
     session_context: dict | None
     client_capabilities: dict | list | None
+    client: dict | None = None
 
 
 class Receipt(BaseModel):

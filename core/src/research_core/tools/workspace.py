@@ -85,6 +85,13 @@ def identity_action(call: ToolCall) -> dict[str, Any]:
             session = sessions.read(ctx.wstore, session_id) if session_id else None
             if session is None:
                 raise StoreError(["this session is not registered; identity writes are refused"])
+            if not sessions.opened_by_human_chat(session) and session["kind"] != "wake":
+                raise StoreError(
+                    [
+                        "identity writes are allowed only in a chat the user opened from the IDE; "
+                        "this session was opened by another client"
+                    ]
+                )
             if session["kind"] == "wake" and (cites or confirm or met or offered or name is None):
                 raise StoreError(["no user is present in a wake; do this in a chat with them"])
         if cites and (confirm or met or name is not None):
@@ -157,6 +164,7 @@ def complete_change(ctx: ToolContext, worktree: Any, commit: Any, summary: str) 
             profile=str(ctx.env.get("HERMES_PROFILE_NAME") or ctx.role),
             kind="chat",
             coworld_id=coworld.coworld_id,
+            client=sessions.UNKNOWN_CLIENT,
         )
     task = tasks.create(
         ctx.store,

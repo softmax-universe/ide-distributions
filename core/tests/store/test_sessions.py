@@ -43,6 +43,7 @@ def test_register_inserts_and_emits_session_started(workspace_store, harness):
         "last_seen": T0,
         "session_context": None,
         "client_capabilities": None,
+        "client": None,
         "drained": False,
         "stopped_by": None,
         "created": True,

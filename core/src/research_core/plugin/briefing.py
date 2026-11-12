@@ -264,10 +264,13 @@ def _identity_lines(inputs: Inputs) -> list[str]:
     from research_core.store import settings
 
     name = settings.get(inputs.wstore, "identity.name")
+    from research_core.store import sessions
+
     chat = (
         inputs.role == "orchestrator"
         and inputs.session is not None
         and inputs.session.get("kind") == "chat"
+        and sessions.opened_by_human_chat(inputs.session)
     )
     lines = []
     if name:

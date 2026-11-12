@@ -69,9 +69,9 @@ def verify_cite(
 
     Checked against Hermes's transcript (the form ``evidence_types`` inspects): the message
     exists, its role is ``user``, it is in the CALLING session, that session is a registered
-    ``chat`` of this workspace (task sessions carry text the cogent itself wrote, and Coworld
-    chats carry other players' lines, so neither can speak for the user), and the sha256
-    matches the stored content."""
+    ``chat`` of this workspace opened by a human IDE client (task sessions carry text the cogent
+    itself wrote, and Coworld play and unregistered sessions carry other people's lines, so none
+    can speak for the user), and the sha256 matches the stored content."""
     from research_core.store import evidence_types, sessions
 
     text = user_cites(cites, what)
@@ -94,6 +94,13 @@ def verify_cite(
     if session is None or session["kind"] != "chat":
         raise StoreError(
             [f"session {match['session']} is not a chat with the user in this workspace"]
+        )
+    if not sessions.opened_by_human_chat(session):
+        raise StoreError(
+            [
+                f"session {match['session']} was not opened by the user's IDE chat "
+                "(a game or unregistered session cannot speak for the user)"
+            ]
         )
     found = evidence_types.inspect_evidence(
         "transcript", text, evidence_types.InspectEnv(store=store, hermes_state_db=state_db)
