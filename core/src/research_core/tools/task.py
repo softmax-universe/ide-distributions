@@ -301,6 +301,20 @@ def handle(call: ToolCall) -> dict:
             )
         if call.get("kind") == "xp":
             ref = xp_wait_refs(store, n, ref)
+            tracked = {
+                row[0]
+                for row in store.q(
+                    "SELECT item.value FROM task_xp_waits, json_each(request_ids) item"
+                    " WHERE task_id=?",
+                    (n,),
+                )
+            }
+            ref = [request_id for request_id in ref if request_id not in tracked]
+            if not ref:
+                return {
+                    "record": tasks.read(store, n),
+                    "next": "AIDE already follows those requests.",
+                }
         record = tasks.wait(
             store,
             actor,

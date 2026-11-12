@@ -55,7 +55,7 @@ import time
 import traceback
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -326,12 +326,25 @@ class SeamServer:
                 experience_changes.connect(self.env, self.ws) as read,
                 asyncio.TaskGroup() as group,
             ):
-                with Store.open(self.ws.store_path, kind="workspace") as store:
+                with ExitStack() as stack:
+                    store = stack.enter_context(Store.open(self.ws.store_path, kind="workspace"))
+                    task_stores: dict[str, Store] = {}
                     watches = xp_followups.Watches(store, read, group)
                     try:
                         while not self.stopping.is_set():
                             if self.env.get("HERMES_HOME"):
                                 watches.sync()
+                                for row in coworlds.list(store):
+                                    coworld_id = row["coworld_id"]
+                                    if coworld_id not in task_stores:
+                                        task_store = context._open_coworld_store(
+                                            self.ws.coworld(coworld_id)
+                                        )
+                                        if task_store is not None:
+                                            task_stores[coworld_id] = stack.enter_context(
+                                                task_store
+                                            )
+                                watches.sync_task_waits(task_stores)
                             (result,) = await asyncio.gather(
                                 self.dispatch_messages(), return_exceptions=True
                             )

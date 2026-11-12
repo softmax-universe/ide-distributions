@@ -173,7 +173,7 @@ def test_a_newer_coworld_store_is_left_alone_reported_once_and_pauses_the_worksp
         assert event["payload"] == {
             "store": "cow_fake",
             "user_version": 99,
-            "expected_version": 3,
+            "expected_version": 4,
         }
         [notice] = notices.unread(wstore)
         assert "Coworld cow_fake" in notice["text"] and "newer release" in notice["text"]
@@ -265,7 +265,7 @@ def test_the_newer_report_is_forgotten_once_the_store_opens_again(tmp_path):
     # The matching runtime arrived (here: the store is put back to this release's version).
     raw = sqlite3.connect(store_path)
     raw.execute("DROP TABLE future")
-    raw.execute("PRAGMA user_version = 3")
+    raw.execute("PRAGMA user_version = 4")
     raw.commit()
     raw.close()
     ctx.store = Store.open(store_path, kind="coworld", clock=ctx.clock)

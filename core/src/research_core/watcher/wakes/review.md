@@ -30,4 +30,5 @@ Do this, then end the run:
    you just accepted waits for that merge, then a `submission.candidate` wake decides it; a user's
    earlier request to submit is carried out, never gated.
 4. Report the outcome in one or two sentences with the record references: `ui.tell` it as an
-   `outcome` when the user asked for this work (or `merge` when it merged), else `ui.notify`.
+   `outcome` when the user asked for this work, including when it merged. Use `merge` for a
+   routine merge and `ui.notify` for other routine updates.
