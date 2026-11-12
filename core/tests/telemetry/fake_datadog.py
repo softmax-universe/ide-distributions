@@ -20,7 +20,13 @@ CONTAINER_SERVICE = "hermes-runtime"
 # Reserved by Datadog's JSON preprocessing: taken off the line's attributes, so Logs search
 # neither matches them as ``@trace_id`` nor returns them (seen on real data on 2026-11-12).
 _RESERVED = ("trace_id", "span_id")
-_TOKEN = re.compile(r'\s*(\(|\)|OR\b|service:[^\s()]+|@[a-z_]+:\(|@[a-z_]+:"[^"]*"|"[^"]*")')
+# A phrase is in double quotes, where a backslash escapes the next character, as in Datadog.
+_PHRASE = r'"(?:[^"\\]|\\.)*"'
+_TOKEN = re.compile(rf"\s*(\(|\)|OR\b|service:[^\s()]+|@[a-z_]+:\(|@[a-z_]+:{_PHRASE}|{_PHRASE})")
+
+
+def _unquoted(phrase: str) -> str:
+    return re.sub(r"\\(.)", r"\1", phrase[1:-1])
 
 
 def entry_of(line: bytes) -> dict[str, Any]:
@@ -86,11 +92,11 @@ class _Query:
             return lambda entry: entry.get("service") == value
         field, _, value = token[1:].partition(":")
         if value != "(":
-            return lambda entry: entry.get(field) == value.strip('"')
+            return lambda entry: entry.get(field) == _unquoted(value)
         values = set()
         while (item := self._next()) != ")":
             if item != "OR":
-                values.add(item.strip('"'))
+                values.add(_unquoted(item))
         return lambda entry: entry.get(field) in values
 
     def matches(self, entry: dict[str, Any]) -> bool:
