@@ -619,6 +619,19 @@ def test_only_our_seat_counts_and_the_opponents_seats_are_kept_apart(run, ctx, r
     assert (errors["baseline"], errors["candidate"]) == (by_arm["baseline"], by_arm["candidate"])
 
 
+def test_rows_carry_the_game_version_the_platform_played(run, ctx, running, mixin_dir):
+    """MIXIN.md says what the mixin was written for; after a Coworld release it is stale."""
+    manifest = mixin_dir / "MIXIN.md"
+    stale = manifest.read_text().replace('coworld_version: "1"', 'coworld_version: "0"')
+    assert 'coworld_version: "0"' in stale
+    manifest.write_text(stale)
+    args = {"action": "request", "experiment": "X-1", **ROSTER, "seeds": [1], "arms": ["candidate"]}
+    (created,) = run("xp", args)["runs"]
+    assert created["results"]["coworld_version"] == fake.COWORLD_VERSION
+    (run_record,) = run("xp", {"action": "status", "experiment": "X-1"})["runs"]
+    assert run_record["results"]["rows"][0]["game_version"] == fake.COWORLD_VERSION
+
+
 def test_a_league_sampled_seat_is_labelled_as_such(run, ctx, running, mixin_dir):
     args = {"action": "request", "experiment": "X-1", "seeds": [7], "arms": ["candidate"]}
     run("xp", {**args, "league": fake.LEAGUE_ID})

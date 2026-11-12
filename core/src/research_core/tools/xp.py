@@ -15,7 +15,9 @@ seats after it; ``request`` records the seat and the pinned roster on the run (`
 Version's and go into ``results.rows``; the other seats' rows, each labelled with the policy that
 sat there, go to ``<request id>.other_seats.jsonl`` beside the downloaded results folder, for
 context only (``results.other_seats`` counts them and names the file). Output with no row for our
-seat is a broken evaluate.
+seat is a broken evaluate. A row's ``game_version`` is the version the platform ran the request
+on (``results.coworld_version``), so a Coworld release during an Experiment never mixes versions
+under one label; MIXIN.md's ``coworld_version`` stands in only for runs recorded without it.
 
 Rules the tool keeps (A4.4): it puts a Task on a wait only when the platform stays down (below);
 a Researcher calls
@@ -409,6 +411,7 @@ def _record_run(
             "title": request.title,
             "seat": xp_module.OUR_SEAT,
             "roster": xp_module.pinned_seats(body),
+            "coworld_version": request.coworld_version,
         },
     )
 
@@ -562,12 +565,17 @@ def _refresh(ctx: ToolContext, record: dict, run: dict) -> dict:
     if request.status in ("failed", "cancelled") and run["validity"] == "valid":
         reason = f": {request.error}" if request.error else ""
         validity = f"invalid: request {request.status}{reason}"
+    # Runs recorded before the request's game version was kept get it here.
+    results = None
+    if not (run.get("results") or {}).get("coworld_version") and request.coworld_version:
+        results = {"coworld_version": request.coworld_version}
     return experiments.update_run(
         ctx.store,
         ctx.actor,
         run["id"],
         state=request.status,
         episodes_completed=request.completed_count,
+        results=results,
         validity=validity,
     )
 
@@ -655,7 +663,8 @@ def _finish_evaluate(
         rows = rows_from_evaluate_output(
             _evaluate_output(result.log_path),
             policy_version=results["version"],
-            game_version=mixin.coworld_version or "unknown",
+            # The version the platform played; MIXIN.md's is only what the mixin was written for.
+            game_version=results.get("coworld_version") or mixin.coworld_version or "unknown",
             request_id=run["platform_request_id"],
         )
         ours, others = _split_by_seat(rows, results)

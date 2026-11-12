@@ -862,6 +862,7 @@ class FakePlatform:
             created_at=row["created_at"],
             error="injected failure" if status == "failed" else None,
             title=row["title"],
+            coworld_version=COWORLD_VERSIONS.get(row["coworld_id"], (None, None))[1],
         )
 
     def xp_create(self, body: dict) -> XpRequest:
