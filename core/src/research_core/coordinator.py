@@ -20,7 +20,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from opentelemetry.trace import StatusCode
 
-from research_core import inference, layout, run_failures, transitions
+from research_core import brain, inference, layout, run_failures, transitions
 from research_core.agent_telemetry import observed
 from research_core.store import (
     admissions,
@@ -38,6 +38,7 @@ from research_core.store.errors import StoreError
 from research_core.store.events import Event
 from research_core.telemetry import tracer
 from research_core.watcher import (
+    brain_check,
     champion_sync,
     checks,
     context_panel,
@@ -1752,6 +1753,8 @@ class Coordinator:
                 report["merge"] = merge.run(ctx)
                 report["goals"] = goals.run(ctx)
                 report["checks"] = checks.run(ctx)
+                if brain.enabled(ctx.env):
+                    report["brain"] = brain_check.run(ctx)
                 ctx.set_meta(workflow_key, ctx.now.isoformat())
             report["messages"] = self.deliver_worker_messages(ctx)
             report["chat_updates"] = self.deliver_chat_updates(ctx)

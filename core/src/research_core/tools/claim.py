@@ -64,13 +64,14 @@ def handle(call: ToolCall) -> dict:
             tags=call.get("tags"),
             evidence=call.get("evidence"),
             see_also=call.get("see_also") or (),
+            env=call.ctx.env,
         )
         return {"record": record}
     if call.action == "inspect_evidence":
         return inspect(call)
     claim_id = a.record_number(call.get("claim"), "claim", "claim")
     if call.action == "read":
-        return {"record": claims.read(store, claim_id)}
+        return {"record": claims.read(store, claim_id, call.ctx.env)}
     if call.action == "add_evidence":
         record = claims.add_evidence(
             store,
@@ -80,6 +81,7 @@ def handle(call: ToolCall) -> dict:
             ref=call.get("ref"),
             stance=call.get("stance"),
             note=call.get("note") or "",
+            env=call.ctx.env,
         )
         return {"record": record}
     if call.action == "retire":
@@ -92,6 +94,7 @@ def handle(call: ToolCall) -> dict:
             status=call.get("status"),
             superseded_by=call.get("superseded_by"),
             evidence=killing if call.get("type") or call.get("ref") else None,
+            env=call.ctx.env,
         )
         return {"record": record}
     raise AssertionError(call.action)
@@ -106,10 +109,12 @@ def inspect(call: ToolCall) -> dict:
     if type_name or ref:
         if not (type_name and ref):
             raise ToolError("inspecting a link directly needs both type and ref")
-        return {"inspections": [evidence_types.inspect_evidence(type_name, ref, env)]}
+        return {"inspections": [evidence_types.inspect_evidence(type_name, ref, env, call.ctx.env)]}
     if not call.get("claim"):
         raise ToolError("give a claim (and optionally which evidence), or a type and ref")
-    record = claims.read(call.ctx.store, a.record_number(call.get("claim"), "claim", "claim"))
+    record = claims.read(
+        call.ctx.store, a.record_number(call.get("claim"), "claim", "claim"), call.ctx.env
+    )
     links = record["evidence"]
     if call.get("evidence_id") is not None:
         links = [select_link(links, call.get("evidence_id"), record["id"])]
@@ -118,7 +123,7 @@ def inspect(call: ToolCall) -> dict:
             "evidence_id": link["id"],
             "stance": link["stance"],
             "note": link["note"],
-            **evidence_types.inspect_evidence(link["type"], link["ref"], env),
+            **evidence_types.inspect_evidence(link["type"], link["ref"], env, call.ctx.env),
         }
         for link in links
     ]
