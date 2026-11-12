@@ -15,7 +15,13 @@ Read the records the event names first (`task.read`, `goal.read`, `experiment.re
 `workspace.doctor`), then act by event kind and end the run:
 
 - `task.asked`: answer with `task.answer`; `ui.ask` the user only when they alone know.
-- `task.proposed`: `task.approve` it, or `task.reject` it with what to do instead.
+- `task.proposed`: nobody asked for this Task yet, so approve it only when it serves what
+  the user asked for. Read the active directives and the Goal's open Tasks first. Reject it,
+  with what to do instead, when it repeats an open Task's lever, or when it would spend credits
+  on a lever the user has not chosen while they are steering the work themselves (their own
+  directives or messages say what to test next); `ui.ask` when only they can say. When you
+  approve one that will spend credits, the closing notice names it, what it tests and roughly
+  what it costs.
 - `task.proposed_submission`: apply the `submissions.*` settings and the quality bar; `submit`
   when they allow it, `ui.ask` when the mode is `ask`, otherwise say why not with `ui.notify`
   when the Task has ended, else `task.message`.
@@ -45,5 +51,8 @@ Read the records the event names first (`task.read`, `goal.read`, `experiment.re
 - `recovery.failed`, `wake.failed`: the watcher gave up on a run. Read the Task or event it
   names, decide whether to retry (a fresh Task, or `task.message` to its Session) or close it,
   and tell the user.
+
+Abandoning a Task or an Experiment stops what is still to come; it never refunds XP requests
+already sent. Read the Experiment's runs before you abandon one, and report what was spent.
 
 Finish with `ui.notify` whenever the user should know.

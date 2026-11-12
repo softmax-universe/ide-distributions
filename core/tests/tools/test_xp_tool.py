@@ -572,6 +572,49 @@ def test_status_completes_downloads_evaluates_and_stores_rows(run, ctx, running,
     assert third["complete"] is True and len(third["runs"]) == 2
 
 
+def test_status_keeps_only_our_seats_rows(run, ctx, running, mixin_dir, tmp_path):
+    # An evaluate that prints every seat: seat 1 is the opponent and must not count as ours.
+    script = tmp_path / "all_seats.py"
+    script.write_text(
+        "import json\n"
+        "for seat, won in ((0, 1.0), (1, 0.0)):\n"
+        "    print(json.dumps({'episode': 0, 'seed': 1, 'seat': seat,"
+        " 'metrics': {'score': won, 'errors': 0}}))\n"
+    )
+    set_evaluate_command(mixin_dir, f"python3 {script}")
+    run(
+        "xp",
+        {"action": "request", "experiment": "X-1", **ROSTER, "seeds": [1], "arms": ["candidate"]},
+    )
+    result = run("xp", {"action": "status", "experiment": "X-1"})
+    assert result["ok"] is True, result
+    (run_record,) = result["runs"]
+    rows = run_record["results"]["rows"]
+    assert [row["seats"] for row in rows] == [[0]] and rows[0]["metrics"]["score"] == 1.0
+    other = run_record["results"]["other_seat_rows"]
+    assert other["count"] == 1 and other["seats"] == [1]
+
+
+def test_rows_without_seat_zero_are_kept_as_they_are():
+    from research_core.stats.ingest import EpisodeRow
+
+    def row(seat):
+        return EpisodeRow(
+            episode_id=f"e:s{seat}",
+            game_version="1",
+            policy_version="V-1",
+            seed=1,
+            seats=(seat,),
+            opponents=(),
+            metrics={"score": 1.0},
+            status="completed",
+        )
+
+    rows = [row(1), row(2)]
+    assert xp_tool.our_seat_rows(rows) == (rows, [])
+    assert xp_tool.our_seat_rows([row(0), row(3)]) == ([row(0)], [row(3)])
+
+
 def test_status_marks_a_broken_evaluate_invalid_and_reports_the_capability(
     run, ctx, running, mixin_dir
 ):

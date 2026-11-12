@@ -92,6 +92,20 @@ def handle(call: ToolCall) -> dict:
         options = call.get("options") or []
         if not all(isinstance(option, str) and option for option in options):
             raise ToolError("options is a list of short answer texts")
+        given_refs = sorted(call.get("refs") or [])
+        waiting = open_ask_about(ctx, conversation, given_refs)
+        if waiting is not None:
+            ask_id, existing = waiting
+            return {
+                "conversation": conversation,
+                "ask_id": ask_id,
+                "ask": existing,
+                "already_open": True,
+                "next": (
+                    "an open question about the same records is already waiting for the user;"
+                    " no second one was added. Its answer arrives as a UI action"
+                ),
+            }
         ask_id = f"ask_{secrets.token_hex(4)}"
         value = {
             "question": call.get("question"),
@@ -109,6 +123,28 @@ def handle(call: ToolCall) -> dict:
             "next": ANSWER_NOTE if conversation == ctx.hermes_session_id() else ANSWER_NOTE_NO_CHAT,
         }
     raise AssertionError(call.action)
+
+
+def open_ask_about(
+    ctx: ToolContext, conversation: str, given_refs: list[str]
+) -> tuple[str, dict] | None:
+    """An open question in a shared conversation about exactly these records, if any.
+
+    Wakes run in parallel and each sees the same event, so without this one decision (submit
+    V-2?) reached the user as several identical cards. Only shared conversations and questions
+    with refs are matched: a chat Session's own questions and ref-less ones are always added.
+    """
+    if not given_refs or conversation == ctx.hermes_session_id():
+        return None
+    asks = ui_state.get(ctx.wstore, conversation)["doc"].get("asks") or {}
+    for ask_id, ask in asks.items():
+        if (
+            isinstance(ask, dict)
+            and ask.get("status") == "open"
+            and sorted(ask.get("refs") or []) == given_refs
+        ):
+            return ask_id, ask
+    return None
 
 
 def agent_context_content(ctx: ToolContext, conversation: str, content: Any) -> dict[str, Any]:

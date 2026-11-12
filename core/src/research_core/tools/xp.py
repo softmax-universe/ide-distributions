@@ -4,10 +4,11 @@
 records each as a run the moment the platform accepts it. The roster sets the player count, so
 ``_open_seats`` checks it against the game's manifest before any request is sent. ``status``
 refreshes the runs, downloads the results of completed requests, runs the mixin's ``evaluate``
-command on them and stores the per-seat rows on the run, in the results-row contract the
-``experiment`` tool closes on (``tools/experiment.py``: ``results.rows`` objects with
-``episode_id``, ``game_version``, ``policy_version`` as the Version's record id, ``seed``,
-``seats``, ``opponents``, ``metrics``, ``status``, ``reason``).
+command on them and stores the rows of our seat (slot 0, where ``request_body`` puts the run's
+Version; rows for opponents' seats are counted under ``other_seat_rows``) on the run, in the
+results-row contract the ``experiment`` tool closes on (``tools/experiment.py``:
+``results.rows`` objects with ``episode_id``, ``game_version``, ``policy_version`` as the
+Version's record id, ``seed``, ``seats``, ``opponents``, ``metrics``, ``status``, ``reason``).
 
 Rules the tool keeps (A4.4): it puts a Task on a wait only when the platform stays down (below);
 a Researcher calls
@@ -622,9 +623,38 @@ def _finish_evaluate(
         )
         _store_rows(ctx, run, results, f"invalid: evaluate output: {error}")
         return None
-    results["rows"] = [asdict(row) for row in rows]
+    ours, others = our_seat_rows(rows)
+    results["rows"] = [asdict(row) for row in ours]
+    if others:
+        results["other_seat_rows"] = {
+            "count": len(others),
+            "seats": sorted({seat for row in others for seat in row.seats}),
+            "note": (
+                f"evaluate printed rows for seats other than our seat {OUR_SEAT}; they score the"
+                " opponents, not this run's Version, so they are kept out of rows and the verdict"
+            ),
+        }
     _store_rows(ctx, run, results, "valid")
     return None
+
+
+def our_seat_rows(rows: list) -> tuple[list, list]:
+    """The rows of the seat our Version played, and the rest.
+
+    ``request_body`` puts the run's Version in slot 0 and opponents in the slots after it, so
+    only seat 0 measures the Version. A mixin's ``evaluate`` often prints every seat; averaging
+    those in makes both arms the same all-seat mean (1/6 against 1/6 in a six-seat game) and a
+    row per opponent seat reads as our own win or loss. When no row names seat 0 the rows are
+    kept as they are: the seat numbering is then the mixin's own.
+    """
+    if not any(OUR_SEAT in row.seats for row in rows):
+        return list(rows), []
+    ours = [row for row in rows if OUR_SEAT in row.seats]
+    others = [row for row in rows if OUR_SEAT not in row.seats]
+    return ours, others
+
+
+OUR_SEAT = 0
 
 
 def _store_rows(ctx: ToolContext, run: dict, results: dict, validity: str | None) -> None:
