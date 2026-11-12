@@ -233,3 +233,26 @@ def test_coworld_switch_offers_the_source_a_listed_coworld_does_not_need():
     """The working-with-the-ide skill sends these for a fork; a closed schema drops hidden ones."""
     spec = research_core.tools.workspace.SPEC
     assert {"source", "commit"} <= set(spec.properties("orchestrator"))
+
+
+def test_identity_action_names_once_then_the_user_rewrites_once(call):
+    named = call("workspace", {"action": "identity", "name": "Pip"})
+    assert named["identity"] == {"name": "Pip", "name_confirmed": False, "met_user": False}
+    again = call("workspace", {"action": "identity", "name": "Rex"})
+    assert again["ok"] is False and "already named" in str(again)
+    assert call("workspace", {"action": "identity"})["identity"]["name"] == "Pip"
+    renamed = call("workspace", {"action": "identity", "name": "Rex", "cites": "msg:1"})
+    assert renamed["identity"]["name"] == "Rex" and renamed["identity"]["name_confirmed"]
+    locked = call("workspace", {"action": "identity", "name": "Ace", "cites": "msg:2"})
+    assert locked["ok"] is False and "cannot change" in str(locked)
+    met = call("workspace", {"action": "identity", "met_user": True, "cites": "msg:3"})
+    assert met["identity"]["met_user"] is True
+    researcher = call("workspace", {"action": "identity", "name": "Zed"}, role="researcher")
+    assert researcher["ok"] is False
+
+
+def test_the_settings_tool_cannot_write_the_name(call):
+    refused = call(
+        "settings", {"action": "update", "key": "identity.name", "value": "Rex", "cites": "m:1"}
+    )
+    assert refused["ok"] is False

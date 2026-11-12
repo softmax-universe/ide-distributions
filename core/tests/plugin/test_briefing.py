@@ -366,44 +366,83 @@ def test_the_orchestrator_is_told_when_nothing_has_started_setup(tmp_path):
     assert "Coworld setup" not in briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
 
 
-# --- the cogent's own name (an `identity` claim the setup wake writes once) -----------------
+# --- the cogent's own name (workspace identity, written once; store.identity) ---------------
 
 
-def write_name(ctx, name, summary=None):
-    return claims.write(
-        ctx.store,
-        HARNESS,
-        summary=summary or f"Name: {name}",
-        body="Chosen by the cogent at setup.",
-        tags=["identity"],
-        evidence=[CODE],
-    )
+def test_a_workspace_session_and_every_coworld_show_the_same_name(tmp_path):
+    from research_core.store import identity
 
-
-def test_the_briefing_shows_the_cogents_name_and_a_missing_name_changes_nothing(tmp_path):
     ctx = make_ctx(tmp_path)
     before = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
     assert "Name:" not in before
+    assert "Met the user: no" in before
 
-    write_name(ctx, "Pip")
-    after = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
-    assert "Name: Pip" in after
-    assert after.replace("Name: Pip\n", "", 1) == before
-
-
-def test_a_later_identity_claim_never_renames_the_cogent(tmp_path):
-    ctx = make_ctx(tmp_path)
-    write_name(ctx, "Pip")
-    write_name(ctx, "Rex")
+    identity.choose(ctx.wstore, HARNESS, "Pip")
     text = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
-    assert "Name: Pip" in text and "Rex" not in text
+    assert "Name: Pip (chosen at setup, not yet confirmed by the user)" in text
+
+    no_coworld = make_ctx(tmp_path, coworld=False)
+    assert "Name: Pip" in briefing.render(no_coworld, "chat1", role="orchestrator", now=NOW)
+
+    coworlds.register(ctx.wstore, HARNESS, "cow_two", folder="cow_two")
+    coworlds.activate(ctx.wstore, HARNESS, "cow_two")
+    other = make_ctx(tmp_path, IDE_COWORLD_ID="cow_two")
+    assert "Name: Pip" in briefing.render(other, "chat1", role="orchestrator", now=NOW)
 
 
-def test_the_setup_wake_chooses_the_name_once_and_never_renames():
+def test_a_confirmed_name_loses_the_note_and_a_claim_never_sets_the_name(tmp_path):
+    from research_core.store import identity
+
+    ctx = make_ctx(tmp_path)
+    claims.write(
+        ctx.store,
+        HARNESS,
+        summary="Name: Rex",
+        body="Not the real record.",
+        tags=["identity"],
+        evidence=[CODE],
+    )
+    assert "Name:" not in briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
+    identity.choose(ctx.wstore, HARNESS, "Pip")
+    identity.confirm(ctx.wstore, HARNESS, cites="msg:1")
+    text = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
+    assert "Name: Pip\n" in text and "Rex" not in text and "not yet confirmed" not in text
+
+
+def test_met_the_user_shows_only_to_the_orchestrator_and_only_until_met(tmp_path):
+    from research_core.store import identity
+
+    ctx = make_ctx(tmp_path)
+    assert "Met the user: no" in briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
+    researcher = make_ctx(tmp_path, role="researcher", session_id="task-run-1")
+    assert "Met the user" not in briefing.render(
+        researcher, "task-run-1", role="researcher", now=NOW
+    )
+    identity.mark_met(ctx.wstore, HARNESS, cites="msg:2")
+    assert "Met the user" not in briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
+
+
+def test_the_setup_wake_chooses_the_name_itself_and_never_asks_the_user():
     from research_core.watcher.wakes import TEMPLATES_DIR
 
     text = " ".join((TEMPLATES_DIR / "setup.md").read_text(encoding="utf-8").split())
-    assert "Choose your own name once" in text
-    assert "keep it; never rename" in text
-    assert "`ui.ask` if they are present" in text
-    assert "tags `identity`" in text
+    assert "workspace.identity {name}" in text
+    assert "only when the briefing has no `Name:` line" in text
+    assert "the tool refuses a second one" in text
+    assert "Never ask the user in this wake" in text
+    assert "ui.ask" not in text.split("Choose your own name")[1].split("4. Import")[0]
+    assert "player" not in text.lower().replace("<player>", "").replace("this player", "")
+
+
+def test_the_companion_section_gates_on_the_never_met_signal_and_says_the_user():
+    from research_core.prompts import build
+
+    soul = build.render("orchestrator")
+    section = soul.split("## Your name\n")[1].split("\n## ")[0]
+    assert 'If "Met the user: no"' in section
+    assert "User preferences" not in section
+    assert "player" not in section.lower()
+    assert "never take a game's name or persona" in section
+    assert "When the user asks for a submission" in soul
+    assert "`submit` refuses otherwise and names each reason" in soul
+    assert "declared at open" in soul

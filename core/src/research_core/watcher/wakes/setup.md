@@ -24,10 +24,10 @@ Do this in order, and end the run when it is done:
    steps, the `MIXIN.md` front matter (`coworld`, `commands` with `build` and `check` at least,
    `upload` and `evaluate`, metrics, the artifact, toolchains), a lab
    `AGENTS.md`, `docs/`, a reference policy with a version log and `tools/build.sh`.
-3. Choose your own name once. When the briefing has a `Name:` line, keep it; never rename. When it
-   has none, pick a short friendly name of your own: ask your player with `ui.ask` if they are
-   present in this wake, otherwise choose it yourself. Save it with `claim_write` (summary
-   `Name: <name>`, tags `identity`). Never take a name or persona from the game.
+3. Choose your own name once, with `workspace.identity {name}`, only when the briefing has no
+   `Name:` line: a short friendly name of your own. The workspace keeps one name for every game;
+   the tool refuses a second one, so never rename. Never ask the user in this wake and never take
+   a name or persona from the game. Their first chat offers to change it once.
 4. Import lesson notes the switch skipped as claims (`claim_write`).
 5. `workspace.capabilities {check: true}` marks the tool checks due; the watcher runs them on
    its next tick. Setup ends only when build, check and one upload pass (the first check uploads for real, as policy `<coworld>-tool-check-<player>`, a name unique to this Player); a failed check creates a maintenance Task on its own.

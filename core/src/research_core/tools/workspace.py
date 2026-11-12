@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from research_core import coworld_setup, environment_guide, gitops
 from research_core.store import capabilities
 from research_core.store._common import now_iso, parse_iso
-from research_core.store.errors import SchemaMismatch
+from research_core.store.errors import SchemaMismatch, StoreError
 from research_core.tools import _args as a
 from research_core.tools.base import ActionSpec, ToolCall, ToolError, ToolSpec
 from research_core.transitions import durable_tool
@@ -61,7 +61,32 @@ def handle(call: ToolCall) -> dict:
         return list_capabilities(ctx, check=bool(call.get("check")))
     if call.action == "environment_guide":
         return {"guide": environment_guide.render(ctx)}
+    if call.action == "identity":
+        return identity_action(call)
     raise AssertionError(call.action)
+
+
+def identity_action(call: ToolCall) -> dict[str, Any]:
+    """Read the cogent's identity, or write it under the write-once rules of store.identity."""
+    from research_core.store import identity
+
+    ctx = call.ctx
+    name, cites = call.get("name"), call.get("cites")
+    met, confirm = call.get("met_user"), call.get("confirm")
+    wrote = False
+    try:
+        if name is not None and not cites:
+            wrote = True
+            identity.choose(ctx.wstore, ctx.actor, name)
+        elif cites and (name is not None or confirm):
+            wrote = True
+            identity.confirm(ctx.wstore, ctx.actor, cites=cites, name=name)
+        if met:
+            wrote = True
+            identity.mark_met(ctx.wstore, ctx.actor, cites=cites or "")
+    except StoreError as error:
+        raise ToolError(str(error)) from None
+    return {"identity": identity.read(ctx.wstore), "wrote": wrote}
 
 
 # --- change_complete --------------------------------------------------------------------------
@@ -415,6 +440,21 @@ SPEC = durable_tool(
                 "capabilities",
                 "List capabilities; check: true asks the watcher to run the checks next tick.",
                 {"check": a.boolean("Mark the checks due (they run within a minute).")},
+            ),
+            ActionSpec(
+                "identity",
+                "Read the cogent's own name and whether it has met the user. name alone "
+                "(setup only) is refused once a name exists; name or confirm with cites (the "
+                "user's message) is the user's one rewrite, then locked; met_user with cites "
+                "records the first get-to-know-you chat.",
+                {
+                    "name": a.string("Your own short name, one line."),
+                    "confirm": a.boolean("The user kept the name you have (needs cites)."),
+                    "met_user": a.boolean("Record that you have met the user (needs cites)."),
+                    "cites": a.string("The user's message reference."),
+                },
+                (),
+                ORCHESTRATOR,
             ),
             ActionSpec("environment_guide", "Where you are, what is writable, credentials, CLIs."),
         ),

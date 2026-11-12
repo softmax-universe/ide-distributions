@@ -187,5 +187,3 @@ def test_inspect_evidence_never_raises(coworld_store):
     for name, ref in VALID_REFS:
         result = evidence_types.inspect_evidence(name, ref, env)
         assert {"type", "ref", "summary"} <= set(result), (name, ref)
-
-
