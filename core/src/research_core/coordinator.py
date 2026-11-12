@@ -22,7 +22,15 @@ from opentelemetry.trace import StatusCode
 
 from research_core import inference, layout, run_failures, transitions
 from research_core.agent_telemetry import observed
-from research_core.store import admissions, events, notices, sessions, settings, tasks
+from research_core.store import (
+    admissions,
+    chat_updates,
+    events,
+    notices,
+    sessions,
+    settings,
+    tasks,
+)
 from research_core.store._common import now_iso, parse_iso
 from research_core.store.actors import Actor
 from research_core.store.db import Store
@@ -79,9 +87,12 @@ WAKE_INSTRUCTIONS = (
     "You are the Orchestrator in a background wake Session that the watcher started, not a "
     "person: nobody reads this conversation. Act on the event below with the record and "
     "platform tools, read the records before you write, and finish within this run. Never "
-    "write into a user conversation; when the user should hear something call ui.notify, and "
-    "ui.ask when only they can decide. Settings bound your own initiative, never a request "
-    "the user already made."
+    "answer in this conversation; nobody reads it. Use ui.tell for what the user should hear "
+    "now, with the category that says why: decision (only they can decide; ask it plainly, they "
+    "answer in the chat), outcome (work they asked for finished), submission (a Version "
+    "submitted, placed or rejected), failure (something broke that needs them) or merge (a "
+    "Version merged to main). Use ui.notify for routine progress they can read later. Settings "
+    "bound your own initiative, never a request the user already made."
 )
 
 ACTOR = Actor.user("client-dispatch")
@@ -709,6 +720,13 @@ class Coordinator:
             else:
                 report["deferred"].append(entry)
         return report
+
+    def deliver_chat_updates(self, ctx: TickContext) -> dict[str, Any]:
+        """Hand this pass's Coworld's due ``ui.tell`` updates to its most recent chat as one
+        queued follow-up, or to notices when it has no chat (``store/chat_updates.py``). The
+        caller skips it while paused, so held updates wait for the resume."""
+        coworld_id = ctx.coworld.coworld_id if ctx.coworld is not None else None
+        return chat_updates.deliver(ctx.wstore, ctx.actor, coworld_id=coworld_id)
 
     def abandon_worker(self, ctx: TickContext, event: Event, store: Store) -> dict[str, Any]:
         """``task.abandoned``: stop the previous holder's run (marked as the watcher's stop) and
@@ -1744,6 +1762,7 @@ class Coordinator:
                 report["checks"] = checks.run(ctx)
                 ctx.set_meta(workflow_key, ctx.now.isoformat())
             report["messages"] = self.deliver_worker_messages(ctx)
+            report["chat_updates"] = self.deliver_chat_updates(ctx)
             report["dispatch"] = self.plan_assignments(ctx)
             report["wakes"] = self.advance_events(ctx)
         report["heartbeat"] = heartbeat.run(ctx)

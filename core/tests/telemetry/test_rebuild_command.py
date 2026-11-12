@@ -28,6 +28,7 @@ TOOL = {"type": "function", "function": {"name": "read_file", "parameters": {}}}
 TRACE = "4bf92f3577b34da6a3ce929d0e0e4736"
 LONG_RESULT = 'café 日本語 😀 "quoted"\n' * 2000
 USAGE = {"input_tokens": 1000, "output_tokens": 7}
+REPLY = {"role": "assistant", "content": "ok"}
 
 
 def request_body(history: list[dict]) -> dict:
@@ -444,6 +445,19 @@ def test_a_datadog_failure_is_could_not_start_and_says_so_in_one_line(datadog, t
         assert done.returncode == 2, done.stderr
         assert "Traceback" not in done.stderr
         assert len(done.stderr.strip().splitlines()) == 1, done.stderr
+
+
+def test_a_search_datadog_did_not_finish_is_could_not_start(writer, stream_file, datadog, tmp_path):
+    """A ``timeout`` answer can hold part of the results, so nothing is rebuilt from it."""
+    two_requests(writer)
+    sent(writer, stream_file, datadog)
+    keys = {"DD_API_KEY": "a", "DD_APP_KEY": "b", "HOME": str(tmp_path)}
+    datadog.status = None  # An answer that gives no status is taken as it comes.
+    assert _command(datadog, "--session", "ses_1", **keys).returncode == 0
+    datadog.status = "timeout"
+    done = _command(datadog, "--session", "ses_1", **keys)
+    assert done.returncode == 2 and done.stdout == ""
+    assert "status 'timeout'" in done.stderr and "Traceback" not in done.stderr
 
 
 def committed(writer, row, kind="tool", trace="trace_1", **fields):
@@ -871,6 +885,45 @@ def test_a_users_message_survives_a_kill_during_its_first_call(writer, stream_fi
     report = rebuild_session(search_of(datadog), "s")
     [attempt] = report["requests"]
     assert attempt["request"]["messages"][-1] == {"role": "user", "content": scrub(text)}
+    # Nothing says how the attempt ended, which is no loss: a kill, a cancel or a running call.
+    assert report["unended_attempts"] == [attempt["model_attempt_id"]]
+    assert report["missing"] == []
+
+
+def test_an_attempt_ends_with_a_reply_a_failure_or_unread_and_not_a_partial_reply(
+    writer, stream_file, datadog
+):
+    """Hermes can retry a broken stream inside its attempt, so a partial reply is no end."""
+    ids = {"session_id": "ses_1"}
+    for number in range(1, 6):
+        body = request_body([{"role": "user", "content": "Go"}])
+        writer.capture_request(body, provider="moonshot", model_attempt_id=f"att_{number}", **ids)
+    writer.capture_response(REPLY, model_attempt_id="att_1", **ids)
+    writer.capture_response(REPLY, model_attempt_id="att_2", partial=True, **ids)
+    writer.capture_operation("model_attempt", "failed", model_attempt_id="att_3", **ids)
+    writer.capture_operation("model_attempt", "unread", model_attempt_id="att_4", **ids)
+    sent(writer, stream_file, datadog)
+
+    report = rebuild_session(search_of(datadog), "ses_1")
+    assert report["unended_attempts"] == ["att_2", "att_5"] and report["missing"] == []
+
+
+def test_a_reply_whose_request_was_lost_is_named(writer, stream_file, datadog):
+    """A reply, a failure and a broken stream's partial reply of attempts whose request records
+    never arrived are neither requests nor events, so the report names them."""
+    ids = {"session_id": "ses_1", "otel_trace_id": "trace_1"}
+    writer.capture_response({"role": "assistant", "content": "hi"}, model_attempt_id="a1", **ids)
+    writer.capture_operation("model_attempt", "failed", model_attempt_id="a2", **ids)
+    partial = {"role": "assistant", "content": "h"}
+    writer.capture_response(partial, model_attempt_id="a3", partial=True, **ids)
+    sent(writer, stream_file, datadog)
+
+    report = rebuild_session(search_of(datadog), "ses_1")
+    assert report["requests"] == []
+    assert report["missing"] == [
+        {"kind": "reply_with_no_request", "model_attempt_id": attempt}
+        for attempt in ("a1", "a2", "a3")
+    ]
 
 
 @pytest.mark.parametrize(

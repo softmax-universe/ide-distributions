@@ -168,6 +168,22 @@ The same change feed resolves it when the requests finish. The coordinator resum
 Researcher through the normal Task continuation path. The Researcher evaluates the results
 and reports through the Task. The Orchestrator decides what to tell the user.
 
+A background Orchestrator wake reaches the user's chat with `ui.tell {category, text, refs?}`
+(`core/src/research_core/store/chat_updates.py`). The tool is refused in a chat Session. It
+records a `chat_updates` row in the workspace store. A category that the workspace setting
+`chat_updates.categories` does not list becomes a notice at once. The default lists
+`decision`, `outcome`, `submission` and `failure`, so `merge` is a notice. On each pass the
+coordinator (`Coordinator.deliver_chat_updates`) takes a Coworld's pending rows once the newest
+is two minutes old or the oldest is ten minutes old. It enqueues one `origin="followup"`
+admission, keyed `chat-updates:<first id>-<last id>`, into the Coworld's most recently used
+top-level chat, ordered the way AIDE's `session.page` orders chats it offers (league is not
+considered). The rows record that
+admission in the same transaction, so a restart cannot deliver them twice. A chat gets no new
+batch while an earlier one is still queued. With no chat for the Coworld, the rows become
+notices. Nothing is delivered while `paused` is set. The queued admission runs after the chat's
+live run ends, and that turn tells the user. Updates are recorded and delivered only while the
+workspace is awake: finishing platform work does not wake it.
+
 `research workspace sleep` preserves lifecycle v1: pause admission, drain recorded workers and
 tracked processes, settle chat/wake runs, then checkpoint and flush the retained volume.
 Exit 0 authorizes the host to stop compute. Explicit Stop and fifteen-minute automatic sleep
@@ -212,7 +228,10 @@ context-schema` and stamped with the client's identity, the Session's Coworld an
 the block reaches the model through the `pre_llm_call` hook (`plugin/turn.py`). If the Session has a live run, new inputs wait in the durable inbox. It streams each store's `events` table to clients as Server-Sent Events
 (`research store events --after <seq>` and `--follow` show the rows; one cursor per store), and
 applies user edits through `research store apply --actor user:<id> <op> <json>`. Notices
-(`events` rows of kind `notice`) must reach every client.
+(`events` rows of kind `notice`) must reach every client. The AIDE backend does not serve
+them yet: in the hosted image, a notice reaches the user only through the Orchestrator's next chat
+turn, which lists unread notices (`plugin/turn.py`). So a wake uses `ui.tell` for anything the
+user should hear now ("Coordinator and pause" above).
 
 The model routes of `core/src/research_core/contract/CONTRACT.md` ("Profile models") are served by `research serve`
 itself, which the workspace image runs: it reads each profile's `config.yaml` (`model`,

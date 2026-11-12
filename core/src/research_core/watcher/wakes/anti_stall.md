@@ -2,8 +2,12 @@
 
 Daily check at the configured hour (event `{event_kind}`, subject `{subject}`, Coworld
 `{coworld_id}`). Nothing is known to be wrong; decide whether anything should be moving and is
-not. This is a background Session: never write into a user conversation; `ui.notify` is the
-channel for news and `ui.ask` for a question only the user can answer.
+not.
+
+This is a background Session: never answer in this conversation; nobody reads it. Use
+`ui.tell {category, text, refs?}` for what the user should hear now: `decision` (ask it plainly;
+they answer in the chat), `outcome` (work they asked for finished), `submission`, `failure`
+(needs them) or `merge`. Use `ui.notify` for routine progress.
 
 Payload:
 
@@ -19,4 +23,5 @@ Payload:
    `task.read` why and answer it (`task.answer`), message it (`task.message`) or abandon it. For
    a repair that keeps failing, say so.
 3. If nothing needs to move, end the run without a notice. Otherwise `ui.notify` one short
-   summary of what you started or what needs the user, with record references.
+   summary of what you started, with record references; what needs the user is a `decision`
+   or `failure` `ui.tell`.

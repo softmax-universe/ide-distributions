@@ -34,7 +34,7 @@ Where you are, the image and source commits, the two Python environments, writab
 
 - Neither profile has a turn or time limit, but a guard ends the turn at five failures of one tool (not `terminal`, `execute_code` and the like), five identical failing calls or ten identical calls with identical results. A workspace tool has about 400 seconds; a mixin command 240 before it is backgrounded with a log and a resume token (`candidate` skill); its result has the log path and tail.
 - The watcher ticks every minute: it resumes Sessions whose wait resolved, runs due checks, merges reviewed Tasks and syncs the champion every ten minutes. A Task on `task_wait` is asleep, not finished.
-- Reaching the user: the Orchestrator through the conversation or `ui.notify`. A Researcher reaches only the Orchestrator, through its Task (`task_ask`, the result). Wakes never write into a chat.
+- Reaching the user: the Orchestrator through the conversation or `ui.notify`; a wake through `ui.tell`. A Researcher reaches only the Orchestrator, through its Task (`task_ask`, the result).
 - `paused` stops background starts and holds new user messages; a turn already running finishes.
 
 ## Native terminal store commands

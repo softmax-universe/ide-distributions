@@ -151,6 +151,8 @@ CLAIM_STATUSES = ("active", "superseded", "refuted")
 CHAMPION_STATES = ("pending", "processing", "placed", "rejected", "champion", "none")
 CAPABILITY_STATUSES = ("unknown", "ok", "broken")
 INTENT_KINDS = ("upload", "submit", "xp", "forum", "wiki", "run", "champion")
+# Why a wake's ``ui.tell`` should reach the user now; ``chat_updates.categories`` picks which do.
+CHAT_UPDATE_CATEGORIES = ("decision", "outcome", "submission", "failure", "merge")
 INTENT_STATES = ("pending", "done", "failed")
 WAIT_KINDS = (
     "question",

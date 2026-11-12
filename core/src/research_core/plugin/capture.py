@@ -237,7 +237,7 @@ class GatewayCapture:
         # Each call's attempt in flight, by ``api_request_id``, until Hermes reports it failed.
         # Hermes also reports a call whose request could not be built, before it has an attempt.
         self._open_attempt: dict[str, str] = {}
-        # The calls of each Session's current turn, whose state its end clears.
+        # The calls of each Session's current turn and the results it captured: its end clears both.
         self._turn_calls: dict[str, list[str]] = defaultdict(list)
         self._results_seen: dict[str, set[str]] = defaultdict(set)
         self._turn_parts: dict[str, list[ContextPart]] = {}
@@ -360,6 +360,7 @@ class GatewayCapture:
         )
         request = self._requests.pop(session_id, None)
         if request is None:
+            self._attempt.pop(session_id, None)  # Its reply must not join the last attempt.
             return
         call = api_request_id or str(uuid.uuid4())
         self._attempts[call] += 1
@@ -402,10 +403,10 @@ class GatewayCapture:
     def _capture_results(
         self, session_id: str, messages: Sequence[Mapping[str, Any]], ids: Mapping[str, Any]
     ) -> None:
-        """Each tool result of the current turn the first time a request carries it: the form the
-        model got, after Hermes's transforms, spill, turn budget and ``/steer`` text. Results of
-        earlier turns, which every request sends again, are not this turn's, even after a
-        restart."""
+        """Each tool result of the current turn the first time the turn's requests carry it: the
+        form the model got, after Hermes's transforms, spill, turn budget and ``/steer`` text.
+        Results of earlier turns, which every request sends again, are not this turn's, even after
+        a restart."""
         seen = self._results_seen[session_id]
         users = [index for index, message in enumerate(messages) if message.get("role") == "user"]
         for message in messages[users[-1] + 1 if users else 0 :]:
@@ -750,6 +751,7 @@ class GatewayCapture:
     ) -> None:
         """In Hermes this ends a turn, not a Session."""
         self._turn_parts.pop(session_id, None)
+        self._results_seen.pop(session_id, None)
         for call in self._turn_calls.pop(session_id, ()):
             self._attempts.pop(call, None)
             self._open_attempt.pop(call, None)

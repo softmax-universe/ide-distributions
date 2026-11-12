@@ -2,9 +2,9 @@
 
 Settings bound the agents' own initiative, never the user's explicit request (design B.9). Each
 key has a scope (A2.4): workspace keys (``paused``, ``max_researchers``, ``recovery.*``,
-``anti_stall.*``) live in the workspace store, the rest in the Coworld store. ``get`` accepts
-one store or a pair of stores and reads the key from the store its scope names; ``update``
-refuses a key on the wrong store. Values are JSON text in the ``value`` column.
+``anti_stall.*``, ``chat_updates.*``) live in the workspace store, the rest in the Coworld
+store. ``get`` accepts one store or a pair of stores and reads the key from the store its scope
+names; ``update`` refuses a key on the wrong store. Values are JSON text in the ``value`` column.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from research_core.store._common import json_field, parse_iso, parse_json, require
 from research_core.store.errors import StoreError
-from research_core.store.registry import TASK_TYPES
+from research_core.store.registry import CHAT_UPDATE_CATEGORIES, TASK_TYPES
 
 if TYPE_CHECKING:
     from research_core.store.actors import Actor
@@ -204,6 +204,17 @@ SETTINGS: dict[str, SettingSpec] = {
             "workspace",
             "the watcher",
             "Local time (America/Los_Angeles) of the daily anti-stall wake, as HH:MM.",
+        ),
+        _s(
+            "chat_updates.categories",
+            "list",
+            ["decision", "outcome", "submission", "failure"],
+            "workspace",
+            "the ui tool",
+            "Which categories of a background wake's ui.tell reach the user's chat as a "
+            "message; any other category becomes a notice. An empty list sends them all to "
+            "notices.",
+            enum=CHAT_UPDATE_CATEGORIES,
         ),
     )
 }
