@@ -27,7 +27,15 @@ from research_core.store.errors import StoreError
 from research_core.telemetry import span, trace_carrier
 
 Origin = Literal[
-    "client", "answer", "assignment", "continuation", "planning", "wake", "watcher", "migration"
+    "client",
+    "answer",
+    "assignment",
+    "continuation",
+    "planning",
+    "wake",
+    "watcher",
+    "migration",
+    "followup",
 ]
 _held_locks = threading.local()
 

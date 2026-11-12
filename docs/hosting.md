@@ -154,6 +154,13 @@ records the task revision the session last saw.
 The workspace admission ledger records every chat, worker, continuation, and event-wake start.
 UI answers and their delivery inputs commit together; retrying the same answer returns its receipt.
 
+An Orchestrator chat's `xp.request` records a follow-up before returning `followup_scheduled: true`.
+The platform keeps running the requests while the workspace sleeps. At startup, AIDE opens
+Observatory's experience request change feed with a fresh snapshot for each retained batch.
+While awake it waits for changes on that feed. When every request in the batch reaches a
+terminal state, AIDE admits one follow-up turn in the original chat. The AIDE event log
+and history carry its reply across client reconnects.
+
 `research workspace sleep` preserves lifecycle v1: pause admission, drain recorded workers and
 tracked processes, settle chat/wake runs, then checkpoint and flush the retained volume.
 Exit 0 authorizes the host to stop compute. Explicit Stop and fifteen-minute automatic sleep

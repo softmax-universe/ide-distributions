@@ -1089,7 +1089,7 @@ class Coordinator:
             # task abandon, a gateway shutdown) was interrupted under the input.
             outcome, error = "interrupted", error or "The workspace stopped the run"
         error_class = None
-        if status.status == "failed" and row["origin"] == "client":
+        if status.status == "failed" and row["origin"] in {"client", "followup"}:
             error_class = self._classify(row, status)
             if (
                 error_class in run_failures.WAITING_CLASSES
