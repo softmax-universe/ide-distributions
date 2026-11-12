@@ -62,7 +62,7 @@ _ONLY_GUARD_NOTES = re.compile(
 )
 # How each role reports a problem it cannot fix itself.
 WAY_OUT: dict[str, str] = {
-    "orchestrator": "report the problem with ui.notify",
+    "orchestrator": "report the problem to the user (from a wake, a failure chat_update)",
     "researcher": "report the problem with task_ask if you hold a Task",
 }
 

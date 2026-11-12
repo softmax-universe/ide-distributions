@@ -6,6 +6,7 @@
 > protocol was removed (#236). The seam's contract is
 > `core/src/research_core/contract/CONTRACT.md`; see also [STATUS.md](STATUS.md) and
 > `image/README.md`.
+> **2026-11-12:** the `ui` tools described here were removed; `ui.tell` became `chat_update` (branch `jb/remove-ui-tools`).
 
 Read `00-overview.md`, then entries 2–5. The seam is the small part of the client contract the
 rest of the design needs: each turn carries the user's message and one typed context block; the

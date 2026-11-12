@@ -154,7 +154,6 @@ no cron job is involved. `task.workers` and `task.assign` let the
 Orchestrator choose a worker and commit context and rationale before execution; the coordinator
 records the task revision the session last saw.
 The workspace admission ledger records every chat, worker, continuation, and event-wake start.
-UI answers and their delivery inputs commit together; retrying the same answer returns its receipt.
 
 An Orchestrator chat's `xp.request` records a follow-up before returning `followup_scheduled: true`.
 The follow-up is an `xp_followups` row in the workspace store (`core/src/research_core/xp_followups.py`).
@@ -172,11 +171,15 @@ The same change feed resolves it when the requests finish. The coordinator resum
 Researcher through the normal Task continuation path. The Researcher evaluates the results
 and reports through the Task. The Orchestrator decides what to tell the user.
 
-A background Orchestrator wake reaches the user's chat with `ui.tell {category, text, refs?}`
-(`core/src/research_core/store/chat_updates.py`). The tool is refused in a chat Session. It
-records a `chat_updates` row in the workspace store. A category that the workspace setting
-`chat_updates.categories` does not list becomes a notice at once. The default lists
-`decision`, `outcome`, `submission` and `failure`, so `merge` is a notice. On each pass the
+A background Orchestrator wake reaches the user's chat with the `chat_update {category, text,
+refs?}` tool (`core/src/research_core/tools/chat_update.py`, `store/chat_updates.py`). The tool is
+refused in a chat Session and in any other Session that is not a wake. It records a
+`chat_updates` row in the workspace store. The category `progress` is routine news: it is
+written as a notice at once and never reaches the chat as a message. A category that the
+workspace setting `chat_updates.categories` does not list becomes a notice at once too, and the
+tool's result says when an update went to notices; `progress` is not a value of that setting.
+The default lists `decision`, `outcome`, `submission` and `failure`, so `merge` is a notice. On
+each pass the
 coordinator (`Coordinator.deliver_chat_updates`) takes a Coworld's pending rows once the newest
 is two minutes old or the oldest is ten minutes old. It enqueues one `origin="followup"`
 admission, keyed `chat-updates:<first id>-<last id>`, into the Coworld's most recently used
@@ -234,7 +237,7 @@ the block reaches the model through the `pre_llm_call` hook (`plugin/turn.py`). 
 applies user edits through `research store apply --actor user:<id> <op> <json>`. Notices
 (`events` rows of kind `notice`) must reach every client. The AIDE backend does not serve
 them yet: in the hosted image, a notice reaches the user only through the Orchestrator's next chat
-turn, which lists unread notices (`plugin/turn.py`). So a wake uses `ui.tell` for anything the
+turn, which lists unread notices (`plugin/turn.py`). So a wake uses `chat_update` for anything the
 user should hear now ("Coordinator and pause" above).
 
 The model routes of `core/src/research_core/contract/CONTRACT.md` ("Profile models") are served by `research serve`

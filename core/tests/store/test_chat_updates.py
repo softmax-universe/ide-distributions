@@ -1,4 +1,4 @@
-"""Chat updates (``ui.tell``): recorded by a wake, delivered by the coordinator into a chat."""
+"""Chat updates (``chat_update``): recorded by a wake, delivered by the coordinator into a chat."""
 
 from __future__ import annotations
 
@@ -66,7 +66,12 @@ def test_add_records_a_pending_update_and_a_metadata_event(workspace_store, sess
         ("outcome", "x" * (chat_updates.MAX_TEXT + 1), [], "at most 4000 characters"),
         ("outcome", "ok", ["T-1", ""], "list of record references"),
         ("outcome", "ok", [f"T-{n}" for n in range(1, 22)], "at most 20 records"),
-        ("progress", "ok", [], "category is one of decision, outcome, submission, failure, merge"),
+        (
+            "news",
+            "ok",
+            [],
+            "category is one of decision, outcome, submission, failure, merge, progress",
+        ),
         # A disabled category is validated the same before it becomes a notice.
         ("merge", "", [], "non-empty"),
     ],
@@ -102,6 +107,23 @@ def test_a_category_the_setting_leaves_out_becomes_a_notice_at_once(
     assert "notice" in tell(workspace_store, session_actor, "X-2 closed", category="outcome")
     settings.update(workspace_store, harness, "chat_updates.categories", [], cites="msg:2")
     assert "notice" in tell(workspace_store, session_actor, "Decide on V-9", category="decision")
+
+
+def test_progress_is_always_a_notice_and_never_reaches_the_chat(
+    workspace_store, harness, session_actor, clock
+):
+    chat(workspace_store, harness, "chat1")
+    every = ["decision", "outcome", "submission", "failure", "merge"]
+    settings.update(workspace_store, harness, "chat_updates.categories", every, cites="msg:1")
+    result = tell(workspace_store, session_actor, "Smoke test passed", ["T-3"], category="progress")
+    assert set(result) == {"notice"} and result["notice"]["urgency"] == "normal"
+    assert [n["text"] for n in notices.unread(workspace_store, coworld_id=COWORLD)] == [
+        "Smoke test passed"
+    ]
+    assert workspace_store.one("SELECT COUNT(*) FROM chat_updates")[0] == 0
+    clock.advance(int(chat_updates.MAX_WAIT.total_seconds()))
+    assert chat_updates.deliver(workspace_store, harness, coworld_id=COWORLD) == {}
+    assert update_admissions(workspace_store) == []
 
 
 def test_delivery_waits_for_quiet_then_sends_one_admission(

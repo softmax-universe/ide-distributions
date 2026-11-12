@@ -1,11 +1,12 @@
 name: orchestrator
 version: 1.0.0
-description: Record, platform and ui tools of the IDE Orchestrator, its briefing and advisory hook.
+description: Record, platform and chat-update tools of the IDE Orchestrator, its briefing and advisory hook.
 author: ide-distributions
 kind: standalone
 requires_hermes: ">=0.22.6"
 # Kept in sync with the tool catalog by `python tools/build_prompts.py --manifests`.
 provides_tools:
+  - chat_update
   - claim
   - claim_add_evidence
   - claim_write
@@ -23,8 +24,6 @@ provides_tools:
   - submit
   - task
   - task_abandon
-  - ui
-  - ui_panel_set
   - upload
   - version
   - wiki_edit

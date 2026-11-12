@@ -132,11 +132,10 @@ def ok(**result) -> str:
 
 WEB_IDE = {"client_guide": "client-web-ide", "league": "league_cogs_main"}
 WEB_IDE_CAPS = {
-    "panels": ["markdown", "record", "table", "file", "replay"],
     "views": ["leaderboard"],
 }
 COPLAY = {"client_guide": "client-coplay"}
-COPLAY_CAPS = {"panels": ["markdown", "record", "table", "checklist", "file", "link", "replay"]}
+COPLAY_CAPS = {"views": ["desktop", "library", "notebook"]}
 
 ORCHESTRATOR_CHATS = [
     # Goals
@@ -442,21 +441,6 @@ ORCHESTRATOR_CHATS = [
         ("working-with-the-ide",),
         has_coworld=False,
     ),
-    # The ui tool
-    chat(
-        "ui-show",
-        "Bring X-5 up on my screen please.",
-        ("ui.show",),
-        ("working-with-the-ide",),
-    ),
-    chat(
-        "ui-panel",
-        "Keep a table of the three Versions and their status in a panel named versions, so I can "
-        "glance at it while we talk.",
-        ("ui.panel_set",),
-        ("working-with-the-ide",),
-        capabilities=WEB_IDE_CAPS,
-    ),
     # The platform: one per read action
     chat("platform-leagues", "Which leagues run for the game cogs?", ("platform.leagues",)),
     chat(
@@ -655,9 +639,8 @@ ORCHESTRATOR_CHATS = [
     ),
     chat(
         "client-coplay",
-        "Save this to the Library: 'Scouting notes: early scouting does little against the top "
-        "three.'",
-        ("ui.panel_set",),
+        "I attached a screenshot of my last game. What went wrong there?",
+        ("text",),
         ("client-coplay",),
         declared=COPLAY,
         capabilities=COPLAY_CAPS,
@@ -700,7 +683,7 @@ ORCHESTRATOR_WAKES = [
             "reason": "conflict in policy/config.py: both sides changed the retreat threshold",
             "log": "documents/logs/merge-20261104.log",
         },
-        ("workspace.worktree_open", "task.create", "ui.ask"),
+        ("workspace.worktree_open", "task.create", "chat_update"),
         ("merge-conflicts",),
     ),
     wake(
@@ -754,7 +737,7 @@ ORCHESTRATOR_WAKES = [
         "store.schema_newer",
         "workspace",
         {"store": "/opt/data/workspace/store.db", "schema": 41, "supported": 40},
-        ("ui.notify",),
+        ("chat_update",),
         ("working-with-the-ide",),
     ),
     wake(
@@ -763,7 +746,7 @@ ORCHESTRATOR_WAKES = [
         "submission.candidate",
         "V-12",
         {"version": "V-12", "experiment": "X-5", "submissions.mode": "ask"},
-        ("ui.ask",),
+        ("chat_update",),
         ("submission",),
         x5="confirmed",
         capabilities=WEB_IDE_CAPS,
@@ -1407,7 +1390,7 @@ HARD = [
             "neither by name.",
             "log": "documents/logs/merge-20261104.log",
         },
-        ("ui.ask",),
+        ("chat_update",),
         ("merge-conflicts",),
         capabilities=WEB_IDE_CAPS,
     ),
@@ -1494,7 +1477,7 @@ HARD = [
             "detail": "Work on G-1 needs read access to acme/policy-kit, a GitHub repository only "
             "the user can grant. Nothing else blocks it, and nothing needs deciding today.",
         },
-        ("ui.panel_set", "ui.ask"),
+        ("chat_update",),
         ("working-with-the-ide",),
         capabilities=WEB_IDE_CAPS,
     ),

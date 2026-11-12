@@ -40,7 +40,7 @@ TOOL_MODULES: tuple[str, ...] = (
     "research_core.tools.version",
     "research_core.tools.directive",
     "research_core.tools.settings",
-    "research_core.tools.ui",
+    "research_core.tools.chat_update",
     "research_core.tools.workspace",
     "research_core.tools.upload",
     "research_core.tools.submit",

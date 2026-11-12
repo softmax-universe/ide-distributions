@@ -218,8 +218,6 @@ def _read(label: str, args: dict, situation=SITUATION) -> dict:
         ),
         ("workspace", {"action": "capabilities"}, None),
         ("workspace", {"action": "environment_guide"}, None),
-        ("ui", {"action": "notify", "text": "x"}, None),
-        ("ui", {"action": "show", "ref": "G-1"}, None),
         ("softmax_api", {"method": "GET", "path": "/v2/leagues"}, None),
         ("platform", {"action": "leagues"}, None),
         ("platform", {"action": "league", "league": fake.LEAGUE_ID}, None),
@@ -239,6 +237,22 @@ def test_offline_a_read_has_the_real_keys(world, call, tool, args, fixture_args)
     assert real["ok"], real
     label = usability_probe.label_of(tool, args)
     assert differences(real, _read(label, fixture_args or args)) == []
+
+
+@pytest.mark.parametrize("category", ["decision", "merge", "progress"])
+def test_offline_a_chat_update_has_the_real_keys(world, call, ctx_factory, category):  # noqa: F811
+    sessions.register(
+        ctx_factory().wstore,
+        Actor.harness(),
+        coworld_id=COWORLD,
+        session_id="w1",
+        profile="orchestrator",
+        kind="wake",
+    )
+    args = {"category": category, "text": "x", "refs": ["V-1"]}
+    real = call("chat_update", args, session_id="w1")
+    assert real["ok"], real
+    assert differences(real, _read("chat_update", args)) == []
 
 
 @pytest.mark.parametrize("episode_args", [{"league": fake.LEAGUE_ID}, {"policy_version": "pv"}])

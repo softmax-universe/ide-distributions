@@ -4,6 +4,7 @@
 > 2026 (Pacific). The checkboxes were not kept up to date; the plan is historical. Since then the
 > 13 hardest write actions became their own tools (#188), so the Orchestrator has 24 tools and a
 > Researcher 23. See [STATUS.md](STATUS.md) and `core/README.md` for the current state.
+> **2026-11-12:** the `ui` tools described here were removed; `ui.tell` became `chat_update` (branch `jb/remove-ui-tools`).
 
 Read `00-overview.md` and the interfaces of `02-store.md` first. After this entry both profiles
 expose their record tools (the platform tools arrive in entry 4 as further `ToolSpec`s in the same

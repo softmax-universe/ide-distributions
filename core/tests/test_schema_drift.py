@@ -130,7 +130,7 @@ def test_a_missing_or_extra_action_and_a_missing_tool_are_named(drift_tool):
 
 def test_a_new_optional_field_is_not_drift(drift_tool):
     """Every call still passes without it, so nothing about the frozen list blocks a call."""
-    spec = catalog.TOOLS["ui"]
+    spec = catalog.TOOLS["directive"]
     optional = next(
         name
         for action in spec.actions_for(ROLE)
@@ -139,7 +139,7 @@ def test_a_new_optional_field_is_not_drift(drift_tool):
         and name in spec.properties(ROLE)
     )
     tools = copy.deepcopy(current_tools())
-    del function_named(tools, "ui")["parameters"]["properties"][optional]
+    del function_named(tools, "directive")["parameters"]["properties"][optional]
     assert drift_tool.compare(ROLE, tools) == []
 
 

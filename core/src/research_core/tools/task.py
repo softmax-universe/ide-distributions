@@ -530,7 +530,7 @@ SPEC = durable_tool(
                 "message",
                 "Send the Researcher a note: the watcher delivers it to a live run, resumes a "
                 "stopped run with it, or holds it until a wait resolves. A Task with no holder "
-                "(unclaimed or ended) never gets it: use ui.notify.",
+                "(unclaimed or ended) never gets it.",
                 {"task": TASK, "text": a.string("The note.")},
                 ("task", "text"),
                 ORCHESTRATOR,

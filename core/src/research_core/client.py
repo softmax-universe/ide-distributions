@@ -2,10 +2,10 @@
 
 One synchronous, stdlib-only client over the routes :mod:`research_core.serve` offers. It is the
 reference for what a real client does on the seam: open a Session once, send each message with
-one context block, read a snapshot and then the event stream from its ``seq``, answer the
-agent's asks, react, and make user edits through ``/store/apply``. Reading the stream is
-bounded here (frames stop arriving for ``idle`` seconds, or ``until`` matches) because a test
-needs to return; a real client keeps the connection open.
+one context block, read a snapshot and then the event stream from its ``seq``, and make user
+edits through ``/store/apply``. Reading the stream is bounded here (frames stop arriving for
+``idle`` seconds, or ``until`` matches) because a test needs to return; a real client keeps the
+connection open.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ class ScriptedClient:
     """A client of one ``research serve`` (or bridge) at ``base_url``.
 
     ``actor`` is who the client acts for on writes (``user:<id>``); ``session_id`` is set by
-    :meth:`open` and used by :meth:`say`, :meth:`answer` and :meth:`react`.
+    :meth:`open` and used by :meth:`say`.
     """
 
     def __init__(
@@ -167,15 +167,7 @@ class ScriptedClient:
         """The ``notice`` events of the workspace stream after ``after``."""
         return [e for e in self.events("workspace", after, **options) if e["kind"] == "notice"]
 
-    # --- UI actions and edits -------------------------------------------------------------
-
-    def answer(self, ask_id: str, value: Any, session_id: str | None = None) -> dict:
-        """Answer an open ``ui.ask``; the server steers or starts the Session's run."""
-        return self._ui_action("answer", {"ask_id": ask_id, "value": value}, session_id)
-
-    def react(self, message_id: str, value: Any, session_id: str | None = None) -> dict:
-        """React to a message: feedback for the agent's next turn; starts no run."""
-        return self._ui_action("reaction", {"message_id": message_id, "value": value}, session_id)
+    # --- edits -------------------------------------------------------------------------
 
     def apply(
         self,
@@ -220,15 +212,6 @@ class ScriptedClient:
         return self._post("/models", body)
 
     # --- transport -----------------------------------------------------------------------
-
-    def _ui_action(self, action: str, payload: dict, session_id: str | None) -> dict:
-        body = {
-            "session_id": session_id or self._session(),
-            "action": action,
-            "payload": payload,
-            "actor": self.actor,
-        }
-        return self._post("/ui-action", body)
 
     def _session(self) -> str:
         if self.session_id is None:

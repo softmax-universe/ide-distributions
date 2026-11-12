@@ -259,23 +259,18 @@ What each part of the page exercises:
 | Part | Routes | What to look for |
 |---|---|---|
 | Masthead and health strip | `POST /session-open` on load (client `ui`, kind `web-ide`), `GET /health`, `GET /status` every 5 seconds | The session id; profile, the page's scope (its `?coworld=`) and contract version; the watcher's heartbeat age, `has_work` with its `waiting_on` reasons, `paused`; whether each stream is open |
-| Conversation | `POST /message` with a context block (`mode`, `on_screen`, `view` from the fields under the box), `GET /runs/<id>` every half second until the run is terminal, `POST /ui-action` `reaction` | `delivered` (`queued`) on your message; each run it starts as an Orchestrator message, with its id and status chip, then its output; "Helpful" / "Not helpful" write a reaction and show the UI-state version it landed in (no run starts) |
-| Now showing, Asks, Panels | The `ui_state` documents of `GET /snapshot?store=workspace`, then `ui.patch` events; `POST /ui-action` `answer` | The last `ui.show`; open asks with their options as buttons (a free-text answer too), answered asks with the answer and who gave it; markdown panels as text, other kinds as JSON |
-| Notices and Events | `GET /stream?store=workspace&after=0` and `GET /stream?store=coworld&coworld=<id>&after=0` (Server-Sent Events; the browser reconnects with `Last-Event-ID`) | `notice` events as a list, newest first; every event as one line (seq, time, store, kind, subject) with a payload summary, the last 300 kept |
+| Conversation | `POST /message` with a context block (`mode`, `on_screen`, `view` from the fields under the box), `GET /runs/<id>` every half second until the run is terminal | `delivered` (`queued`) on your message; each run it starts as an Orchestrator message, with its id and status chip, then its output |
+| Events | `GET /stream?store=workspace&after=0` and `GET /stream?store=coworld&coworld=<id>&after=0` (Server-Sent Events; the browser reconnects with `Last-Event-ID`) | Every event as one line (seq, time, store, kind, subject) with a payload summary, the last 300 kept |
 | Records | `GET /snapshot?store=coworld&coworld=<id>` (Goals, Tasks, Versions, Claims, Experiments) and `?store=workspace` (both stores for Directives and settings), refreshed when a record event arrives | Tabs with counts, each record's id, title, status and last update, a Details button with the record as JSON; any `G-1`, `T-3`, `V-1`, `C-2`, `X-1`, `D-1` or `N-1` on the page jumps to its record |
 | Edits as user:local | `POST /store/apply` | Add a Directive, rename a Goal, set a Goal's status, change a setting, pause or resume the watcher; the store's record or its refusal with the problems. Creating a Goal is not a user edit (`goals.create` is not in the allow-list): ask the Orchestrator for one |
-| Raw request | Any route | Method, path and JSON body; the status and the response. `session_id` is filled in for `/message` and `/ui-action` when the body leaves it empty |
+| Raw request | Any route | Method, path and JSON body; the status and the response. `session_id` is filled in for `/message` when the body leaves it empty |
 
 Against `tools/ui_dev.py`'s scripted Orchestrator (a real one answers as the model sees fit):
 
 - **Submit the starter as my champion.**, on the printed `?coworld=cow_fake` URL: within a few
-  ticks the setup wake uploads and submits the starter, and a notice about `V-1` arrives. A session
+  ticks the setup wake uploads and submits the starter, and a `notice` event about `V-1` arrives under Events. A session
   with no Coworld is told it has none.
-- A message containing **ask me** opens a question with two options; answer it under Asks and
-  the answer goes into a run of the same Session.
-- A message containing **notify** sends a notice.
-- A message containing **goal** creates a Goal (on a session with a Coworld), brings it into view
-  under Now showing and sets a markdown panel about it.
+- A message containing **goal** creates a Goal (on a session with a Coworld).
 - Anything else is answered with `Noted: <the first 80 characters>`.
 
 The routes are tested in `core/tests/test_serve.py`; the page itself was checked by hand in a
@@ -513,7 +508,7 @@ your shell), from the workspace environment:
 RESEARCH=$IDE_WORKSPACE/tools/venv/bin/research
 $RESEARCH watcher status                                # {"heartbeat", "heartbeat_age_s", "has_work", "waiting_on", "paused", "paused_drained", "sleep_started"}
 $RESEARCH tool workspace --args '{"action": "doctor"}'  # commits, watcher heartbeat, both stores' schema, capabilities, CLIs, core_path.writable, api_keys, problems
-$RESEARCH store snapshot --store workspace              # coworlds, sessions, notices, directives, settings, ui_state, and seq
+$RESEARCH store snapshot --store workspace              # coworlds, sessions, notices, directives, settings, and seq
 $RESEARCH store snapshot --coworld <id>                 # that Coworld's store: goals, tasks, claims, versions, champion, ...
 $RESEARCH store events --after 0 --store workspace      # the workspace store's events as JSON lines; --follow tails
 $RESEARCH store events --after 0 --coworld <id>         # that Coworld's events

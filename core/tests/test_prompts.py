@@ -151,21 +151,21 @@ def test_records_section_names_ids_statuses_and_writers():
     assert "Statuses: proposed, unclaimed, in-progress, complete, abandoned" in text
     assert "**Session** (one per Hermes Session)" in text and "Written by the workspace." in text
     assert "**Champion** (one per League)" in text
-    assert "Written by `ui.notify`" in text
+    assert "Written by `chat_update`" in text
     researcher = build.render_records("researcher")
-    assert "`ui.notify`" not in researcher and "`submit`" not in researcher
+    assert "`chat_update`" not in researcher and "`submit`" not in researcher
     assert "Written by the Orchestrator" in researcher
 
 
 def test_role_sections_carry_the_binding_rules():
     orchestrator = build.render("orchestrator")
-    for needle in ("ui.notify", "ui.ask", "user_requested: true", "`mode`", "`command`"):
+    for needle in ("chat_update", "`decision`", "user_requested: true", "`mode`", "`command`"):
         assert needle in orchestrator
     researcher = build.render("researcher")
     for needle in ("task.claim", "task_wait", "task_complete", "outcome: succeeded"):
         assert needle in researcher
     assert "`what_failed`" in researcher and "`next_step`" in researcher
-    assert "`ui`" not in researcher and "`submit`" not in researcher
+    assert "`chat_update`" not in researcher and "`submit`" not in researcher
 
 
 def test_manifests_equal_the_catalog():

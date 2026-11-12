@@ -19,7 +19,7 @@ XP requests spend the account's credits. Credits are the platform's: you cannot 
 
 ## Tell the user when low
 
-- The Orchestrator: `ui.notify` with the balance, the refill time and what waits on it, once per change, not every turn.
+- The Orchestrator: tell the user (from a wake, a `progress` `chat_update`) the balance, the refill time and what waits on it, once per change, not every turn.
 - A Researcher: say it in the Task's result, or `task_ask` when the Experiment cannot finish on the balance.
 
 ## A refusal
@@ -27,7 +27,7 @@ XP requests spend the account's credits. Credits are the platform's: you cannot 
 There is no local pre-check: the platform's 402 is the refusal, and the tool reports the balance, the held amount and the next refill with it.
 
 - A Researcher: `task_wait {task, kind: credits, detail: "XP for X-5: need <cost> credits"}` and end the run. The watcher reads `need <cost>` and resumes you when the balance covers it; without it, as soon as the balance is above zero. Requests already accepted stay recorded as runs; `xp.request` again creates only the missing ones.
-- The Orchestrator: tell the user (`ui.notify`), finish other work, and request again after the refill. A user's "go ahead" changes nothing here: the platform decides.
+- The Orchestrator: tell the user (from a wake, a `chat_update`), finish other work, and request again after the refill. A user's "go ahead" changes nothing here: the platform decides.
 
 ## The per-Experiment setting
 

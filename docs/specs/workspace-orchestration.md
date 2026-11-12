@@ -20,7 +20,7 @@ publish itself or serve requests. An immediate dispatcher failure propagates and
 
 | Operation | Durable record | Next action owner |
 | --- | --- | --- |
-| Chat or UI answer | Client receipt or answer plus delivery intent | Admission dispatcher |
+| Chat message | Client receipt plus delivery intent | Admission dispatcher |
 | Assignment | Task revision, profile, context, rationale, session, and capacity reservation | Coordinator |
 | Native start | Immutable key and payload; authentication scope, runtime identity, and replay horizon | Native transport, then coordinator |
 | Worker report or human task edit | Coworld command, caller identity, lease epoch, and issuing attempt | Coordinator |
@@ -115,7 +115,7 @@ failure attempts. A spent-key wait ends when the normal lease owner installs a d
 provider backoff can end at its declared deadline.
 
 A chat message, and a follow-up admitted into a chat (origin `followup`: `xp.request` results
-or a wake's `ui.tell` updates), are the only admissions that can outlive a run. When its run fails on the budget, a
+or a wake's `chat_update` updates), are the only admissions that can outlive a run. When its run fails on the budget, a
 rate limit or a provider outage (`run_failures.py`), the same `op_id` waits and resumes as a new
 run with a new native key and a continuation prompt, because the client follows the admission.
 This is a new execution, not a replay of the old one. The hold is the only change that may clear

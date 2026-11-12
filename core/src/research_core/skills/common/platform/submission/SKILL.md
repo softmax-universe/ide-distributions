@@ -27,7 +27,7 @@ bulk results view in the `softmax-api-routes` skill. Submit only when the user's
 
 `submit` without `user_requested` applies the settings and refuses with every shortfall named, each ending "a user request overrides this":
 
-- `submissions.mode`: `ask` means ask the user first (`ui.ask`; from a wake, a `decision` `ui.tell`); `autonomous` submits.
+- `submissions.mode`: `ask` means ask the user first (in a chat, in your reply; from a wake, a `decision` `chat_update`); `autonomous` submits.
 - `submissions.until` (an open window) and `submissions.max_count`; `paused` stops all of it.
 - `submissions.quality_bar`: the Version is merged into `main` and a confirmed Experiment compares it with our champion in the League at a primary effect of at least `submissions.min_margin_over_champion`. With no champion, a merged Version whose mixin `check` passes is enough.
 

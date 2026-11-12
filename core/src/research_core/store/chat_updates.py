@@ -1,8 +1,9 @@
-"""Chat updates (``ui.tell``): what a background wake wants the user to hear in their chat.
+"""Chat updates (the ``chat_update`` tool): what a background wake wants the user to hear.
 
 A wake cannot write into a chat, and nobody reads its own Session. ``add`` records the update in
-the workspace store, with a ``category`` saying why the user should hear it now; a category the
-``chat_updates.categories`` setting leaves out becomes a notice at once instead. The coordinator
+the workspace store, with a ``category`` saying why the user should hear it now; ``progress``,
+and a category the ``chat_updates.categories`` setting leaves out, becomes a notice at once
+instead. The coordinator
 calls ``deliver`` on every pass, which hands a Coworld's pending updates to that Coworld's most
 recently active chat as one queued ``followup`` admission.
 The chat's next turn tells the user, after any run already live in that chat ends.
@@ -26,7 +27,7 @@ from research_core.store._common import json_field, parse_iso, parse_json, requi
 from research_core.store.actors import Actor
 from research_core.store.db import Store, Tx
 from research_core.store.errors import StoreError
-from research_core.store.registry import CHAT_UPDATE_CATEGORIES
+from research_core.store.registry import CHAT_UPDATE_CATEGORIES, CHAT_UPDATE_PROGRESS
 
 DEBOUNCE = timedelta(seconds=120)
 MAX_WAIT = timedelta(minutes=10)
@@ -67,16 +68,13 @@ def add(
 ) -> dict[str, Any]:
     """Record one update and its ``chat_update.recorded`` event: ``{"update": row}``.
 
-    A category the ``chat_updates.categories`` setting leaves out never reaches the chat: it is
-    written as a notice at once, ``{"notice": record}``.
+    ``progress`` and a category the ``chat_updates.categories`` setting leaves out never reach
+    the chat: they are written as a notice at once, ``{"notice": record}``.
     """
     _require_workspace(store)
     problems: list[str] = []
-    require(
-        problems,
-        category in CHAT_UPDATE_CATEGORIES,
-        f"category is one of {', '.join(CHAT_UPDATE_CATEGORIES)}",
-    )
+    categories = (*CHAT_UPDATE_CATEGORIES, CHAT_UPDATE_PROGRESS)
+    require(problems, category in categories, f"category is one of {', '.join(categories)}")
     require(problems, isinstance(text, str) and text.strip(), "text is a non-empty string")
     require(
         problems,
@@ -96,7 +94,9 @@ def add(
     if problems:
         raise StoreError(problems)
     refs = list(refs)
-    if category not in settings.get(store, "chat_updates.categories"):
+    if category == CHAT_UPDATE_PROGRESS or category not in settings.get(
+        store, "chat_updates.categories"
+    ):
         notice = notices.add(store, actor, text=text, refs=refs, coworld_id=coworld_id)
         return {"notice": notice}
     with store.tx(actor) as tx:

@@ -169,11 +169,10 @@ def test_canonical_session_binding_is_immutable(tmp_path):
         server._http.server_close()
 
 
-def test_game_panels_and_workspace_activity_remain_scoped_across_idle_games(tmp_path):
+def test_workspace_activity_remains_scoped_across_idle_games(tmp_path):
     from datetime import UTC, datetime
 
-    from research_core.store import ui_state
-    from research_core.watcher import context_panel, heartbeat
+    from research_core.watcher import heartbeat
     from research_core.watcher.context import TickContext
 
     ws = layout.from_env({"IDE_WORKSPACE": str(tmp_path)})
@@ -192,17 +191,12 @@ def test_game_panels_and_workspace_activity_remain_scoped_across_idle_games(tmp_
                     env={},
                     now=datetime.now(UTC),
                 )
-                context_panel.write(ctx, {"game": game})
                 if game == "cow_diplomacy":
                     with store.tx(ACTOR) as tx:
                         tx.event("task.completed", "T-1", {})
                 # Arena is idle and iterates last. It must not erase Diplomacy's queued wake.
                 if game == "cow_arena":
                     assert heartbeat.run(ctx)["has_work"] is True
-        for game in ("cow_diplomacy", "cow_arena"):
-            panel = ui_state.get(wstore, "coworld:" + game)["doc"]["panels"]["agent-context"]
-            assert panel["content"]["computed"] == {"game": game}
-        assert "panels" not in ui_state.get(wstore, "workspace")["doc"]
 
 
 def test_runtime_filters_chat_history_and_rejects_wrong_game_reads(tmp_path):

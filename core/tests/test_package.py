@@ -48,7 +48,7 @@ def test_the_plugin_imports_without_the_workspace_environment():
         "import sys\n"
         "sys.modules['softmax_client'] = None\n"
         "import research_core.plugin, research_core.tools.catalog\n"
-        "import research_core.watcher.context_panel\n"
+        "import research_core.environment_guide\n"
     )
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
     assert done.returncode == 0, done.stderr
