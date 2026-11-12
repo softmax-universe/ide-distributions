@@ -65,5 +65,6 @@ def test_every_wake_kind_has_a_template_that_keeps_wakes_out_of_conversations():
         text = (TEMPLATES_DIR / f"{kind}.md").read_text(encoding="utf-8")
         for placeholder in ("{event_kind}", "{subject}", "{payload_json}", "{coworld_id}"):
             assert placeholder in text, (kind, placeholder)
-        assert "ui.notify" in text and "user conversation" in text, kind
+        assert "never answer in this conversation" in text, kind
+        assert "`ui.tell {category, text, refs?}`" in text and "`ui.notify`" in text, kind
     assert "pending_request" in (TEMPLATES_DIR / "setup.md").read_text(encoding="utf-8")
