@@ -20,7 +20,7 @@ from research_core.agent_telemetry import writer as writer_module
 from research_core.agent_telemetry.redaction import SOFTMAX_TOKEN_MASK
 from research_core.agent_telemetry.stream import LogStream
 
-from .conftest import HERMES_STYLE_SECRET, raw_lines, stored_records
+from .conftest import HERMES_STYLE_SECRET, processed, raw_lines, stored_records
 from .test_redaction import PLAYER_ID, PLAYER_TOKEN, USER_TOKEN
 
 CORE_SRC = Path(__file__).resolve().parents[2] / "src"
@@ -48,7 +48,7 @@ def test_an_operation_is_one_line_with_the_shared_fields(writer, stream_file):
         cost={"usd": 0.1, "source": "estimated"},
         details={"held": False, "message_bytes": 4},
     )
-    assert writer.flush(5.0)
+    assert processed(writer, 5.0)
     [record] = stored_records(stream_file)
     assert record["event_id"]
     assert record["occurred_at"] == "2026-11-04T18:30:00.500Z"
@@ -62,7 +62,7 @@ def test_an_operation_is_one_line_with_the_shared_fields(writer, stream_file):
 def test_operation_content_is_redacted_hashed_byte_exact_and_referenced(writer, stream_file):
     raw = f"é before {USER_TOKEN} and {HERMES_STYLE_SECRET} lone\ud83d after"
     writer.capture_operation("tool", "completed", content={"result_text": raw, "empty": ""})
-    writer.flush(5.0)
+    processed(writer, 5.0)
     records = stored_records(stream_file)
     text, operation = records
 
@@ -92,7 +92,7 @@ def test_context_offsets_refer_to_the_redacted_text(writer, stream_file, redacto
         ],
         session_id="ses_1",
     )
-    writer.flush(5.0)
+    processed(writer, 5.0)
     records = stored_records(stream_file)
     # The target's text stays out of the stream: a reader has it in the request.
     assert all(record["family"] == "context" for record in records)
@@ -152,7 +152,7 @@ def test_seeded_secrets_never_reach_the_stream(writer, stream_file):
     )
     writer.capture_operation("tool", "completed", content={"args": {"secret": text}, "t": text})
     writer.capture_context_parts(f"target {text}", [ContextPart("notice", text)])
-    assert writer.flush(5.0)
+    assert processed(writer, 5.0)
 
     raw = stream_file.read_bytes()
     for secret in canary:
@@ -168,8 +168,8 @@ def test_details_hold_no_strings_on_any_writer(writer, stream_file, caplog):
         writer.capture_operation("tool", "completed", details={"nested": [PLAYER_TOKEN]})
         other.capture_operation("tool", "completed", details={"api_key": USER_TOKEN})
         writer.capture_operation("tool", "completed", details={"held": False, "message_bytes": 4})
-        writer.flush(5.0)
-        other.flush(5.0)
+        processed(writer, 5.0)
+        processed(other, 5.0)
 
     raw = stream_file.read_bytes()
     assert USER_TOKEN.encode() not in raw and PLAYER_TOKEN.encode() not in raw
@@ -195,7 +195,7 @@ def test_the_gateway_writer_redacts_id_fields_too(writer, stream_file):
         provider=PLAYER_TOKEN,
         tool_call_id=PLAYER_TOKEN,
     )
-    writer.flush(5.0)
+    processed(writer, 5.0)
     raw = stream_file.read_bytes()
     assert USER_TOKEN.encode() not in raw and PLAYER_TOKEN.encode() not in raw
     assert stored_records(stream_file)[0]["tool_name"] == SOFTMAX_TOKEN_MASK
@@ -207,7 +207,7 @@ def test_a_writer_without_a_scanner_still_masks_softmax_tokens(stream_file):
     writer.capture_operation(
         "admission", "accepted", reported_actor=f"user:{USER_TOKEN}", initiator=PLAYER_TOKEN
     )
-    writer.flush(5.0)
+    processed(writer, 5.0)
     assert USER_TOKEN.encode() not in stream_file.read_bytes()
     [operation] = stored_records(stream_file)
     assert operation["reported_actor"] == f"user:{SOFTMAX_TOKEN_MASK}"
@@ -217,7 +217,7 @@ def test_a_writer_without_a_scanner_still_masks_softmax_tokens(stream_file):
 
 def test_a_player_id_is_not_treated_as_a_token(writer, stream_file):
     writer.capture_operation("tool", "completed", content={"text": f"player {PLAYER_ID}"})
-    writer.flush(5.0)
+    processed(writer, 5.0)
     assert PLAYER_ID in stored_records(stream_file)[0]["body"]
 
 
@@ -226,7 +226,7 @@ def test_metadata_too_large_for_a_line_is_dropped_with_a_warning(writer, stream_
     with caplog.at_level(logging.WARNING):
         writer.capture_operation("tool", "completed", tool_name="x" * 5000)
         writer.capture_operation("tool", "completed", tool_name="fits")
-        assert writer.flush(5.0)
+        assert processed(writer, 5.0)
     [record] = stored_records(stream_file)
     assert record["tool_name"] == "fits"
     assert sum("dropped a operation line" in message for message in caplog.messages) == 1
@@ -239,7 +239,7 @@ def test_a_capture_owns_its_data(writer, stream_file):
     history[0]["content"] = "changed"
     history[0]["extra"]["k"].append("changed")
     request["messages"].append({"role": "user", "content": "changed"})
-    writer.flush(5.0)
+    processed(writer, 5.0)
     bodies = [r["body"] for r in stored_records(stream_file) if "body" in r]
     assert any("original" in body for body in bodies)
     assert not any("changed" in body for body in bodies)
@@ -253,7 +253,7 @@ def test_a_capture_never_raises_and_a_bad_record_does_not_stop_the_writer(
         writer.capture_operation("tool", "completed", duration_ms=float("nan"))
         writer.capture_request({"model": "m"}, session_id="s", model_attempt_id="a", provider="p")
         writer.capture_operation("tool", "completed", outcome="success")
-    writer.flush(5.0)
+    processed(writer, 5.0)
     [record] = stored_records(stream_file)
     assert record["outcome"] == "success"
     assert sum("telemetry: dropped" in message for message in caplog.messages) == 3
@@ -267,7 +267,7 @@ def test_a_writer_without_a_redactor_drops_free_text(stream_file, caplog):
         writer.capture_response({}, session_id="s", model_attempt_id="a")
         writer.capture_context_parts("text", [])
         writer.capture_operation("x", "y")
-    writer.flush(5.0)
+    processed(writer, 5.0)
     assert len(stored_records(stream_file)) == 1
     assert sum("telemetry: dropped" in message for message in caplog.messages) == 4
 
@@ -289,7 +289,7 @@ class StuckStream:
     def release(self, writer: TelemetryWriter) -> list[dict]:
         """Read until ``writer`` has written everything, however long its thread took to open the
         stream."""
-        closing = threading.Thread(target=writer.flush, args=(30.0,))
+        closing = threading.Thread(target=processed, args=(writer, 30.0))
         closing.start()
         data = b""
         while closing.is_alive():
@@ -369,7 +369,7 @@ def test_one_capture_over_the_byte_limit_still_goes_out_when_nothing_is_queued(
     monkeypatch.setattr(writer_module, "MAX_QUEUED_BYTES", 600)
     writer = TelemetryWriter(stream_file, producer, redactor=redactor)
     writer.capture_operation("tool", "completed", content={"text": "z" * 3000})
-    assert writer.flush(5.0)
+    assert processed(writer, 5.0)
     assert "z" * 3000 in [r.get("body") for r in stored_records(stream_file)]
 
 
@@ -386,27 +386,29 @@ def test_a_request_over_the_byte_limit_does_not_cost_its_reply(
         )
         writer.capture_response({"role": "assistant", "content": f"reply {turn}"}, **attempt)
         # True means both were processed already, so both are on the stream by now.
-        assert writer.flush(5.0)
+        assert processed(writer, 5.0)
         replies = [r for r in stored_records(stream_file) if r.get("stage") == "response"]
         assert len(replies) == turn + 1
 
 
-def test_flush_covers_what_was_captured_before_it(writer, stream_file):
+def test_a_deferred_job_runs_after_what_was_captured_before_it(writer, stream_file):
     writer.capture_operation("a", "one")
     writer.capture_operation("a", "two")
-    assert writer.flush(5.0)
+    assert processed(writer, 5.0)
     assert [r["stage"] for r in stored_records(stream_file)] == ["one", "two"]
     writer.capture_operation("a", "three")
-    assert writer.flush(5.0)
+    assert processed(writer, 5.0)
     assert [r["sequence"] for r in stored_records(stream_file)] == [0, 1, 2]
 
 
-def test_flush_is_bounded_and_says_when_it_could_not_finish(tmp_path, producer, redactor):
+def test_waiting_for_the_writer_is_bounded_and_says_when_it_could_not_finish(
+    tmp_path, producer, redactor
+):
     stuck = StuckStream(tmp_path)
     writer = TelemetryWriter(stuck.path, producer, redactor=redactor)
     writer.capture_operation("a", "one")
     started = time.monotonic()
-    assert not writer.flush(0.3)
+    assert not processed(writer, 0.3)
     assert time.monotonic() - started < 1.0
     assert [r["stage"] for r in stuck.release(writer)] == ["one"]
 
@@ -427,11 +429,11 @@ def test_a_failing_stream_costs_only_that_record(tmp_path, producer, caplog):
     reader = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     writer = TelemetryWriter(path, producer)
     writer.capture_operation("a", "before")
-    assert writer.flush(5.0)
+    assert processed(writer, 5.0)
     os.close(reader)
     with caplog.at_level(logging.WARNING):
         writer.capture_operation("a", "lost")
-        assert writer.flush(5.0)
+        assert processed(writer, 5.0)
     assert sum("dropped a operation record (BrokenPipeError)" in m for m in caplog.messages) == 1
 
 
@@ -458,7 +460,8 @@ _ESCAPED_TEXT = '日本語 quoted " and\n a newline '
 _COMMAND_CHILD = """
 import sys
 sys.path.insert(0, sys.argv[1])
-from research_core.agent_telemetry import InlineWriter, Producer
+from research_core.agent_telemetry import Producer
+from research_core.agent_telemetry.writer import InlineWriter
 writer = InlineWriter(sys.argv[2], Producer.for_process("research-command", {}))
 for index in range(int(sys.argv[3])):
     writer.capture_operation("command", "completed", size_bytes=index)
@@ -469,6 +472,11 @@ import sys
 sys.path.insert(0, sys.argv[1])
 from research_core.agent_telemetry import Producer, TelemetryWriter
 from research_core.agent_telemetry.redaction import Redactor
+import threading
+def processed(timeout_s):
+    done = threading.Event()
+    writer.defer(done.set)
+    return done.wait(timeout_s)
 name, redactor = sys.argv[4], None
 if name == "gateway":
     redactor = Redactor(lambda text: text, "stand-in")
@@ -480,8 +488,8 @@ for index in range(int(sys.argv[3])):
     else:
         writer.capture_operation("admission", "accepted", size_bytes=index)
     if index % 16 == 0:
-        writer.flush(60.0)
-assert writer.flush(120.0)
+        processed(60.0)
+assert processed(120.0)
 """
 
 
@@ -554,7 +562,7 @@ def test_a_partial_line_of_other_output_cannot_join_a_telemetry_line(writer, str
     with stream_file.open("ab", buffering=0) as other:
         other.write(partial)
         writer.capture_operation("turn", "ended", session_id="ses_1")
-        writer.flush(5.0)
+        processed(writer, 5.0)
         other.write(b" rest\n")
     lines = stream_file.read_bytes().split(b"\n")
     assert lines[0] == partial
@@ -608,8 +616,8 @@ def test_real_prints_beside_telemetry_lines_on_one_pipe_lose_no_line(
         writer.capture_operation("turn", "ended", session_id="ses_1")
         written += 1
         if written % 500 == 0:
-            writer.flush(30.0)
-    assert writer.flush(60.0)
+            processed(writer, 30.0)
+    assert processed(writer, 60.0)
     assert printer.returncode == 0
     os.close(holder)
     reading.join(30)

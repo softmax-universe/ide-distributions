@@ -82,14 +82,18 @@ python3 ~/coding/metta/scripts/token_broker_client.py exec --scope datadog.conte
 
 Add `--workspace <id>` if the command says several workspaces hold that ID. `--session` takes any ID of
 the Session, first or after compaction. The command needs only `DD_API_KEY` and `DD_APP_KEY`: no
-state.db, volume or workspace API. It exits 0 when nothing was missing, 1 when something was, and 2 when
+state.db, volume or workspace API. It exits 0 when nothing was missing, 3 when something was, and 2 when
 it could not start, which includes Datadog refusing the search, not answering, or answering that a search did not
 finish (`meta.status` other than `done`, such as `timeout`) or that warns (any `meta.warnings`, even with
-status `done`), because such an answer can hold part of the results.
+status `done`), because such an answer can hold part of the results. Exit 1 is a crash, as for any
+Python program.
 
 It prints one JSON object. Each entry is the record as written, with the text of what it refers to under
 each reference's name:
 
+- `session_id`: the ID asked for. `session_ids`: every ID of the Session that was followed, the first
+  and each one compaction moved it to. `workspace_id`: the workspace whose records these are, or `null`
+  when Datadog had none.
 - `requests`: each model request in wire order, whole, with `response`, `failed` or `unread` (the record
   of how the attempt ended), `partial_responses` (what each broken stream of the attempt had shown),
   `tools` (its tool activity, including each `result`), and `tokens_by_source`.
@@ -102,6 +106,9 @@ each reference's name:
   it, as Hermes passed it on, and its commit's text only when there is no such result.
 - `events`: admissions, model calls started, a call that failed before any attempt of it was recorded, store events, approvals, lifecycle, compaction, log lines and everything else. Each
   holds its own IDs, and `CONTRACT.md`, "How to join them", says how they join.
+- `unattached_tools`: tool records that name no request found, by attempt, call or an earlier record
+  of the same tool call. A non-empty list usually means a tool's completion record was lost, because a
+  tool's result finds its request only through that record.
 - `context`: where each piece of a user message came from.
 - `missing`: see below.
 
@@ -176,6 +183,9 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 | An auxiliary call outside a turn has session ID `no-session`, so a Session's report does not show it. A log line with no Session tag has no session ID, so the report shows it only when it was written inside one of the Session's traces, where it carries `otel_trace_id`. | `plugin/capture.py`, `DiagnosticsHandler.emit` |
 | Hermes sends a tool call's arguments as compact JSON and its row keeps the model's text. A request shows the first, and `tool` / `proposed` keeps the second. | `_comparable` in `test_rebuild_real.py` |
 | Records from all processes are ordered by `occurred_at`, so `research serve`'s admissions and store events interleave with the gateway's turns; `sequence` breaks a tie only inside one process. Requests come from one gateway process at a time, so across a restart their order is their time order. This assumes one clock for the pod and that it did not go back. | `agent_telemetry/rebuild.py`, `_order` |
+| Each request is printed whole, as the model received it, so the report grows with the square of the Session's length. Measured on 2026-11-12: a 125-request Session gave a report of about 80 MB. Pick out parts with `jq`. | `agent_telemetry/rebuild.py`, `_rebuild_request` |
+| A store event that one Session causes on another, such as `task.assigned` with the initiator in `reported_actor`, appears in the target Session's report. The initiator's report shows its own tool call and result. | `agent_telemetry/observed.py`, `_ALLOWED` |
+| `tokens_by_source` pools context records by text digest, so identical text that came from different sources in different requests is credited to one source. It is an estimate. | `agent_telemetry/rebuild.py`, `_source_chars` |
 
 ## Proof and cost
 

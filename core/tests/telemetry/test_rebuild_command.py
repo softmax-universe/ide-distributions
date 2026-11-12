@@ -21,7 +21,7 @@ from research_core.agent_telemetry.rebuild import AmbiguousSession, LogsSearch, 
 from research_core.agent_telemetry.records import canonical_bytes
 from research_core.plugin.capture import GatewayCapture
 
-from .conftest import HERMES_STYLE_SECRET, insert_rows, raw_lines, scrub, stored_records
+from .conftest import HERMES_STYLE_SECRET, insert_rows, processed, raw_lines, scrub, stored_records
 from .fake_datadog import FakeDatadog
 
 SYSTEM = "You are a researcher. Be careful."
@@ -122,7 +122,7 @@ def search_of(datadog: FakeDatadog, sleep=None) -> LogsSearch:
 
 
 def sent(writer, stream_file, datadog) -> list[dict]:
-    writer.flush(5.0)
+    processed(writer, 5.0)
     datadog.take_lines(raw_lines(stream_file))
     return stored_records(stream_file)
 
@@ -304,7 +304,7 @@ def test_a_restart_sends_a_full_manifest_and_everything_it_lists(
             model_attempt_id=f"att_{number}",
             native_event_type="stream",
         )
-        assert writer.flush(5.0)
+        assert processed(writer, 5.0)
     records = stored_records(stream_file)
     chunks: dict[str, set] = {"gateway-1": set(), "gateway-2": set()}
     for record in records:
@@ -346,7 +346,7 @@ def test_records_of_processes_running_side_by_side_interleave_by_time(
             provider="moonshot",
             model_attempt_id=f"att_{number}",
         )
-    assert serve.flush(5.0) and gateway.flush(5.0)
+    assert processed(serve, 5.0) and processed(gateway, 5.0)
     datadog.take_lines(raw_lines(serve_stream))
     datadog.take_lines(raw_lines(stream_file))
 
@@ -481,7 +481,7 @@ def test_the_command_runs_with_only_the_two_keys(writer, stream_file, datadog, t
     assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
 
     datadog.remove_chunk(result_message_digest(), 0)
-    assert _command(datadog, "--session", "ses_1", **keys).returncode == 1
+    assert _command(datadog, "--session", "ses_1", **keys).returncode == 3
     assert _command(datadog, "--session", "ses_1").returncode == 2
 
 
@@ -663,7 +663,7 @@ def test_a_lost_final_text_is_reported_and_no_earlier_reply_takes_its_place(
             tool_call_id="call_1",
             content={"result": lost},
         )
-    writer.flush(5.0)
+    processed(writer, 5.0)
     lines = raw_lines(stream_file)
     datadog.take_lines(line for line in lines if lost.encode() not in line)
 
@@ -1115,7 +1115,7 @@ def test_content_past_retention_is_reported_missing(writer, stream_file, datadog
         provider="moonshot",
         model_attempt_id="att_2",
     )
-    assert writer.flush(5.0)
+    assert processed(writer, 5.0)
     lines = raw_lines(stream_file)
     datadog.take_lines(line for line in lines if json.loads(line)["occurred_at"] >= retention_start)
 

@@ -4,6 +4,7 @@ import json
 import re
 import sqlite3
 import sys
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
@@ -16,6 +17,15 @@ from research_core.agent_telemetry.rebuild import _Finder, _join_object, _rebuil
 from research_core.agent_telemetry.redaction import Redactor
 
 HERMES_STYLE_SECRET = "sk-abcdefghijklmnopqrstuvwxyz012345"
+
+
+def processed(writer: TelemetryWriter, timeout_s: float = 5.0) -> bool:
+    """Wait at most ``timeout_s`` for the writer's thread to process what was captured before this
+    call. True proves the queue was processed up to here, not that anything arrived: a stream that
+    could not be opened, a failed write and a dropped record all still count as processed."""
+    done = threading.Event()
+    writer.defer(done.set)
+    return done.wait(timeout_s)
 
 
 def scrub(text: str) -> str:

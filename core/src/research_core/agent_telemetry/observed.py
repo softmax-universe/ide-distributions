@@ -196,13 +196,13 @@ def observe_commit(store: Store, actor: Actor, events: list[tuple[int, str, str,
     binding = _binding
     if binding is None:
         return
-    try:
-        for seq, kind, subject, payload in events:
+    for seq, kind, subject, payload in events:
+        try:
             fields = _event_fields(store, actor, seq, kind, subject, payload)
             ids = {**binding.call_ids(), **fields}
             binding.writer.capture_operation("store_event", "committed", **ids)
-    except Exception as error:
-        logger.warning("telemetry: dropped a commit's records (%s)", type(error).__name__)
+        except Exception as error:
+            logger.warning("telemetry: dropped a commit's records (%s)", type(error).__name__)
 
 
 def _event_fields(

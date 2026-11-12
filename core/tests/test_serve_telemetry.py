@@ -14,7 +14,7 @@ from research_core import serve
 from research_core.agent_telemetry.stream import STREAM_VARIABLE
 from research_core.client import SeamError
 from research_core.serve import SERVE_WRITER
-from tests.telemetry.conftest import stored_records
+from tests.telemetry.conftest import processed, stored_records
 from tests.telemetry.test_writer import StuckStream
 from tests.test_serve import start_seam
 
@@ -23,7 +23,7 @@ def test_research_serve_names_itself_and_redacts_no_text(tmp_path, stream_file):
     seam = start_seam(tmp_path, coworld=False)
     seam.server.telemetry.capture_operation("admission", "accepted", session_id="ses_1")
     seam.server.shutdown()
-    assert seam.server.telemetry.flush(5.0)
+    assert processed(seam.server.telemetry, 5.0)
     records = [r for r in stored_records(stream_file) if r["action"] == "admission"]
     assert [record["action"] for record in records] == ["admission"]
     assert records[0]["producer"] == SERVE_WRITER
@@ -46,7 +46,7 @@ def test_a_reply_that_cannot_be_written_records_one_outcome(tmp_path, stream_fil
     with pytest.raises(SeamError):  # The stand-in fails once, so the error reply does get through.
         seam.client.open()
     seam.server.shutdown()
-    assert seam.server.telemetry.flush(5.0)
+    assert processed(seam.server.telemetry, 5.0)
     outcomes = [
         (record["stage"], record["details"]["status"])
         for record in stored_records(stream_file)

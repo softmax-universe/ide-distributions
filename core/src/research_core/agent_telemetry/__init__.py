@@ -10,16 +10,14 @@ from research_core.agent_telemetry.encoder import ContextPart, PromptFile, Promp
 from research_core.agent_telemetry.records import Producer
 from research_core.agent_telemetry.redaction import hermes_redactor
 from research_core.agent_telemetry.stream import stream_path
-from research_core.agent_telemetry.writer import InlineWriter, TelemetryWriter, Writer
+from research_core.agent_telemetry.writer import TelemetryWriter
 
 __all__ = [
     "ContextPart",
-    "InlineWriter",
     "Producer",
     "PromptFile",
     "PromptSection",
     "TelemetryWriter",
-    "Writer",
     "hermes_redactor",
     "stream_path",
 ]

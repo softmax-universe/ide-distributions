@@ -12,6 +12,7 @@ from .conftest import (
     HERMES_STYLE_SECRET,
     manifests_of,
     objects_of,
+    processed,
     rebuild_request,
     scrub,
     stored_records,
@@ -65,7 +66,7 @@ def test_moving_cache_markers_keep_appends_and_rebuild_exactly(writer, stream_fi
         requests.append({"model": MODEL, "messages": [system, *messages]})
         writer.capture_request(requests[-1], **attempt(number))
         history = [*history, {"role": "assistant", "content": f"answer {number}"}]
-    writer.flush(5.0)
+    processed(writer, 5.0)
     records = stored_records(stream_file)
 
     manifests = manifests_of(records)
@@ -126,7 +127,7 @@ def test_moving_cache_markers_keep_appends_and_rebuild_exactly(writer, stream_fi
 def test_each_form_of_cache_marker_rebuilds_exactly(writer, stream_file, message):
     request = {"model": MODEL, "messages": [message]}
     writer.capture_request(request, **attempt(1))
-    writer.flush(5.0)
+    processed(writer, 5.0)
     records = stored_records(stream_file)
     [manifest] = [r for r in records if r.get("content_kind") == "request_manifest"]
     assert rebuild_request(manifest["content_digest"], objects_of(records)) == request
@@ -138,7 +139,7 @@ def test_a_real_rewrite_under_moving_markers_stays_full(writer, stream_file):
     question = {"role": "user", "content": "question"}
     writer.capture_request({"model": MODEL, "messages": [first, marked(question)]}, **attempt(1))
     writer.capture_request({"model": MODEL, "messages": [pruned, marked(question)]}, **attempt(2))
-    writer.flush(5.0)
+    processed(writer, 5.0)
     records = stored_records(stream_file)
     assert [m["operation"] for m in manifests_of(records)] == ["full", "full"]
 
@@ -146,7 +147,7 @@ def test_a_real_rewrite_under_moving_markers_stays_full(writer, stream_file):
 def test_a_growing_conversation_stores_only_new_messages(writer, stream_file):
     turns = 60
     history = grow(writer, turns)
-    writer.flush(10.0)
+    processed(writer, 10.0)
     records = stored_records(stream_file)
 
     parts = [r for r in records if r.get("content_kind") == "part"]
@@ -194,10 +195,10 @@ def test_each_request_redacts_only_what_is_new(stream_file, producer):
         history = [*history, {"role": "assistant", "content": f"answer {number}"}]
         request = {"model": MODEL, "messages": [system, *history], "tools": [tool]}
         writer.capture_request(request, **attempt(number))
-        assert writer.flush(5.0)
+        assert processed(writer, 5.0)
         scanned_per_call.append(sum(redactor.scanned))
         redactor.scanned.clear()
-    writer.flush(5.0)
+    processed(writer, 5.0)
     assert scanned_per_call[0] > 150_000
     assert all(scanned < 1_000 for scanned in scanned_per_call[1:])
 
@@ -213,7 +214,7 @@ def test_every_manifest_describes_its_own_request(writer, stream_file):
     request = {"model": MODEL, "messages": [system, user], "tools": [tool]}
     writer.capture_request(request, **attempt(1))
     writer.capture_request({"model": "other", "messages": [system, user]}, **attempt(2))
-    writer.flush(5.0)
+    processed(writer, 5.0)
     first, second = manifests_of(stored_records(stream_file))
     assert "tool_list_digest" in first and "tool_list_digest" not in second
     assert second["options_digest"] != first["options_digest"]
@@ -228,7 +229,7 @@ def test_a_changed_prompt_costs_a_rewrite_manifest_and_only_its_own_text(writer,
     for number, prompt in enumerate(("You are a researcher.", "You are an orchestrator.")):
         system = {"role": "system", "content": prompt}
         writer.capture_request({"model": MODEL, "messages": [system, *history]}, **attempt(number))
-    writer.flush(5.0)
+    processed(writer, 5.0)
     records = stored_records(stream_file)
     first, second = manifests_of(records)
     assert second["operation"] == "full"
@@ -249,7 +250,7 @@ def test_a_changed_message_forces_a_full_manifest(writer, stream_file):
     writer.capture_request({"model": MODEL, "messages": [first, pruned, next_user]}, **attempt(3))
     # Shorter than what came before.
     writer.capture_request({"model": MODEL, "messages": [first]}, **attempt(4))
-    writer.flush(5.0)
+    processed(writer, 5.0)
     manifests = manifests_of(stored_records(stream_file))
     assert [m["operation"] for m in manifests] == ["full", "append", "full", "full"]
 
@@ -261,7 +262,7 @@ def test_a_row_id_that_appears_later_does_not_force_a_full_manifest(writer, stre
     writer.capture_request({"model": MODEL, "messages": [message]}, **attempt(1))
     writer.capture_request({"model": MODEL, "messages": [known, answer]}, **attempt(2))
     writer.capture_request({"model": MODEL, "messages": [known]}, **attempt(3, "ses_2"))
-    writer.flush(5.0)
+    processed(writer, 5.0)
     first, second, other = manifests_of(stored_records(stream_file))
     assert second["operation"] == "append"
     assert other["hermes_message_ids"] == {"0": "1188"}
@@ -277,7 +278,7 @@ def test_a_row_id_is_named_once(writer, stream_file):
     second_row = {"role": "assistant", "content": "two", "_row_id": 2}
     writer.capture_request({"model": MODEL, "messages": [first_row]}, **attempt(1))
     writer.capture_request({"model": MODEL, "messages": [first_row, second_row]}, **attempt(2))
-    writer.flush(5.0)
+    processed(writer, 5.0)
     _, second = manifests_of(stored_records(stream_file))
     assert second["hermes_message_ids"] == {"1": "2"}
 
@@ -289,7 +290,7 @@ def test_histories_are_kept_apart(writer, stream_file):
     writer.capture_request(request, **attempt(2, profile="researcher-1"))
     writer.capture_request(request, **attempt(3, profile="researcher-1"), history_line="auxiliary")
     writer.capture_request(request, **attempt(4, "ses_2", profile="researcher-1"))
-    writer.flush(5.0)
+    processed(writer, 5.0)
     records = stored_records(stream_file)
     # None of them extends another, so all four name one manifest with nothing to walk back to.
     named = {
@@ -343,7 +344,7 @@ def test_a_whole_conversation_rebuilds_as_the_provider_got_it(writer, stream_fil
     tools = [{"type": "function", "function": {"name": "read_file", "parameters": {}}}]
     request = {"model": MODEL, "messages": messages, "tools": tools, "api_key": "opaque", "n": None}
     writer.capture_request(request, **attempt(1))
-    writer.flush(5.0)
+    processed(writer, 5.0)
     records = stored_records(stream_file)
     [manifest] = [r for r in records if r.get("content_kind") == "request_manifest"]
 
@@ -358,7 +359,7 @@ def test_a_whole_conversation_rebuilds_as_the_provider_got_it(writer, stream_fil
 def test_an_empty_system_prompt_has_no_object_and_still_comes_back(writer, stream_file):
     request = {"model": MODEL, "messages": [{"role": "system", "content": ""}]}
     writer.capture_request(request, **attempt(1))
-    writer.flush(5.0)
+    processed(writer, 5.0)
     records = stored_records(stream_file)
     [manifest] = [r for r in records if r.get("content_kind") == "request_manifest"]
     assert rebuild_request(manifest["content_digest"], objects_of(records)) == request
@@ -378,7 +379,7 @@ def test_prompt_sections_and_tool_lists_are_recorded(writer, stream_file):
             PromptSection("nowhere", "not in the prompt"),
         ],
     )
-    writer.flush(5.0)
+    processed(writer, 5.0)
     records = stored_records(stream_file)
     objects = objects_of(records)
     [manifest] = manifests_of(records)

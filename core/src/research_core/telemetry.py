@@ -200,11 +200,7 @@ def tracer() -> trace.Tracer:
                             _provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
                     except Exception:
                         # Keep console diagnostics when only the remote exporter is invalid.
-                        with _provider.get_tracer("research_core").start_as_current_span(
-                            "telemetry.exporter.disabled",
-                            record_exception=False,
-                        ) as current:
-                            current.set_status(StatusCode.ERROR)
+                        pass
                 trace.set_tracer_provider(_provider)
         return _provider.get_tracer("research_core")
 

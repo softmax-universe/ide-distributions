@@ -37,7 +37,7 @@ from research_core.store.actors import Actor
 from research_core.store.db import Store
 from research_core.tools.base import ToolContext, run_tool
 from research_core.tools.catalog import TOOLS
-from tests.telemetry.conftest import raw_lines, stored_records
+from tests.telemetry.conftest import processed, raw_lines, stored_records
 from tests.telemetry.fake_datadog import FakeDatadog
 from tests.test_coordinator_transitions import assigned
 from tests.test_serve_run_failures import Dispatch
@@ -69,7 +69,7 @@ class Seam:
         return opened.json()["session_id"]
 
     def records(self) -> list[dict[str, Any]]:
-        self.server.telemetry.flush(10)
+        processed(self.server.telemetry, 10)
         return stored_records(Path(os.environ[STREAM_VARIABLE]))
 
 
@@ -256,6 +256,23 @@ def test_a_rolled_back_transaction_records_nothing(seam):
     assert _store_event(records, "drain.done")["details"]["store_seq"] > 0
 
 
+def test_one_event_that_cannot_be_recorded_costs_only_its_own_record(seam, monkeypatch):
+    fields = observed._event_fields
+
+    def fails_on_notice(store, actor, seq, kind, subject, payload):
+        if kind == "notice":
+            raise ValueError("cannot record this one")
+        return fields(store, actor, seq, kind, subject, payload)
+
+    monkeypatch.setattr(observed, "_event_fields", fails_on_notice)
+    with seam.ctx.wstore.tx(Actor.harness()) as tx:
+        tx.event("notice", "first", {})
+        tx.event("drain.done", "second", {})
+    records = seam.records()
+    assert [r for r in records if r.get("native_event_type") == "notice"] == []
+    assert _store_event(records, "drain.done")
+
+
 def test_an_event_not_listed_sends_only_its_type(seam):
     with seam.ctx.wstore.tx(Actor.harness()) as tx:
         tx.event("drain.done", f"subject {SECRET}", {"text": SECRET, "count": 3})
@@ -346,7 +363,7 @@ def test_a_held_chat_records_its_old_run_and_resumes_on_a_new_one(tmp_path):
         held = dispatch.admission(op_id)
         dispatch.clock.now = datetime.fromisoformat(held["resume_after"]) + timedelta(seconds=1)
         dispatch.tick()
-        dispatch.server.telemetry.flush(10)
+        processed(dispatch.server.telemetry, 10)
         records = stored_records(Path(os.environ[STREAM_VARIABLE]))
     finally:
         dispatch.close()
@@ -383,7 +400,7 @@ def test_a_resumed_run_records_no_binding(tmp_path, monkeypatch):
             session_id=dispatch.session_id,
             conversation_history=[{"role": "user", "_row_id": 9}],
         )
-        dispatch.server.telemetry.flush(10)
+        processed(dispatch.server.telemetry, 10)
         records = stored_records(Path(os.environ[STREAM_VARIABLE]))
     finally:
         dispatch.close()

@@ -33,6 +33,7 @@ from research_core.plugin.tracing import make_instrumentation
 from tests.telemetry.conftest import (
     HERMES_STYLE_SECRET,
     objects_of,
+    processed,
     rebuild_request,
     scrub,
     stored_records,
@@ -94,7 +95,7 @@ def _reply(capture: GatewayCapture, **overrides) -> None:
 
 
 def _flushed(writer, stream_file) -> list[dict]:
-    assert writer.flush(5.0)
+    assert processed(writer, 5.0)
     return stored_records(stream_file)
 
 
@@ -555,7 +556,7 @@ def _access_line(call: str, status: int = 200, referer: str = "-", agent: str = 
 )
 def test_the_writer_and_a_seam_poll_stay_out(writer, stream_file, record):
     DiagnosticsHandler(writer).handle(record)
-    assert writer.flush(5.0)
+    assert processed(writer, 5.0)
     assert stored_records(stream_file) == []
 
 
