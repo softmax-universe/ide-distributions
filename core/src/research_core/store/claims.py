@@ -22,15 +22,16 @@ from __future__ import annotations
 
 import difflib
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from research_core import refs
+from research_core import brain, refs
 from research_core.store import evidence_types, registry
 from research_core.store._common import (
     display_id,
     fetch_row,
     json_field,
+    parse_iso,
     parse_json,
     require,
     word_count,
@@ -63,6 +64,7 @@ def write(
     tags: Sequence[str],
     evidence: Sequence[dict[str, Any]],
     see_also: Sequence[int | str] = (),
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Create an active claim; event ``claim.created``.
 
@@ -74,7 +76,7 @@ def write(
         summary = _check_summary(summary, problems)
         body = _check_body(body, problems)
         tags = _check_tags(tags, problems)
-        items = _check_evidence(store, evidence, problems)
+        items = _check_evidence(store, evidence, problems, env=env)
         see_also = _check_see_also(store, see_also, problems)
         if problems:
             raise StoreError(problems)
@@ -158,6 +160,7 @@ def add_evidence(
     ref: str,
     stance: str,
     note: str = "",
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Attach one evidence link; event ``claim.updated`` with the link.
 
@@ -169,7 +172,7 @@ def add_evidence(
         _row(store, number)
         problems: list[str] = []
         link = {"type": type, "ref": ref, "stance": stance, "note": note}
-        items = _check_evidence(store, [link], problems, citing=number, label="")
+        items = _check_evidence(store, [link], problems, citing=number, label="", env=env)
         if problems:
             raise StoreError(problems)
         evidence_id = _insert_evidence(tx, number, items[0])
@@ -185,6 +188,7 @@ def retire(
     status: str,
     superseded_by: int | str | None = None,
     evidence: dict[str, Any] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Supersede or refute an active claim; event ``claim.retired``. The claim is kept.
 
@@ -214,7 +218,9 @@ def retire(
             problems.append("refuted needs evidence: the killing link {type, ref, note}")
         if evidence is not None:
             link = {"stance": "contradicts", **evidence} if isinstance(evidence, dict) else evidence
-            items = _check_evidence(store, [link], problems, citing=number, label="evidence")
+            items = _check_evidence(
+                store, [link], problems, citing=number, label="evidence", env=env
+            )
             if status == "refuted" and items and items[0]["stance"] != "contradicts":
                 problems.append("killing evidence contradicts the claim")
         if problems:
@@ -240,7 +246,7 @@ def retire(
 # --- reads -----------------------------------------------------------------------------------
 
 
-def read(store: Store, claim_id: int | str) -> dict[str, Any]:
+def read(store: Store, claim_id: int | str, env: Mapping[str, str] | None = None) -> dict[str, Any]:
     """The claim with its evidence and the computed freshness, contested, counts, cited_by."""
     number = _number(claim_id)
     row = _row(store, number)
@@ -251,6 +257,8 @@ def read(store: Store, claim_id: int | str) -> dict[str, Any]:
     record["evidence"] = evidence
     record.update(_computed(evidence))
     record["cited_by"] = _cited_by(store, number)
+    if brain.enabled(env):  # IDE_BRAIN=1 only: a rule unused for 90 days is flagged stale
+        record["stale"] = brain.is_stale(record, parse_iso(store.now()))
     return record
 
 
@@ -386,6 +394,7 @@ def _check_evidence(
     *,
     citing: int | None = None,
     label: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Normalised evidence links; every bad link adds its problems, prefixed ``evidence[i]:``
     for a list (``label:`` when one is given, nothing when ``label`` is empty).
@@ -409,7 +418,7 @@ def _check_evidence(
         if missing:
             problems.append(f"{where}missing {', '.join(missing)}")
             continue
-        link_problems = evidence_types.check_ref(store, link["type"], link["ref"])
+        link_problems = evidence_types.check_ref(store, link["type"], link["ref"], env)
         if link["stance"] not in STANCES:
             link_problems.append(f"stance {link['stance']!r} is not one of {', '.join(STANCES)}")
         note = link.get("note") or ""
