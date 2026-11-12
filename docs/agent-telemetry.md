@@ -175,7 +175,7 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 | A Session's report does not name its subagents' Sessions, because their records have another Session's ID. Search `service:ide-agent-telemetry @parent_session_id:<id>`, then rebuild each. | `agent_telemetry/rebuild.py`, `_Finder.owned` |
 | An auxiliary call outside a turn has session ID `no-session`, so a Session's report does not show it. A log line with no Session tag has no session ID, so the report shows it only when it was written inside one of the Session's traces, where it carries `otel_trace_id`. | `plugin/capture.py`, `DiagnosticsHandler.emit` |
 | Hermes sends a tool call's arguments as compact JSON and its row keeps the model's text. A request shows the first, and `tool` / `proposed` keeps the second. | `_comparable` in `test_rebuild_real.py` |
-| Across a restart, requests are ordered by each process's earliest time, because `sequence` compares only inside one process. This assumes one gateway process at a time and a clock that did not go back. | `agent_telemetry/rebuild.py`, `_order` |
+| Records from all processes are ordered by `occurred_at`, so `research serve`'s admissions and store events interleave with the gateway's turns; `sequence` breaks a tie only inside one process. Requests come from one gateway process at a time, so across a restart their order is their time order. This assumes one clock for the pod and that it did not go back. | `agent_telemetry/rebuild.py`, `_order` |
 
 ## Proof and cost
 

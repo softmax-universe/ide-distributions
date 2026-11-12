@@ -27,6 +27,11 @@ _TOKEN = re.compile(
 )
 
 
+# An absolute search bound, as the rebuild writes it. The fake refuses a relative one, and records
+# the bounds in ``searches``, but does not filter by them: tests write lines at fixed times.
+_INSTANT = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z")
+
+
 def _unquoted(phrase: str) -> str:
     return re.sub(r"\\(.)", r"\1", phrase[1:-1])
 
@@ -195,6 +200,9 @@ class FakeDatadog:
         limit = body["page"]["limit"]
         if limit > 1000 or body["filter"].get("storage_tier") != "indexes":
             return 400, {"errors": ["bad page limit or storage tier"]}, {}
+        window = (body["filter"].get("from"), body["filter"].get("to"))
+        if not all(isinstance(bound, str) and _INSTANT.fullmatch(bound) for bound in window):
+            return 400, {"errors": [f"this fake takes only absolute bounds: {window}"]}, {}
         try:
             query = _Query(body["filter"]["query"])
         except (ValueError, IndexError) as error:

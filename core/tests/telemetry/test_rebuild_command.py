@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -254,7 +255,12 @@ def test_paging_and_a_rate_limit(writer, stream_file, datadog):
     assert len(datadog.searches) > 3
     # Whichever index holds the lines: no search names one, and none reaches past the retention.
     assert all("indexes" not in search["filter"] for search in datadog.searches)
-    assert {search["filter"]["from"] for search in datadog.searches} == {"now-15d"}
+    # One absolute window, fixed once, for every search and every page of it.
+    windows = {(search["filter"]["from"], search["filter"]["to"]) for search in datadog.searches}
+    [(start, end)] = windows
+    span = datetime.fromisoformat(end) - datetime.fromisoformat(start)
+    assert span == timedelta(days=15)
+    assert any(search["page"].get("cursor") for search in datadog.searches)
     assert len(report["events"]) == 1200
     assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
 
@@ -314,6 +320,45 @@ def test_a_restart_sends_a_full_manifest_and_everything_it_lists(
     assert [r["source_instance"] for r in report["requests"]] == ["gateway-1", "gateway-2"]
     rebuilt = [canonical_bytes(r["request"]) for r in report["requests"]]
     assert rebuilt == [canonical_bytes(body)] * 2
+
+
+def test_records_of_processes_running_side_by_side_interleave_by_time(
+    stream_file, producer, redactor, datadog, tmp_path
+):
+    """``research serve`` and the gateway run at once: its admissions and the gateway's turns
+    read in the order they happened, not one process after the other."""
+    serve_stream = tmp_path / "serve.jsonl"
+    serve_process = dataclasses.replace(producer, producer="serve", source_instance="serve-1")
+    serve = TelemetryWriter(str(serve_stream), serve_process, redactor=redactor)
+    gateway = TelemetryWriter(stream_file, producer, redactor=redactor)
+    start = 1794500000.0
+    for number in (1, 2):
+        at = start + 10 * number
+        admission = f"adm_{number}"
+        serve.capture_operation(
+            "admission", "accepted", occurred_at=at, session_id="ses_1", admission_id=admission
+        )
+        gateway.capture_operation("turn", "started", occurred_at=at + 1, session_id="ses_1")
+        gateway.capture_request(
+            request_body([{"role": "user", "content": f"Message {number}"}]),
+            occurred_at=at + 2,
+            session_id="ses_1",
+            provider="moonshot",
+            model_attempt_id=f"att_{number}",
+        )
+    assert serve.flush(5.0) and gateway.flush(5.0)
+    datadog.take_lines(raw_lines(serve_stream))
+    datadog.take_lines(raw_lines(stream_file))
+
+    report = rebuild_session(search_of(datadog), "ses_1")
+    timeline = [(e["action"], e.get("admission_id")) for e in report["events"]]
+    assert timeline == [
+        ("admission", "adm_1"),
+        ("turn", None),
+        ("admission", "adm_2"),
+        ("turn", None),
+    ]
+    assert [r["model_attempt_id"] for r in report["requests"]] == ["att_1", "att_2"]
 
 
 # A quote or a backslash in a value is escaped in the query; unescaped, Datadog answers a 400.
@@ -821,7 +866,8 @@ def test_a_request_record_with_no_manifest_is_missing(writer, stream_file, datad
     request["content_refs"] = [r for r in refs if r["name"] != "request_manifest"]
 
     report = rebuild_session(search_of(datadog), "ses_1")
-    assert report["requests"][0]["request"] is None
+    first = report["requests"][0]
+    assert first["request"] is None and first["blocked_by"] == []
     assert report["missing"] == [{"kind": "no_request_manifest", "model_attempt_id": "att_1"}]
 
 

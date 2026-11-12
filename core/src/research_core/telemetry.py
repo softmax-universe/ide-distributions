@@ -56,12 +56,13 @@ class JsonLines(logging.Formatter):
         created = datetime.fromtimestamp(record.created, UTC)
         return json.dumps(
             {
+                # First, so a caller's field cannot replace the redacted message or the status.
+                **getattr(record, "attributes", {}),
                 "timestamp": created.isoformat(timespec="milliseconds"),
                 "status": record.levelname.lower(),
                 "logger.name": record.name,
                 # The message with any traceback, which the queue in front has already joined.
                 "message": self.redact(super().format(record)),
-                **getattr(record, "attributes", {}),
             },
             default=str,
         )
@@ -246,9 +247,7 @@ def span(name: str, *, context: Context | None = None, **attributes) -> Iterator
 
 
 def process_env(env: Mapping[str, str]) -> dict[str, str]:
-    carrier: dict[str, str] = {}
-    propagator.inject(carrier)
-    return {**env, **{key.upper(): value for key, value in carrier.items()}}
+    return {**env, **{key.upper(): value for key, value in trace_carrier().items()}}
 
 
 def process_context(env: Mapping[str, str]) -> Context:
