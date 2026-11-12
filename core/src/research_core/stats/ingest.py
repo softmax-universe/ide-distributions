@@ -50,7 +50,8 @@ def rows_from_evaluate_output(
     - ``episode`` (integer or non-empty string, required): the episode's index or id within
       the request.
     - ``seed`` (integer, required): the game seed the episode played.
-    - ``seat`` (integer, required): the seat whose metrics this line reports.
+    - ``seat`` (integer, required): the roster slot whose metrics this line reports. The run's
+      Version sits in slot 0, and ``xp.status`` stores only seat-0 rows as the run's own.
     - ``opponents`` (list of strings, optional, default ``[]``): the other seats' policy labels.
     - ``metrics`` (object of metric name to finite number): required unless ``status`` is
       ``"failed"``.

@@ -41,6 +41,9 @@ Never conclude from a rung below the question's weight.
 ## Footguns
 
 - Sampled seats (`league`) in an A/B invalidate the comparison: the arms saw different fields.
+- The measured Version always plays seat 0 and only seat-0 rows count. A design that needs it on
+  other seats or sides (two pairs as Light, two as Dark) cannot be run; never promise one. Vary
+  seeds and opponents instead, and say which side seat 0 plays.
 - A created or running request counts for nothing until its results are inspected.
 - A platform 4xx: read the error's detail and, if the route or body may have changed, the `softmax-api-routes` skill; do not retry blind.
 - Above the `xp.ask_above_requests_per_experiment` setting a Researcher's request is refused (`credits` skill).
