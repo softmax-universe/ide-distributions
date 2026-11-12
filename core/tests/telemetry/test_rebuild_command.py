@@ -26,8 +26,6 @@ from .fake_datadog import FakeDatadog
 SYSTEM = "You are a researcher. Be careful."
 TOOL = {"type": "function", "function": {"name": "read_file", "parameters": {}}}
 TRACE = "4bf92f3577b34da6a3ce929d0e0e4736"
-# As ``telemetry.correlation`` names a trace. Logs search returns only ``otel_trace_id``.
-IN_TRACE = {"trace_id": TRACE, "otel_trace_id": TRACE}
 LONG_RESULT = 'café 日本語 😀 "quoted"\n' * 2000
 USAGE = {"input_tokens": 1000, "output_tokens": 7}
 
@@ -334,7 +332,7 @@ def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
         writer.capture_operation(
             "admission", "accepted", request_id=request_id, admission_id="adm_1"
         )
-    event("client.accepted", **IN_TRACE)
+    event("client.accepted", otel_trace_id=TRACE)
     event("client.started", run_id="run_1")
     event("client.waiting", run_id="run_1", reason="provider_unavailable")
     event("client.resumed")
@@ -349,7 +347,9 @@ def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
         task_id="T-3",
     )
     # A record with only the message's trace, as a store event in a tool's process has.
-    writer.capture_operation("approval", "requested", **IN_TRACE, content={"command": "ls"})
+    writer.capture_operation(
+        "approval", "requested", otel_trace_id=TRACE, content={"command": "ls"}
+    )
     sent(writer, stream_file, datadog)
     report = rebuild_session(search_of(datadog), "ses_1")
     admitted = [e for e in report["events"] if e.get("admission_id") == "adm_1"]

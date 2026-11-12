@@ -247,12 +247,17 @@ records nothing.
   `parent_session_id`. A turn with no admission (background work) is a trace of its own.
 - **Records from before traces:** a record written before records named their trace names its Hermes run in `run_id`,
   and Datadog keeps it for 15 days. The rebuild follows `run_id` as it follows `otel_trace_id`, and a tool call ID is unique
-  within the trace, or within the run on such a record. A record written from 2026-11-10 until records carried
-  `otel_trace_id` has a trace the rebuild cannot read, so it is found only by its other links.
+  within the trace, or within the run on such a record.
+- **Records from before `otel_trace_id`:** a record written from 2026-11-10 until records carried `otel_trace_id` has a
+  trace the rebuild cannot read, so it is found only by its other links, and its tool call IDs are scoped to nothing: a
+  call ID reused in another trace of the Session could attach its result to the wrong request. The last of these ages
+  out 15 days after `otel_trace_id` deploys. By then every record from before traces is gone too, and the rebuild's
+  `run_id` fallback can be deleted.
 - **A record to its step:** `span_id` names the model attempt (`chat`), tool call (`execute_tool`) or turn
-  (`invoke_agent`) span it belongs to. A record written before its turn's span starts, at the turn's first model request,
-  has no `trace_id`: an auxiliary call that begins then, such as a title, is one. Order across processes only by these
-  links, never by `sequence`, which compares only within one `source_instance`.
+  (`invoke_agent`) span it belongs to. It is for Datadog's link from a log to its span, and the rebuild does not read it.
+  A record written before its turn's span starts, at the turn's first model request, has no trace or span IDs: an
+  auxiliary call that begins then, such as a title, is one. Order across processes only by the links above, never by
+  `sequence`, which compares only within one `source_instance`.
 - **A worker's successor:** `execution` / `successor`, from `admission_id` to `execution_attempt_id`. A new Session also has
   `parent_session_id` on its `session.started`.
 - **A tool call to what it did:** `otel_trace_id` with `tool_call_id`. A distribution tool's handler gets no call ID from Hermes,

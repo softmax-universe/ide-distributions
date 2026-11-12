@@ -209,11 +209,9 @@ def tracer() -> trace.Tracer:
 
 
 def correlation(span: Span) -> dict[str, str]:
-    """The IDs a record carries to join its span, with none for no span: Datadog's names and form
-    for log and trace correlation (``trace_id``, 32 lowercase hex digits, and ``span_id``, 16),
-    and the trace again as ``otel_trace_id``. Datadog's log preprocessing takes ``trace_id`` and
-    ``span_id`` off a log's attributes, so Logs search, which the rebuild reads, never returns
-    them."""
+    """The IDs a record carries to join its span, none for no span: ``trace_id`` (32 lowercase
+    hex digits) and ``span_id`` (16), as Datadog links a log to its trace, and the trace again as
+    ``otel_trace_id``, because Logs search never returns Datadog's two reserved names."""
     context = span.get_span_context()
     if not context.is_valid:
         return {}
