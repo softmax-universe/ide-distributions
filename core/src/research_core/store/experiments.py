@@ -54,6 +54,8 @@ MEASUREMENT_KEYS = ("metric", "baseline", "candidate", "n", "effect")
 VERDICTS = ("confirmed", "refuted", "inconclusive")
 # A run's platform request states that never change again.
 REQUEST_TERMINAL_STATES = ("completed", "failed", "cancelled")
+# The validity xp.status gives a run whose episodes are fine but whose evaluate failed.
+EVALUATE_FAILED = "invalid: evaluate"
 SECTIONS = ("hypothesis", "methods", "results")
 SUMMARY_MAX_WORDS = 40
 
@@ -295,6 +297,22 @@ def open_requests(store: Store, task_id: int) -> list[str]:
         (task_id,),
     )
     return [row[0] for row in rows if row[1] not in REQUEST_TERMINAL_STATES]
+
+
+def unsettled(run: dict[str, Any]) -> str | None:
+    """Why a run's rows may still change, or None once they are final.
+
+    A request still running, a finished request ``xp.status`` has not evaluated, and a failed
+    evaluate (waiting for its repair) are unsettled. A run marked invalid for any other reason is
+    settled: its rows never count.
+    """
+    if run["state"] not in REQUEST_TERMINAL_STATES:
+        return f"request {run['state'] or 'not started'}"
+    if run["validity"].startswith(EVALUATE_FAILED):
+        return "evaluate failed; after the repair xp.status evaluates it again"
+    if run["validity"] == "valid" and "rows" not in (run.get("results") or {}):
+        return "finished but not evaluated; xp.status stores its rows"
+    return None
 
 
 def recorded_requests(store: Store, request_ids: list[str]) -> set[str]:

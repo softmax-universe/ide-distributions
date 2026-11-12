@@ -801,6 +801,17 @@ def test_a_repaired_evaluate_makes_a_failed_run_good_again(run, ctx, running, mi
     assert repaired["complete"] is True
 
 
+def test_a_failure_the_watcher_recorded_still_makes_the_run_invalid(run, ctx, running):
+    """waits._xp writes the platform state onto runs it may write. A failed state it wrote used
+    to leave the run valid with no rows, so the Experiment never settled."""
+    args = {"action": "request", "experiment": "X-1", **ROSTER, "seeds": [1], "arms": ["candidate"]}
+    (created,) = run("xp", args)["runs"]
+    experiments.update_run(ctx.store, Actor.harness(), created["id"], state="failed")
+    result = run("xp", {"action": "status", "experiment": "X-1"})
+    assert result["runs"][0]["validity"] == "invalid: request failed"
+    assert result["complete"] is True
+
+
 def test_a_user_marked_invalid_run_stays_settled(run, ctx, running):
     args = {"action": "request", "experiment": "X-1", **ROSTER, "seeds": [1], "arms": ["candidate"]}
     (created,) = run("xp", args)["runs"]

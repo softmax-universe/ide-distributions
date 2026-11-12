@@ -339,6 +339,7 @@ def test_computed_close_counts_only_the_runs_own_seat(add_run, call, running):
                 {
                     "action": "update_run",
                     "run": added["id"],
+                    "state": "completed",
                     "results": {"rows": [r for r in rows if r["seed"] == s]},
                 },
                 role="researcher",
@@ -378,10 +379,28 @@ def test_computed_close_with_only_invalid_runs_is_refused(add_run, call, running
     assert refused["ok"] is False and refused["context"]["invalid_runs"] == [only]
 
 
-def test_computed_close_without_rows_is_refused(add_run, call, running):
-    add_run(kind="xp", platform_request_id="xreq_1", arm="baseline")
-    refused = call("experiment", {"action": "close", "experiment": "X-1"})
-    assert refused["ok"] is False
+def test_computed_close_waits_until_every_runs_rows_are_final(add_run, call, running):
+    """A close is final: read early, it would miss rows on their way and say n_short for good."""
+    run_id = add_run(kind="xp", platform_request_id="xreq_1", arm="baseline")["id"]
+    close = {"action": "close", "experiment": "X-1"}
+
+    def update(**fields):
+        update_run = {"action": "update_run", "run": run_id, **fields}
+        assert call("experiment", update_run, role="researcher")["ok"] is True
+
+    for fields, reason in (
+        ({}, "request not started"),
+        ({"state": "running"}, "request running"),
+        ({"state": "completed"}, "finished but not evaluated; xp.status stores its rows"),
+        ({"validity": "invalid: evaluate failed (exit 1)"}, "evaluate failed"),
+    ):
+        if fields:
+            update(**fields)
+        refused = call("experiment", close)
+        assert refused["ok"] is False and "rows are not final" in refused["error"]
+        assert refused["context"]["unsettled_runs"][str(run_id)].startswith(reason)
+    update(validity="invalid: wrong roster")
+    refused = call("experiment", close)
     assert refused["problems"] == [
         "no evaluation rows recorded yet; run xp.status first or close with an explicit verdict"
     ]
@@ -401,6 +420,7 @@ def test_computed_close_refuses_when_no_rows_pair(add_run, call, running):
         {
             "action": "update_run",
             "run": stray["id"],
+            "state": "completed",
             "results": {"rows": [row("pv-elsewhere", 0, 0.9)]},
         },
         role="researcher",
@@ -431,6 +451,7 @@ def test_malformed_stored_rows_are_named(add_run, call, running):
         {
             "action": "update_run",
             "run": added["id"],
+            "state": "completed",
             "results": {"rows": [{"episode_id": "e1", "seed": "seven"}, "not a row"]},
         },
         role="researcher",

@@ -30,12 +30,14 @@ on the run with ``update_run {results: {"rows": [...]}}``. Each row is an object
 - ``metrics`` (object of metric name to number; every metric named in ``methods.metrics``),
 - ``status`` (``"completed"`` by default, or ``"failed"``) and ``reason`` (string, optional).
 
-Rows of a run marked invalid do not count; the result names those runs in
-``evaluation.invalid_runs``. Only rows of the run's own seat count (``results.seat``, which
-``xp.request`` records; 0 for older runs): a row of another seat is an opponent's and is counted
-in ``evaluation.rows.dropped.other_seats``. Rows with ``status: failed``, a repeated
-``episode_id``, another game version or a missing metric are dropped and counted in
-``evaluation.rows.dropped`` too. Several rows for one
+The computed close is refused while any run's rows may still change (``experiments.unsettled``:
+a request still running, a finished one ``xp.status`` has not evaluated, an evaluate awaiting
+repair), because a verdict is final and read early it would miss them. Rows of a run marked
+invalid do not count; the result names those runs in ``evaluation.invalid_runs``. Only rows of
+the run's own seat count (``results.seat``, which ``xp.request`` records; 0 for older runs): a
+row of another seat is an opponent's and is counted in ``evaluation.rows.dropped.other_seats``.
+Rows with ``status: failed``, a repeated ``episode_id``, another game version or a missing
+metric are dropped and counted in ``evaluation.rows.dropped`` too. Several rows for one
 ``(policy_version, game_version, seed, opponents)`` - several episodes on one seed - are averaged
 into one row, so each seed makes exactly one baseline/candidate pair. The ``evaluation`` design's
 seats, opponents and game version are read from the first row; its seeds are the runs' seeds
@@ -279,6 +281,19 @@ def computed_close(call: ToolCall, experiment_id: int) -> dict:
     if record["status"] != "running":
         raise ToolError(
             f"{record['id']} is {record['status']}; an Experiment closes only while it is running"
+        )
+    unsettled = {
+        run["id"]: reason for run in record["runs"] if (reason := experiments.unsettled(run))
+    }
+    if unsettled:
+        # A close is final: computed now, it would leave out rows still on their way (often
+        # n_short, so inconclusive for good) or the runs of an evaluate awaiting repair.
+        raise ToolError(
+            f"{record['id']} has {len(unsettled)} runs whose rows are not final, so the rule"
+            f" cannot be applied yet: xp.status {{experiment: {record['id']}}} refreshes and"
+            " evaluates them. A run that will never count: experiment.update_run {run,"
+            " validity: 'invalid: <reason>'}",
+            unsettled_runs=unsettled,
         )
     candidate = candidate_version(record)
     counted = [run for run in record["runs"] if run["validity"] == "valid"]

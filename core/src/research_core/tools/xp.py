@@ -85,7 +85,7 @@ EVALUATE_BUDGET_S = mixin_module.DEFAULT_BUDGET_S
 # All of one status call's evaluates share this, so the call returns under the tool's own deadline
 # (plugin/executor.py's TOOL_TIMEOUT_S) rather than being killed with a command still running.
 STATUS_BUDGET_S = 330
-EVALUATE_FAILED = "invalid: evaluate"
+EVALUATE_FAILED = experiments.EVALUATE_FAILED
 RESULTS_ENV = "XP_RESULTS"
 # Which seat and policy an evaluate run is about, so a mixin may score that seat alone.
 SEAT_ENV = "XP_SEAT"
@@ -541,9 +541,18 @@ def _experiment_of_request(ctx: ToolContext, request_id: str) -> int:
 
 
 def _refresh(ctx: ToolContext, record: dict, run: dict) -> dict:
-    """The run's platform state; a failed or cancelled request makes the run invalid."""
+    """The run's platform state; a failed or cancelled request makes the run invalid.
+
+    The watcher may already have written a failed or cancelled state to the run (``waits._xp``
+    records progress on Experiments it may write); such a run is still made invalid here, or it
+    would stay valid with no rows and never settle.
+    """
     if run["state"] in TERMINAL_STATES:
-        return run
+        if run["state"] == "completed" or run["validity"] != "valid":
+            return run
+        return experiments.update_run(
+            ctx.store, ctx.actor, run["id"], validity=f"invalid: request {run['state']}"
+        )
     platform = ctx.platform()
     request_id = run["platform_request_id"]
     request = wait.call_platform(
@@ -750,12 +759,7 @@ def _resume(call: ToolCall) -> tuple[int, dict | None]:
 def _report(record: dict, note: str | None = None) -> dict:
     runs = [run for run in record["runs"] if run["kind"] == RUN_KIND]
     pending = [run["platform_request_id"] for run in runs if run["state"] not in TERMINAL_STATES]
-    settled = all(
-        run["state"] in TERMINAL_STATES
-        and ("rows" in (run.get("results") or {}) or run["validity"] != "valid")
-        and not _evaluate_failed(run)
-        for run in runs
-    )
+    settled = not any(experiments.unsettled(run) for run in runs)
     broken = sum(_evaluate_failed(run) for run in runs)
     report = {
         "experiment": record["id"],
