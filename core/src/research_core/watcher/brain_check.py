@@ -1,18 +1,13 @@
-"""Brain check (IDE_BRAIN=1): notify about stale rules and idle skills. Notice only; nothing is
-ever retired, edited or deleted here.
+"""Brain check (IDE_BRAIN=1): notify about stale rules. Notice only; nothing is ever retired,
+edited or deleted here. (Idle-skill notices wait until skill use is tracked.)
 
 * A claim tagged ``rule`` with no supporting use for 90 days (``brain.is_stale``; applying a rule
   is recorded as ``claim_add_evidence`` with stance ``supports``) raises one notice per stale
   stretch (workspace-store meta ``brain_stale:<coworld>:<C-n>``, cleared when it is used again).
-* An own skill (``<workspace>/skills/<name>/``) none of whose files changed for 90 days raises one
-  notice (meta ``brain_idle_skill:<name>``). The skill's newest file mtime is the only usage
-  signal Hermes leaves on disk.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from research_core import brain
@@ -25,12 +20,11 @@ RULE_LIMIT = 200
 
 
 def run(ctx: TickContext) -> dict[str, Any]:
-    report: dict[str, Any] = {"stale_rules": [], "idle_skills": []}
+    report: dict[str, Any] = {"stale_rules": []}
     if not brain.enabled(ctx.env):
         return report
     if ctx.store is not None and ctx.coworld is not None:
         _stale_rules(ctx, report)
-    _idle_skills(ctx, report)
     return report
 
 
@@ -57,34 +51,3 @@ def _stale_rules(ctx: TickContext, report: dict[str, Any]) -> None:
             report["stale_rules"].append(found["id"])
         elif not stale and ctx.meta(key) is not None:
             ctx.wstore.delete_meta(key)  # used again: a later lapse notifies again
-
-
-def _idle_skills(ctx: TickContext, report: dict[str, Any]) -> None:
-    root = ctx.ws.root / "skills"
-    if not root.is_dir():
-        return
-    cutoff = ctx.now - timedelta(days=brain.STALE_DAYS)
-    for skill in sorted(p for p in root.iterdir() if p.is_dir() and not p.is_symlink()):
-        if skill.name == "seed" or skill.name.startswith("."):
-            continue
-        key = f"brain_idle_skill:{skill.name}"
-        newest = _newest_mtime(skill)
-        idle = newest is not None and newest < cutoff
-        if idle and ctx.meta(key) is None:
-            notices.add(
-                ctx.wstore,
-                ctx.actor,
-                text=(
-                    f"Skill {skill.name} has not changed for {brain.STALE_DAYS} days. Keep, "
-                    "improve or retire it; nothing was changed."
-                ),
-            )
-            ctx.set_meta(key, ctx.now.isoformat())
-            report["idle_skills"].append(skill.name)
-        elif not idle and ctx.meta(key) is not None:
-            ctx.wstore.delete_meta(key)
-
-
-def _newest_mtime(folder: Path) -> datetime | None:
-    times = [p.stat().st_mtime for p in folder.rglob("*") if p.is_file() and not p.is_symlink()]
-    return datetime.fromtimestamp(max(times), UTC) if times else None

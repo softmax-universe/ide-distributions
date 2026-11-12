@@ -4,7 +4,7 @@ Lessons, failures, gotchas, rules, wins and unverified notes are claims with tag
 ``failed``, ``gotcha``, ``rule``, ``win``, ``unverified``); "seen again" is ``claim_add_evidence``
 with stance ``supports``; hypotheses are experiments; plans and handoffs are Goals and Tasks.
 This package holds only what the store does not: the flag, the computed ``stale`` signal, the
-SOUL hook and the optional read-only Coworld seed skills. Stdlib only.
+SOUL hook. Stdlib only.
 """
 
 from __future__ import annotations
