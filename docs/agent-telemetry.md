@@ -29,7 +29,7 @@ Text is sent once per process, by digest. A request is a manifest that lists dig
 In the gateway and `research serve` a caller only copies what it was given and puts it on a bounded queue, which drops and
 counts what does not fit. A background thread redacts, hashes and writes, so a stuck stream holds up no callback and no
 commit through this path. That thread also does the reads whose result it records: the `state.db` rows a turn committed,
-read after the turn's end or a compaction, and `SOUL.md`, read when the request that sends it is written. A store event's
+read after the turn's end, and `SOUL.md`, read when the request that sends it is written. A store event's
 row (an admission, a durable command or a Session) is the exception: `observed.py` reads it on the committing thread, just
 after the COMMIT, with one `SELECT` by key. A short command, such as a
 workspace tool's process, writes each record to the stream before the capture returns, as any process logs to stdout, and
@@ -92,7 +92,7 @@ each reference's name:
 - `requests`: each model request in wire order, whole, with `response`, `failed` or `unread` (the record
   of how the attempt ended), `partial_responses` (what each broken stream of the attempt had shown),
   `tools` (its tool activity, including each `result`), and `tokens_by_source`.
-- `unended_attempts`: the `model_attempt_id` of each request with no reply, partial reply, failure or `unread` record: a process killed during the call, a cancel (Hermes's interrupt fires no hook), or a call still running. It is not a loss, so it does not change the exit code.
+- `unended_attempts`: the `model_attempt_id` of each request with no reply, failure or `unread` record (a partial reply is no end, because Hermes can retry the stream): a process killed during the call, a cancel (Hermes's interrupt fires no hook), or a call still running. It is not a loss, so it does not change the exit code.
 - `rows`: each committed native row, with `message` as it was first sent and `rewritten_to` if a prune
   later changed it. `message` means "first sent" only when `missing` is empty: if a row's original was
   lost, it shows the first form that survived. A row no request lists never reached a model, such as a
@@ -120,9 +120,11 @@ characters only.
 | `digest_failure` | The joined chunks do not match the digest or size |
 | `row_without_text` | A committed row that no request lists and whose own text is unknown: its commit text or a tool row's result was lost, or two results with no row ID share its call ID |
 | `call_with_no_attempt` | A call started and no attempt was written: its request record was dropped or lost |
-| `reply_with_no_request` | A reply, failure or partial reply names an attempt whose request record is lost |
+| `reply_with_no_request` | A reply, failure or partial reply names an attempt whose request record is lost. One dropped oversized request shows as this and `call_with_no_attempt`: one loss, not two |
 
 A missing object blocks each request that needs it, and that request shows `blocked_by`. Nothing is guessed.
+
+A line becomes searchable 12 to 27 seconds after it is written, not always in order, so a rebuild within about 30 seconds of a Session's last record can show a `call_with_no_attempt` or `reply_with_no_request` that clears when it is run again.
 
 **An empty list is not proof that a Session is complete.** It says only that every reference found could
 be followed. A record that never reached Datadog leaves no reference to follow. A Session older than 15
@@ -159,7 +161,8 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 | The provider-billed `cost` is not captured: `post_api_request` passes a token summary without the provider's raw usage. | `agent/api_request_hooks.py`, `_usage_summary_for_api_request_hook` |
 | Auxiliary requests and replies are Hermes's capped hook payloads (`HERMES_PLUGIN_PAYLOAD_MAX_CHARS`, 50,000 characters, 8,000 per string). | `agent/auxiliary_hooks.py` |
 | Prompt sections name SOUL and this plugin's own sections, found by their text. Hermes's guidance, the project's rules and the skill index are unattributed. | `plugin/capture.py`, `_sections` |
-| Committed rows are read from `state.db` on the writer's thread after each turn's end, and a compaction's old ID's rows at the compaction. Rows of a turn that a killed gateway never ended are not recorded (they stay in `state.db`), and a new process records only rows written after it started. Any gateway exit, graceful or not, also loses what the writer still had queued. | `plugin/capture.py`, `_capture_commits` |
+| Committed rows are read from `state.db` on the writer's thread after each turn's end. Rows of a turn that a killed gateway never ended are not recorded (they stay in `state.db`), and a new process records only rows written after it started. Any gateway exit, graceful or not, also loses what the writer still had queued. | `plugin/capture.py`, `_capture_commits` |
+| A compaction partway through a turn, done in place as the pinned Hermes's `compression.in_place: true` default does, may leave the rows that turn committed before it uncaptured (Hermes archives them as `compacted`, which the turn's read skips) and capture the kept tail twice, as the fresh copies Hermes inserts. Unverified: read from the code only. | `plugin/capture.py`, `_capture_commits`; Hermes `agent/conversation_compression.py` |
 | `extra_headers` and `extra_query` are not captured, because they are not part of the request body. | `plugin/capture.py`, `wire_request` |
 | After a restart the first Session ID is lost too. Rebuild follows `parent_session_id` on `compaction` records. | `test_compaction_is_followed_in_both_directions_after_a_restart` |
 | Hermes gives a row ID only to rows committed since its last prune or restart, so a `full` manifest after one names few rows. Text is not lost: rebuild joins by row ID first, and a listing with none through its tool call ID, unless the row's own result has other text. | `test_each_committed_row_equals_state_db` |

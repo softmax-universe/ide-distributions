@@ -101,7 +101,8 @@ class FakeDatadog:
     """``POST /api/v2/logs/events/search``, holding what intake took.
 
     ``rate_limit_next`` answers that many searches with a 429, as Datadog words it. ``status`` is
-    what each answer's ``meta.status`` says: ``timeout`` when Datadog ran out of time.
+    what each answer's ``meta.status`` says: ``timeout`` when Datadog ran out of time, and with
+    ``None`` an answer has no status.
     """
 
     def __init__(self) -> None:
@@ -188,7 +189,7 @@ class FakeDatadog:
         start = int(body["page"].get("cursor") or 0)
         page = matched[start : start + limit]
         after = start + limit
-        meta: dict[str, Any] = {"status": self.status}
+        meta: dict[str, Any] = {} if self.status is None else {"status": self.status}
         if after < len(matched):
             meta["page"] = {"after": str(after)}
         return 200, {"data": [self._row(entry) for entry in page], "meta": meta}, {}

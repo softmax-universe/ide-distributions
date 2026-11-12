@@ -890,9 +890,10 @@ def test_a_users_message_survives_a_kill_during_its_first_call(writer, stream_fi
     assert report["missing"] == []
 
 
-def test_an_attempt_ends_with_a_reply_a_partial_reply_a_failure_or_unread(
+def test_an_attempt_ends_with_a_reply_a_failure_or_unread_and_not_a_partial_reply(
     writer, stream_file, datadog
 ):
+    """Hermes can retry a broken stream inside its attempt, so a partial reply is no end."""
     ids = {"session_id": "ses_1"}
     for number in range(1, 6):
         body = request_body([{"role": "user", "content": "Go"}])
@@ -904,7 +905,7 @@ def test_an_attempt_ends_with_a_reply_a_partial_reply_a_failure_or_unread(
     sent(writer, stream_file, datadog)
 
     report = rebuild_session(search_of(datadog), "ses_1")
-    assert report["unended_attempts"] == ["att_5"] and report["missing"] == []
+    assert report["unended_attempts"] == ["att_2", "att_5"] and report["missing"] == []
 
 
 def test_a_reply_whose_request_was_lost_is_named(writer, stream_file, datadog):

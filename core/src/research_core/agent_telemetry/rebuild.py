@@ -72,8 +72,9 @@ class LogsSearch:
             filters = {"query": query, **window}
             answer = self._post({"filter": filters, "page": page, "sort": "timestamp"})
             meta = answer.get("meta") or {}
-            if meta.get("status") not in (None, "done"):
-                raise IncompleteSearch(f"the search answered status {meta['status']!r}")
+            status = meta.get("status")
+            if status not in (None, "done"):
+                raise IncompleteSearch(f"the search answered status {status!r}")
             for row in answer.get("data") or ():
                 yield row["attributes"]["attributes"]
             page["cursor"] = (meta.get("page") or {}).get("after")
@@ -353,6 +354,10 @@ def _of_attempt(record: dict[str, Any]) -> bool:
     return record["action"] == "model_attempt" and "model_attempt_id" in record
 
 
+# What ends an attempt. A partial reply does not: Hermes can retry the stream inside the attempt.
+_ATTEMPT_ENDS = ("response", "failed", "unread")
+
+
 def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> list[dict]:
     replies: dict[str, dict] = defaultdict(dict)
     # What a broken stream had shown, which Hermes can retry inside the same attempt.
@@ -530,8 +535,7 @@ def rebuild_session(search: LogsSearch, session_id: str, workspace: str | None =
     ]
     # No record says how these ended: a kill, a cancel (Hermes's interrupt fires no hook), or a
     # call still running. None of these is a loss, so they stay out of ``missing``.
-    ends = {"response", "partial_responses", "failed", "unread"}
-    unended = [request["model_attempt_id"] for request in requests if not request.keys() & ends]
+    unended = [r["model_attempt_id"] for r in requests if not r.keys() & _ATTEMPT_ENDS]
     return {
         "session_id": session_id,
         "workspace_id": next(iter(finder.workspaces), None),

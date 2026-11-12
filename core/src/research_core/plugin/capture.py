@@ -13,7 +13,7 @@ no agent; Hermes logs it.
 - A tool result: as the model got it, from the next request that carries it. A tool row's own
   text is on its commit too, for a turn that ends before a request carries it (a guard halt).
 - Committed rows: read from ``state.db`` on the writer's thread after each turn's end
-  (``on_session_end``), and under the old ID at a compaction (``post_compaction``).
+  (``on_session_end``).
 - The span: each record carries the ``trace_id`` and ``span_id`` of the span it belongs to
   (``plugin/tracing.py``): its model attempt or tool call, else its Session's latest turn. One
   user message is one trace. An auxiliary call keeps the span it began in.
@@ -725,11 +725,6 @@ class GatewayCapture:
             if old_session_id in _plugin_sections:
                 _plugin_sections[session_id] = _plugin_sections.pop(old_session_id)
             self._turn_calls[session_id] += self._turn_calls.pop(old_session_id, [])
-            self._results_seen[session_id] |= self._results_seen.pop(old_session_id, set())
-            # Compaction can come partway through a turn, after it committed rows under the old ID,
-            # and the turn's end reads only the new one.
-            self._defer_commits(old_session_id)
-            self._turn_ended.pop(old_session_id, None)  # Nothing reads the old ID again.
         self._writer.capture_operation(
             "compaction",
             "committed",
@@ -761,7 +756,16 @@ class GatewayCapture:
             self._attempts.pop(call, None)
             self._open_attempt.pop(call, None)
         if session_id:
-            self._defer_commits(session_id)
+            from hermes_constants import get_hermes_home
+
+            ids = self._ids(session_id)
+            db = Path(get_hermes_home()) / "state.db"
+            # Hermes stamps a row when it commits it, so the turn's rows are those since the last
+            # turn's end, up to now. Bounding both ends here means a read the full queue dropped
+            # leaves those rows out, and never hands them to the next turn's span.
+            after = self._turn_ended.get(session_id, self._started)
+            self._turn_ended[session_id] = until = time.time()
+            self._writer.defer(partial(self._capture_commits, db, session_id, ids, after, until))
         self._writer.capture_operation(
             "turn",
             "ended",
@@ -769,19 +773,6 @@ class GatewayCapture:
             details={"completed": completed} if isinstance(completed, bool) else None,
             **self._ids(session_id, turn_id=turn_id, hermes_task_id=task_id),
         )
-
-    def _defer_commits(self, session_id: str) -> None:
-        """Read the rows the Session committed since its last read, on the writer's thread."""
-        from hermes_constants import get_hermes_home
-
-        ids = self._ids(session_id)
-        db = Path(get_hermes_home()) / "state.db"
-        # Hermes stamps a row when it commits it, so the rows to read are those since the last
-        # read, up to now. Bounding both ends here means a read the full queue dropped leaves
-        # those rows out, and never hands them to the next turn's span.
-        after = self._turn_ended.get(session_id, self._started)
-        self._turn_ended[session_id] = until = time.time()
-        self._writer.defer(partial(self._capture_commits, db, session_id, ids, after, until))
 
     def _capture_commits(
         self, db: Path, session_id: str, ids: dict[str, Any], after: float, until: float

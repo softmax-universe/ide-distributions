@@ -32,7 +32,6 @@ from research_core.plugin.capture import (
 from research_core.plugin.tracing import make_instrumentation
 from tests.telemetry.conftest import (
     HERMES_STYLE_SECRET,
-    insert_rows,
     objects_of,
     rebuild_request,
     scrub,
@@ -398,33 +397,6 @@ def test_records_after_compaction_keep_the_first_session(capture, writer, stream
     records = _flushed(writer, stream_file)
     tool = _operations(records, "tool", "completed")[0]
     assert tool["session_id"] == "ses_1" and tool["hermes_session_id"] == "ses_3"
-
-
-def test_rows_committed_before_a_compaction_partway_through_a_turn_are_read(
-    capture, home, writer, stream_file
-):
-    """Hermes can compact after a tool call and go on under a new ID. The turn's rows from before
-    that are under the old ID, and its end reads only the new one."""
-
-    def commit(session: str, content: str) -> None:
-        row = {"session_id": session, "role": "tool", "content": content, "timestamp": time.time()}
-        insert_rows(home, [row])
-
-    commit("ses_1", "before")
-    capture.post_compaction(session_id="ses_2", old_session_id="ses_1", kind="auto")
-    commit("ses_2", "after")
-    capture.on_session_end(session_id="ses_2", turn_id="turn-1", completed=True)
-    records = _flushed(writer, stream_file)
-    rows = _operations(records, "message", "committed")
-    assert [json.loads(objects_of(records)[_digest(r, "message")])["content"] for r in rows] == [
-        "before",
-        "after",
-    ]
-    assert [(r["session_id"], r["hermes_session_id"]) for r in rows] == [
-        ("ses_1", "ses_1"),
-        ("ses_1", "ses_2"),
-    ]
-    assert "ses_1" not in capture._turn_ended
 
 
 def _traced(writer) -> tuple[dict, GatewayCapture]:
