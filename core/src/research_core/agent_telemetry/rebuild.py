@@ -82,8 +82,13 @@ class LogsSearch:
                 return
 
 
+def _quoted(value: str) -> str:
+    """A phrase in Datadog search syntax: a backslash escapes ``\\`` and ``"`` inside quotes."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _any_of(field: str, values: Iterable[str]) -> str:
-    return f"@{field}:(" + " OR ".join(f'"{value}"' for value in sorted(values)) + ")"
+    return f"@{field}:(" + " OR ".join(_quoted(value) for value in sorted(values)) + ")"
 
 
 def _batches(values: Iterable[str]) -> Iterator[list[str]]:
@@ -223,12 +228,13 @@ def _rebuild_request(finder: _Finder, manifest_digest: str) -> dict[str, Any]:
     chain = []
     digest = manifest_digest
     while (link := finder.json(digest)) is not None:
-        chain.insert(0, link)
+        chain.append(link)
         if link["operation"] != "append":
             break
         digest = link["parent_manifest_digest"]
     if link is None:
         return {"request": None, "blocked_by": [digest]}
+    chain.reverse()
     manifest = chain[-1]
     digests = [listed for part in chain for listed in part["messages"]]
     tool_list = finder.json(manifest.get("tool_list_digest"))
