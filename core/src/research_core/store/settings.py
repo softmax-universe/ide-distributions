@@ -210,10 +210,10 @@ SETTINGS: dict[str, SettingSpec] = {
             "list",
             ["decision", "outcome", "submission", "failure"],
             "workspace",
-            "the ui tool",
-            "Which categories of a background wake's ui.tell reach the user's chat as a "
-            "message; any other category becomes a notice. An empty list sends them all to "
-            "notices.",
+            "the chat_update tool",
+            "Which categories of a background wake's chat_update reach the user's chat as a "
+            "message; any other category, and progress always, becomes a notice. An empty list "
+            "sends them all to notices.",
             enum=CHAT_UPDATE_CATEGORIES,
         ),
         _s(

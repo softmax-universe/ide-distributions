@@ -106,7 +106,7 @@ def test_environment_guide_names_the_workspace_and_player_but_no_secret(workspac
     assert "`coworld`" in text and "`softmax`" in text and "`research`" in text
     assert (
         "task_ask" in text
-        and "ui.notify" not in text.split("## Reaching the user")[1].split("##")[0]
+        and "chat_update" not in text.split("## Reaching the user")[1].split("##")[0]
     )
     assert "every 60 seconds" in text and "/scratch/tmp" in text
     assert "No capability check is recorded yet" in text
@@ -120,7 +120,7 @@ def test_environment_guide_names_the_workspace_and_player_but_no_secret(workspac
     capabilities.mark(orchestrator.store, Actor.harness(), "build", status="ok", output="fine")
     capabilities.mark(orchestrator.store, Actor.harness(), "upload", status="broken", output="no")
     guide = environment_guide.render(orchestrator)
-    assert "ui.notify" in guide and "1 broken, 1 ok" in guide and "Broken: upload" in guide
+    assert "chat_update" in guide and "1 broken, 1 ok" in guide and "Broken: upload" in guide
 
 
 def test_capabilities_lists_and_check_marks_due(call, ctx_factory):

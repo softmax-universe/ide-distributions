@@ -16,8 +16,8 @@ def run(args: argparse.Namespace) -> int:
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
         "context-schema",
-        help="Print a contract schema (context, events or ui-state) as JSON",
+        help="Print a contract schema (context or events) as JSON",
         description="The bridge reads the contract from the installed profile with this command.",
     )
-    parser.add_argument("--name", choices=["context", "events", "ui-state"], default="context")
+    parser.add_argument("--name", choices=["context", "events"], default="context")
     parser.set_defaults(run=run)

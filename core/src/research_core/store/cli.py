@@ -1,6 +1,6 @@
 """``research store``: user edits, exports, snapshots and the event stream (design A.10, A.11).
 
-``apply`` is how a user edit reaches the store. The bridge turns a UI action into
+``apply`` is how a user edit reaches the store. The bridge turns a user's edit into
 ``research store apply --actor user:<id> <op> <json>``, which calls the same library function
 the tools call, so the record rules, the ``events`` row and the token-marked transaction are the
 same whoever writes. Only the ops in ``ALLOWED`` run, and only for user or harness actors:
@@ -46,7 +46,6 @@ from research_core.store import (
     sessions,
     settings,
     tasks,
-    ui_state,
 )
 from research_core.store._common import now_iso, parse_display_id, require
 from research_core.store.actors import Actor
@@ -832,10 +831,10 @@ def run_snapshot(args: argparse.Namespace) -> int:
 
 
 def snapshot(store: Store, coworld_id: str | None = None) -> dict[str, Any]:
-    """The store's records, effective settings, UI state documents and last ``seq``.
+    """The store's records, effective settings and last ``seq``.
 
     A client that loads this and then reads ``events --after <seq>`` misses nothing: rows,
-    settings, UI state and ``seq`` are read inside one read transaction, so a writer committing
+    settings and ``seq`` are read inside one read transaction, so a writer committing
     meanwhile moves either all of them or none of them.
     """
     with store.read_tx():
@@ -849,15 +848,11 @@ def snapshot(store: Store, coworld_id: str | None = None) -> dict[str, Any]:
         records["settings"] = settings.all(store)
         if store.kind == "workspace":
             records["admissions"] = admissions.snapshot(store)
-        conversations = [
-            row[0] for row in store.q("SELECT conversation FROM ui_state ORDER BY conversation")
-        ]
         result: dict[str, Any] = {"store": store.kind}
         if store.kind == "coworld":
             result["coworld_id"] = coworld_id
         result["seq"] = store.last_seq()
         result["records"] = records
-        result["ui_state"] = [ui_state.get(store, conversation) for conversation in conversations]
     return result
 
 
@@ -1002,7 +997,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     quiesce_parser.set_defaults(run=run_quiesce)
 
     snapshot_parser = commands.add_parser(
-        "snapshot", help="Print one store's records, settings, UI state and last seq as JSON"
+        "snapshot", help="Print one store's records, settings and last seq as JSON"
     )
     snapshot_parser.add_argument(
         "--coworld", default=None, help="Coworld id; defaults to this session's binding"

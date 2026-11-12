@@ -102,7 +102,7 @@ Finish with `task_complete`. `outcome: succeeded` checks the type's deliverables
 
 **Intent** (I-n). One external action, recorded before the platform call and reconciled before any retry. States: pending, done, failed. Written by `upload`, `xp`, `forum_post` and `wiki_edit`.
 
-**Notice** (N-n). A message to the user through ui.notify; it informs and never asks. Written by the Orchestrator and the tools that report their own writes and the watcher.
+**Notice** (N-n). A message the user sees at their next chat turn; it informs and never asks. Written by the Orchestrator and the tools that report their own writes and the watcher.
 
 **Session** (one per Hermes Session). A Hermes Session: a chat, a Task run or a wake; its status is computed from the runs API. Written by the workspace.
 

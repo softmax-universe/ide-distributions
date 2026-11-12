@@ -9,7 +9,7 @@ from typing import Literal
 
 CONTRACT_VERSION = 1
 CONTRACT_DIR = Path(__file__).resolve().parent
-SchemaName = Literal["context", "events", "ui-state"]
+SchemaName = Literal["context", "events"]
 
 
 @cache

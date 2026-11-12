@@ -1,6 +1,7 @@
 """Guard distribution privacy and Hermes callback correlation owned by this adapter."""
 
 import json
+import logging
 
 import pytest
 from opentelemetry.trace import StatusCode
@@ -148,6 +149,14 @@ def test_both_tool_boundaries_name_the_same_call_and_only_a_short_error_class(
     assert all("\n" not in line for line in lines)
     statuses = [json.loads(line)["status"] for line in lines]
     assert statuses == ["warning", "warning", "info", "warning", "warning"]
+
+
+def test_a_callers_attributes_cannot_replace_the_redacted_message():
+    record = logging.LogRecord("x", logging.INFO, __file__, 1, "token secret", None, None)
+    record.attributes = {"message": "secret", "status": "error", "duration_s": 1.5}
+    formatter = telemetry.JsonLines(lambda text: text.replace("secret", "***"))
+    line = json.loads(formatter.format(record))
+    assert (line["message"], line["status"], line["duration_s"]) == ("token ***", "info", 1.5)
 
 
 def test_a_failed_tools_text_that_only_looks_like_json_stays_a_tool_error():

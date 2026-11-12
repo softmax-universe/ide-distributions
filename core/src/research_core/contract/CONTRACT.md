@@ -1,7 +1,7 @@
 # The client contract (version 1)
 
 The profiles own one small contract with clients: the IDE, the site, coplay, and any scripted
-client. It is published here as three JSON Schema files plus this note. The design calls it
+client. It is published here as two JSON Schema files plus this note. The design calls it
 **the seam** (design §10); what is still to build is listed at the end and extends these files
 without breaking them.
 
@@ -9,24 +9,23 @@ without breaking them.
 |---|---|
 | `context.schema.json` | The typed context block a client sends with each message (A.3, A.4). |
 | `events.schema.json` | One row of a store's `events` table as the stream delivers it (A.11). |
-| `ui-state.schema.json` | The UI state document the `ui` tool writes per conversation (A.10). |
 
 A client reads the current files from the installed profile with `research context-schema
-[--name context|events|ui-state]`; it never hard-codes them.
+[--name context|events]`; it never hard-codes them.
 
 ## The three channels
 
 1. **Context in.** A client sends `session-open` once (its identity, a session context and its
    capabilities), then `{message, context}` for each turn. The bridge validates the context,
    stamps it and keeps it beside the message; the profile's turn hook renders it for the model.
-2. **UI output and state sync.** The `ui` tool and the watcher write UI state and notices into
-   the store; every write is an `events` row. The bridge streams the rows to all attached
-   clients as Server-Sent Events, so each client renders what it can and all stay in sync.
-   A background wake cannot write into a chat: its `ui.tell` is recorded in the store, and the
-   coordinator delivers it as a queued `followup` message admission into the user's most recent
-   chat for that Coworld, so it reaches the user as an ordinary assistant turn.
-3. **UI actions and edits back.** Answers to the agent's questions are queued to the Session
-   like a message; reactions are feedback for the next turn; user edits go through `store apply`.
+2. **State sync.** The tools and the watcher write records and notices into the store; every
+   write is an `events` row. The bridge streams the rows to all attached clients as Server-Sent
+   Events, so each client renders what it can and all stay in sync.
+   A background wake cannot write into a chat: its `chat_update` is recorded in the store, and
+   the coordinator delivers it as a queued `followup` message admission into the user's most
+   recent chat for that Coworld, so it reaches the user as an ordinary assistant turn.
+3. **Edits back.** User edits go through `store apply`. The agent asks its questions in the
+   chat, and the user answers there.
 
 Locally `research serve` is the bridge (design A.11, R3). Its routes are the reference for the
 hosted bridge:
@@ -35,9 +34,8 @@ hosted bridge:
 |---|---|---|
 | `POST /session-open` `{op_id, client: {id, kind, guide?}, session_context?, capabilities?, actor?}` | 1 | Registers a chat Session; returns `{session_id, client, coworld, session_scope, contract_version, problems}`. `op_id` is a UUID the client generates and reuses when it retries the same call. |
 | `POST /message` `{op_id, session_id, message: {role: "user", content}, context?, instructions?, actor?}` | 1 | Validates and stamps the block and accepts the message durably; returns `{op_id, session_id, run_id, delivered: "queued", problems, seq}` before any run takes it (see "Runs per Session"). `op_id` as above. |
-| `POST /ui-action` `{session_id, action, payload, actor?}` | 3 | `answer {ask_id, value}` patches the ask and queues the answer; `reaction {message_id, value}` writes UI state and starts no run. |
 | `POST /store/apply` `{actor, op, args, store?, coworld?}` | 3 | One op of the `store apply` allow-list as `user:<id>`; returns `{record, seq}`, or HTTP 202 with `{status: "pending", command, ...}` when the op is a transition still running (read it at `GET /command`). A `directive_id` is `W-<n>` (workspace) or `D-<n>` (Goal); a bare number or a contradicting `store` is refused. |
-| `GET /snapshot?store=workspace\|coworld&coworld=<id>` | 2 | The store's records, settings, UI state documents and `seq`. `coworld` is required for a Coworld's store. |
+| `GET /snapshot?store=workspace\|coworld&coworld=<id>` | 2 | The store's records, settings and `seq`. `coworld` is required for a Coworld's store. |
 | `GET /stream?store=…&coworld=<id>&after=<seq>` | 2 | SSE of the store's events after `seq`. |
 | `GET /runs/<run_id>` | 1 | The run's status from the Hermes runs API. |
 | `GET /models` | 2 | Each profile's model: `{profiles: [{profile, role, model, provider, fallbacks}]}`. See "Profile models". |
@@ -48,7 +46,7 @@ hosted bridge:
 | `GET /status` | — | A convenience of `research serve`: what `research watcher status` prints (`heartbeat`, `has_work`, `waiting_on`, `paused`, `sleep_started`). |
 
 Errors are JSON `{ok: false, error, problems}` with an HTTP status: 400 for a malformed or
-refused request, 404 for an unknown session, ask or store, 409 for an ask already answered or a
+refused request, 404 for an unknown session or store, 409 for a
 block whose scope, Coworld or league differs from the Session's, 503 with `Retry-After: 1` when the gateway cannot take the run now (retry), 502 for any other
 gateway failure. The `actor` of a write is `user:<id>` (default `user:local`); a session actor
 is refused, because Sessions write through the tools.
@@ -85,8 +83,8 @@ goes on without the refused parts. Only a mismatch with the Session is refused (
 ## The client guide skill
 
 `client.guide` names the skill the agent loads for that client (for example `client-coplay`).
-It replaces free instruction text, which the bridge drops. Without `ui.ask` in the client's
-capabilities the agent asks in chat.
+It replaces free instruction text, which the bridge drops. The agent asks its questions in
+chat.
 
 ## The stream (A.11)
 
@@ -101,12 +99,10 @@ ignore event kinds and content kinds they do not know.
 ## Runs per Session
 
 The Hermes gateway does not serialise runs per session, so the bridge does (amendment A6.1). It
-accepts a message or a UI answer durably and answers `delivered: "queued"`, usually with `run_id`
+accepts a message durably and answers `delivered: "queued"`, usually with `run_id`
 null; the client does not retry and follows the admission below. Later, text for a Session with a
 live run is steered into that run; otherwise the message waits its turn and starts a new run with
-the same session id, which resumes the conversation's history. A reaction never starts a
-run: it is a UI state change under `/reactions/<message id>` of the conversation, which the
-agent sees at its next turn.
+the same session id, which resumes the conversation's history.
 
 ## Message admissions
 
@@ -131,7 +127,7 @@ once; a cancelled message never waits. It answers `409` for a message that joine
 admission's live run, since stopping that run would end the other admission too.
 
 The bridge also admits follow-up turns into a chat on its own (origin `followup`): the results of
-an `xp.request` the chat made, and a background wake's `ui.tell` updates. A follow-up fails, waits
+an `xp.request` the chat made, and a background wake's `chat_update` updates. A follow-up fails, waits
 and resumes like a message. Its prompt is a user message in the native transcript that the user
 did not type, so `/messages/context` marks it `runtime_input: true`, and the AIDE backend shows it
 as a continuation, not as the user's message.
@@ -211,6 +207,5 @@ backend accepts the current one and refuses others in `problems`.
 
 ## Deferred to the contract layer
 
-Not part of the seam, and not built here: `session-update`, the panel kinds' rendering rules,
-multi-client replay of UI state, relaying live chat
+Not part of the seam, and not built here: `session-update`, relaying live chat
 tokens and client-supplied guides by reference.

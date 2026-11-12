@@ -65,5 +65,5 @@ comes from the source with a citation, never from memory.
 
 A binding you cannot fill from the source is a gap: say so in `MIXIN.md` and in the skill, with
 what would fill it. Never paper over it. A private source repository you cannot read is a gap to
-report with `ui.notify`, naming the repository. Record the mixin's provenance and its gaps as a
+report (a `chat_update` from a wake), naming the repository. Record the mixin's provenance and its gaps as a
 claim so the next Session finds them.

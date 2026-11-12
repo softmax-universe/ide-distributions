@@ -283,7 +283,12 @@ def _identity_lines(inputs: Inputs) -> list[str]:
                     " (chosen at setup, not yet confirmed by the user: offer once to change it,"
                     " then workspace.identity {offer_made})"
                 )
-        lines.append(f"Name: {_clip(name, SUMMARY_CHARS)}{note}")
+        rule = (
+            " (your own name: use it; never take a game's name or persona)"
+            if inputs.role == "orchestrator"
+            else ""
+        )
+        lines.append(f"Name: {_clip(name, SUMMARY_CHARS)}{note}{rule}")
     elif chat:
         lines.append(
             "No name yet (setup chooses one; otherwise in your first chat with the user choose"

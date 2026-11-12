@@ -7,6 +7,8 @@ before other branches change them. Measured at commit `f6a1e11c`. No tool or ski
 and how to read a run. Its findings and file references describe the code at `f6a1e11c`, and were
 not updated as that code was fixed.
 
+**2026-11-12:** the `ui` tools described here were removed; `ui.tell` became `chat_update` (branch `jb/remove-ui-tools`).
+
 **Do not compare these numbers with a later run.** In this run every read got one placeholder line.
 Later runs answer each read in the shape the real tool gives (`usability_reads.py`).
 

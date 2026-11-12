@@ -4,9 +4,9 @@ Event `{event_kind}` for Coworld `{coworld_id}` (subject `{subject}`). The works
 Coworld for the first time, or switched to it before it was set up.
 
 This is a background Session: never answer in this conversation; nobody reads it. Use
-`ui.tell {category, text, refs?}` for what the user should hear now: `decision` (ask it plainly;
-they answer in the chat), `outcome` (work they asked for finished), `submission`, `failure`
-(needs them) or `merge`. Use `ui.notify` for routine progress.
+`chat_update {category, text, refs?}` for what the user should hear now: `decision` (ask it
+plainly; they answer in the chat), `outcome` (work they asked for finished), `submission`,
+`failure` (needs them) or `merge`, and `progress` for routine news, which becomes a notice.
 
 Payload:
 
@@ -34,7 +34,7 @@ Do this in order, and end the run when it is done:
 6. When `setup-status` shows a `pending_request` (it holds the latest, which the payload may not),
    carry it out now. For a submission: `version.create` on `main`, `upload` that Version, then
    `submit` with `user_requested: true` citing `pending_request.cites`, in the league the request
-   names or the only one `platform.leagues` lists; with several, `ui.tell` a `decision` asking which. The user asked for
+   names or the only one `platform.leagues` lists; with several, a `decision` `chat_update` asking which. The user asked for
    it before setup existed; nothing refuses it.
-7. `ui.tell` an `outcome` (a `failure` when setup failed): what was set up, what failed (with the
+7. `chat_update` an `outcome` (a `failure` when setup failed): what was set up, what failed (with the
    maintenance Task) and what the pending request did, with record references.

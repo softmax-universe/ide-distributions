@@ -27,7 +27,7 @@ import pytest
 from research_core import intake, serve, telemetry
 from research_core.client import ScriptedClient, SeamError
 from research_core.serve import SeamServer
-from research_core.store import admissions, coworlds, goals, notices, sessions, tasks, ui_state
+from research_core.store import admissions, coworlds, goals, notices, sessions, tasks
 from research_core.store.actors import Actor
 from research_core.store.db import Store, Tx
 from research_core.tools.base import ToolContext
@@ -514,94 +514,6 @@ def test_coworld_stream_without_an_active_coworld_is_404(tmp_path):
         seam.server.shutdown()
 
 
-# --- UI actions ----------------------------------------------------------------------------
-
-
-def open_ask(seam, conversation: str, ask_id: str = "ask_1") -> None:
-    ui_state.patch(
-        seam.wstore,
-        HARNESS,
-        conversation,
-        [
-            {"op": "add", "path": "/asks", "value": {}},
-            {
-                "op": "add",
-                "path": f"/asks/{ask_id}",
-                "value": {"question": "Submit V-2?", "options": ["yes", "no"], "status": "open"},
-            },
-        ],
-    )
-
-
-def test_ui_action_answer_is_durable_and_steers_the_live_run(seam):
-    session_id = seam.client.open(session_context={"contract_version": 1, "coworld": COWORLD_ID})
-    run = seam.say("propose a submission")
-    open_ask(seam, session_id)
-    result = seam.client.answer("ask_1", "yes")
-    assert result["accepted"] is True and result["delivered"] == "queued"
-    assert result["conversation"] == session_id
-    ask = ui_state.get(seam.wstore, session_id)["doc"]["asks"]["ask_1"]
-    assert ask["status"] == "answered" and ask["answer"] == "yes"
-    assert ask["answered_by"] == "user:local"
-    assert seam.client.answer("ask_1", "yes")["op_id"] == result["op_id"]
-    delivered = seam.client.wait_admission(result["op_id"])
-    assert delivered["run_id"] == run["run_id"]
-    assert seam.hermes.steered[run["run_id"]] == [
-        "[UI action] answer to ask_1: yes\nThe question: Submit V-2?"
-    ]
-    assert seam.starts() == 1
-
-
-def test_ui_action_answer_starts_a_run_when_none_is_live_and_finds_workspace_asks(seam):
-    seam.client.open(session_context={"contract_version": 1, "coworld": COWORLD_ID})
-    open_ask(seam, "coworld:" + COWORLD_ID, "ask_w")
-    result = seam.client.answer("ask_w", {"choice": "no"})
-    assert result["delivered"] == "queued" and result["conversation"] == "coworld:" + COWORLD_ID
-    delivered = seam.client.wait_admission(result["op_id"])
-    assert seam.run_input(delivered["run_id"]) == (
-        '[UI action] answer to ask_w: {"choice": "no"}\nThe question: Submit V-2?'
-    )
-    assert ui_state.get(seam.wstore, "coworld:" + COWORLD_ID)["doc"]["asks"]["ask_w"]["answer"] == {
-        "choice": "no"
-    }
-    with pytest.raises(SeamError) as info:  # the first answer wins
-        seam.client.answer("ask_w", "yes")
-    assert info.value.status == 409
-    with pytest.raises(SeamError) as info:
-        seam.client.answer("ask_missing", "yes")
-    assert info.value.status == 404
-
-
-def test_reaction_writes_a_ui_state_change_and_starts_no_run(seam):
-    session_id = seam.client.open(session_context={"contract_version": 1, "coworld": COWORLD_ID})
-    seq = seam.wstore.last_seq()
-    result = seam.client.react("msg-42", "thumbs_up")
-    assert result["accepted"] is True and result["delivered"] == "none"
-    assert seam.starts() == 0 and seam.hermes.runs == {}
-    events = seam.wstore.events_after(seq)
-    assert [e.kind for e in events] == ["ui.patch"]
-    assert events[0].payload["ops"][-1]["path"] == "/reactions/msg-42"
-    doc = ui_state.get(seam.wstore, session_id)["doc"]
-    assert doc["reactions"]["msg-42"]["value"] == "thumbs_up"
-    assert doc["reactions"]["msg-42"]["by"] == "user:local"
-    seam.client.react("msg-43", "thumbs_down")
-    assert set(ui_state.get(seam.wstore, session_id)["doc"]["reactions"]) == {"msg-42", "msg-43"}
-
-
-def test_ui_action_unknown_action_and_bad_payload(seam):
-    seam.client.open(session_context={"contract_version": 1, "coworld": COWORLD_ID})
-    with pytest.raises(SeamError) as info:
-        seam.client._post(
-            "/ui-action", {"session_id": seam.client.session_id, "action": "dance", "payload": {}}
-        )
-    assert info.value.status == 400 and "answer, reaction" in info.value.body["error"]
-    with pytest.raises(SeamError) as info:
-        seam.client._post(
-            "/ui-action", {"session_id": seam.client.session_id, "action": "answer", "payload": {}}
-        )
-    assert info.value.status == 400 and "ask_id" in info.value.body["error"]
-
-
 # --- store apply ----------------------------------------------------------------------------
 
 
@@ -924,23 +836,6 @@ def test_a_truncated_stream_continuation_binds_the_users_row_not_the_nudge(seam,
     assert row["native_message_id"] == 7
 
 
-def test_ui_answer_and_delivery_obligation_roll_back_together(seam, monkeypatch):
-    from research_core.store import admissions
-    from research_core.store.errors import StoreError
-
-    session_id = seam.client.open(session_context={"contract_version": 1, "coworld": COWORLD_ID})
-    open_ask(seam, session_id)
-
-    def unavailable(*args, **kwargs):
-        raise StoreError(["simulated admission write failure"])
-
-    monkeypatch.setattr(admissions, "enqueue_in_transaction", unavailable)
-    with pytest.raises(SeamError):
-        seam.client.answer("ask_1", "yes")
-    assert ui_state.get(seam.wstore, session_id)["doc"]["asks"]["ask_1"]["status"] == "open"
-    assert seam.starts() == 0
-
-
 def test_live_chat_followup_steers_the_original_run(seam):
     seam.client.open(session_context={"contract_version": 1, "coworld": COWORLD_ID})
     first = seam.say("Start working")
@@ -1010,17 +905,6 @@ def test_multimodal_followup_waits_for_typed_start_instead_of_text_only_steer(se
     following = seam.client.wait_admission(receipt["op_id"])
     assert following["run_id"] != first["run_id"]
     assert seam.hermes.runs[following["run_id"]].input == parts
-
-
-def test_ui_answer_native_history_keeps_its_native_content(seam):
-    session_id = seam.client.open(session_context={"contract_version": 1, "coworld": COWORLD_ID})
-    open_ask(seam, session_id)
-    seam.client.answer("ask_1", "yes")
-    with seam.wstore.tx(HARNESS) as tx:
-        tx.execute("UPDATE client_admissions SET native_message_id=42 WHERE origin='answer'")
-    native = {"id": 42, "role": "user", "content": "[UI action] answer to ask_1: yes"}
-    response = seam.client._post("/messages/context", {"session_id": session_id, "data": [native]})
-    assert response["data"] == [{**native, "client_context": None}]
 
 
 @pytest.mark.parametrize("retryable", [False, True])

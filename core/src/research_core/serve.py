@@ -3,9 +3,9 @@
 Locally this is the bridge: a small stdlib HTTP server that gives a client the seam without
 metta. It opens chat Sessions and durably queues each message for a Hermes run,
 stamps the client and the active Coworld into the context block, streams each store's
-``events`` rows as Server-Sent Events, serves snapshots, passes UI actions into the Session and
-runs the user-edit allow-list. It is the reference for the bridge's per-session rule (A6.1):
-one live run per Session; messages arriving during a run wait in the workspace inbox.
+``events`` rows as Server-Sent Events, serves snapshots and runs the user-edit allow-list. It
+is the reference for the bridge's per-session rule (A6.1): one live run per Session; messages
+arriving during a run wait in the workspace inbox.
 
 What the server stamps into a turn is only ``client``, ``coworld`` and ``contract_version``:
 the profile's own turn hook (``plugin/turn.py``) adds the unread notices and the changed-since
@@ -85,7 +85,7 @@ from research_core.platform import experience_changes
 from research_core.platform.errors import PlatformError
 from research_core.prepare import Runner
 from research_core.profile_models import Catalog, ModelError, Profile
-from research_core.store import admissions, coworlds, sessions, settings, ui_state
+from research_core.store import admissions, coworlds, sessions, settings
 from research_core.store import cli as store_cli
 from research_core.store._common import parse_display_id, parse_iso
 from research_core.store.actors import Actor
@@ -93,7 +93,6 @@ from research_core.store.db import Store, change_version, wait_for_change
 from research_core.store.errors import NotFound, StoreError
 from research_core.store.registry import GOAL, TASK, record_from_row
 from research_core.telemetry import correlation, process_context, propagator, span
-from research_core.tools.ui import coworld_conversation, pointer_token
 from research_core.watcher import context, hermes_api
 from research_core.watcher.heartbeat import HAS_WORK_REASONS_KEY, HEARTBEAT_KEY
 from research_core.watcher.hermes_api import HermesRuns, RunsBusy, RunsError, RunsUnavailable
@@ -114,29 +113,17 @@ RUN_POLL_INTERVAL_S = 1.0
 PROTECTED_INSTRUCTION_PROMPT = "Write to protected agent-instruction file(s): "
 DEFAULT_ACTOR = "user:local"
 RETRY_AFTER_S = 1
-UI_ACTIONS = ("answer", "reaction")
 # An applied input response is its ``client.input_responded`` event, keyed by the client's op_id.
 INPUT_RESPONSE = "SELECT payload FROM events WHERE kind='client.input_responded' AND subject=?"
 RECORDED_ROUTES = {
     "/session-open": "session_open",
     "/message": "message",
     "/message-cancel": "message_cancel",
-    "/ui-action": "ui_action",
     "/store/apply": "store_apply",
     "/models": "models",
 }
 PAGE_PATHS = ("/", "/ui")
 PAGE_FILE = resources.files("research_core").joinpath("ui", "index.html")
-
-
-def _answer_text(ask_id: str, ask: dict, shown: str) -> str:
-    """The answer as a Session reads it, often not the one that asked: it carries the question."""
-    text = f"[UI action] answer to {ask_id}: {shown}"
-    if ask.get("question"):
-        text += f"\nThe question: {ask['question']}"
-    if ask.get("refs"):
-        text += f"\nAbout: {', '.join(ask['refs'])}"
-    return text
 
 
 class Refused(Exception):
@@ -1014,22 +1001,6 @@ class SeamServer:
                 raise Refused(HTTPStatus.BAD_REQUEST, "op_id was already used for different input")
         return {"op_id": op_id, "replayed": row is not None}
 
-    def ui_action(self, body: dict) -> dict:
-        """An answer goes into the Session at once; a reaction is feedback and starts no run."""
-        session_id = _text(body, "session_id")
-        action = _text(body, "action")
-        payload = _object(body, "payload", {})
-        actor = _actor(body.get("actor"))
-        if action not in UI_ACTIONS:
-            raise Refused(
-                HTTPStatus.BAD_REQUEST, f"unknown action {action!r}; one of {', '.join(UI_ACTIONS)}"
-            )
-        with self.stores() as stores:
-            self._require_session(stores, session_id)
-            if action == "answer":
-                return self._answer(stores, actor, session_id, payload)
-            return self._reaction(stores, actor, session_id, payload)
-
     def store_apply(self, body: dict) -> dict:
         """One allowed library function as a user or harness actor (A.10, A2.10)."""
         op = _text(body, "op")
@@ -1137,7 +1108,6 @@ class SeamServer:
                         "store": "workspace",
                         "seq": stores.wstore.last_seq(),
                         "records": records,
-                        "ui_state": [],
                     }
             if coworld_id is not None:
                 coworlds.read(stores.wstore, coworld_id)
@@ -1333,91 +1303,6 @@ class SeamServer:
                 block[field] = expected
         return block, problems
 
-    def _answer(
-        self, stores: store_cli.Stores, actor: Actor, session_id: str, payload: dict
-    ) -> dict:
-        ask_id = _text(payload, "ask_id")
-        if "value" not in payload:
-            raise Refused(HTTPStatus.BAD_REQUEST, "value is required: the user's answer")
-        value = payload["value"]
-        conversation = self._ask_conversation(stores.wstore, session_id, ask_id)
-        shown = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
-        key = f"ui-answer:{session_id}:{ask_id}"
-        with stores.wstore.tx(actor) as tx:
-            current = ui_state.get(stores.wstore, conversation)["doc"]["asks"][ask_id]
-            if current["status"] != "open" and current["answer"] != value:
-                raise Refused(
-                    HTTPStatus.CONFLICT, f"{ask_id} was already answered", answer=current["answer"]
-                )
-            if current["status"] == "open":
-                path = f"/asks/{pointer_token(ask_id)}"
-                record = ui_state.patch_in_transaction(
-                    tx,
-                    conversation,
-                    [
-                        {"op": "test", "path": f"{path}/status", "value": "open"},
-                        {"op": "replace", "path": f"{path}/status", "value": "answered"},
-                        {"op": "add", "path": f"{path}/answer", "value": value},
-                        {"op": "add", "path": f"{path}/answered_by", "value": str(actor)},
-                    ],
-                )
-            else:
-                record = ui_state.get(stores.wstore, conversation)
-            op_id = admissions.enqueue_in_transaction(
-                tx,
-                key=key,
-                session_id=session_id,
-                profile=self._require_session(stores, session_id)["profile"],
-                text=_answer_text(ask_id, current, shown),
-                origin="answer",
-            )
-        result = {"op_id": op_id, "session_id": session_id, "run_id": None, "delivered": "queued"}
-        return {
-            "accepted": True,
-            "conversation": conversation,
-            "version": record["version"],
-            **result,
-        }
-
-    @staticmethod
-    def _ask_conversation(wstore: Store, session_id: str, ask_id: str) -> str:
-        """Where the ask lives (A3.5): the chat's own conversation, else its Coworld's shared."""
-        session = sessions.read(wstore, session_id)
-        shared = coworld_conversation(session["coworld_id"] if session else None)
-        for conversation in (session_id, shared):
-            if ask_id in ui_state.get(wstore, conversation)["doc"].get("asks", {}):
-                return conversation
-        raise Refused(
-            HTTPStatus.NOT_FOUND, f"{ask_id} is not an ask of this session or the workspace"
-        )
-
-    def _reaction(
-        self, stores: store_cli.Stores, actor: Actor, session_id: str, payload: dict
-    ) -> dict:
-        """Feedback the agent sees at its next turn, as a UI state change under ``/reactions``.
-        It never starts a run (design A.5)."""
-        message_id = _text(payload, "message_id")
-        if "value" not in payload:
-            raise Refused(HTTPStatus.BAD_REQUEST, "value is required: the reaction")
-        wstore = stores.wstore
-        ops: list[dict[str, Any]] = []
-        if "reactions" not in ui_state.get(wstore, session_id)["doc"]:
-            ops.append({"op": "add", "path": "/reactions", "value": {}})
-        ops.append(
-            {
-                "op": "add",
-                "path": f"/reactions/{pointer_token(message_id)}",
-                "value": {"value": payload["value"], "by": str(actor), "at": wstore.now()},
-            }
-        )
-        record = ui_state.patch(wstore, actor, session_id, ops)
-        return {
-            "accepted": True,
-            "conversation": session_id,
-            "version": record["version"],
-            "delivered": "none",
-        }
-
 
 # --- HTTP -------------------------------------------------------------------------------------
 
@@ -1500,7 +1385,6 @@ class _Handler(BaseHTTPRequestHandler):
             "/input-response": seam.input_responded,
             "/message-events": seam.message_event,
             "/messages/context": seam.message_context,
-            "/ui-action": seam.ui_action,
             "/store/apply": seam.store_apply,
             "/models": seam.set_model,
         }
@@ -1717,10 +1601,10 @@ def main(argv: list[str] | None = None) -> int:
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
         "serve",
-        help="Serve the client seam locally: sessions, messages, UI actions, the event stream",
+        help="Serve the client seam locally: sessions, messages, the event stream",
         description=(
-            "The local stand-in for the bridge (design §10, A.11): POST /session-open, /message,"
-            " /ui-action and /store/apply; GET /snapshot, /stream, /runs/<id> and /health;"
+            "The local stand-in for the bridge (design §10, A.11): POST /session-open, /message"
+            " and /store/apply; GET /snapshot, /stream, /runs/<id> and /health;"
             " plus GET / (the client page) and GET /status (what watcher status prints)."
         ),
     )

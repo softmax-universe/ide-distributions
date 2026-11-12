@@ -188,11 +188,10 @@ def _reaching_the_user(role: str) -> list[str]:
     if role == "orchestrator":
         lines += [
             "- In a chat Session, answer in the conversation.",
-            "- From a wake or any background Session, nobody reads the chat: `ui.tell` puts what "
-            "the user should hear now (a decision, an outcome they asked for, a submission, a "
-            "failure that needs them, a merge) in their latest chat, and `ui.notify` leaves "
-            "routine progress as a notice. The `chat_updates.categories` setting says which "
-            "categories reach the chat.",
+            "- From a wake, nobody reads the chat: `chat_update` puts what the user should hear "
+            "now (a decision, an outcome they asked for, a submission, a failure that needs them, "
+            "a merge) in their latest chat, and its `progress` category leaves routine news as a "
+            "notice. The `chat_updates.categories` setting says which categories reach the chat.",
         ]
     else:
         lines += [

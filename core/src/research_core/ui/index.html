@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Orchestrator desk</title>
-<meta name="description" content="A client of the research seam: chat with the Orchestrator, watch the event stream, answer its asks, browse the records and make user edits.">
+<meta name="description" content="A client of the research seam: chat with the Orchestrator, watch the event stream, browse the records and make user edits.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='none' stroke='%231a3875' stroke-width='2.5'/%3E%3C/svg%3E">
 <style>
 /* Ink & Print tokens (the Softmax house style). Every colour below is one of these. */
@@ -225,7 +225,6 @@ tr.target > td { background: var(--accent-soft); }
   margin-top: var(--space-1); font-size: var(--text-md); line-height: 1.55;
   max-width: 70ch; white-space: pre-wrap; overflow-wrap: anywhere;
 }
-.msg-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
 .composer { margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--border); }
 .composer .fields { margin-top: var(--space-3); }
 details { margin-top: var(--space-4); }
@@ -237,14 +236,10 @@ details li + li { margin-top: var(--space-1); }
 .plain { list-style: none; margin: 0; padding: 0; }
 .plain > li { padding: var(--space-2) 0; border-bottom: 1px solid var(--border-subtle); }
 .row { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); }
-.ask-options { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); align-items: center; }
-.ask-options form { display: flex; gap: var(--space-2); flex: 1 1 220px; }
 pre.doc {
   margin: var(--space-1) 0 0; white-space: pre-wrap; overflow-wrap: anywhere;
   font-size: var(--text-xs); line-height: 1.5; max-height: 240px; overflow: auto;
 }
-pre.prose { font-family: var(--sans); font-size: var(--text-sm); max-width: 70ch; }
-li.target { background: var(--accent-soft); }
 
 /* tables */
 .scroll-x { overflow-x: auto; position: relative; }  /* contains the sr-only header text too */
@@ -330,32 +325,14 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
       <details>
         <summary>Try these against the scripted Orchestrator (tools/ui_dev.py)</summary>
         <ul>
-          <li><strong>Submit the starter as my champion.</strong> On the session of a Coworld (<code>?coworld=cow_fake</code>), the setup wake uploads and submits the starter within a few watcher ticks and sends a notice.</li>
-          <li>A message containing <strong>ask me</strong> opens a question with two options; answer it under Asks.</li>
-          <li>A message containing <strong>notify</strong> sends a notice.</li>
-          <li>A message containing <strong>goal</strong> creates a Goal (on the session of a Coworld), brings it into view under Now showing and sets a markdown panel about it.</li>
+          <li><strong>Submit the starter as my champion.</strong> On the session of a Coworld (<code>?coworld=cow_fake</code>), the setup wake uploads and submits the starter within a few watcher ticks and leaves a notice (a <code>notice</code> event).</li>
+          <li>A message containing <strong>goal</strong> creates a Goal (on the session of a Coworld).</li>
           <li>Anything else is answered with <strong>Noted: …</strong>. A real Orchestrator (Options A to C in docs/local-end-to-end.md) answers as the model sees fit.</li>
         </ul>
       </details>
     </section>
 
     <div class="stack">
-      <section aria-labelledby="h-show">
-        <h2 id="h-show">Now showing</h2>
-        <p id="show" class="empty"><em>Nothing brought into view yet.</em></p>
-      </section>
-      <section aria-labelledby="h-asks">
-        <h2 id="h-asks">Asks</h2>
-        <ul class="plain" id="asks"><li class="empty"><em>No questions yet.</em></li></ul>
-      </section>
-      <section aria-labelledby="h-panels">
-        <h2 id="h-panels">Panels</h2>
-        <div id="panels"><p class="empty"><em>No panels set yet.</em></p></div>
-      </section>
-      <section aria-labelledby="h-notices">
-        <h2 id="h-notices">Notices</h2>
-        <ol class="plain" id="notices"><li class="empty"><em>No notices yet.</em></li></ol>
-      </section>
       <section aria-labelledby="h-events">
         <h2 id="h-events">Events</h2>
         <p class="hint" id="events-note">Newest first, from both stores' streams; the last 300 are kept. Each line: seq, time, store, kind, subject, then a summary of the payload.</p>
@@ -415,7 +392,7 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
         </label>
         <div class="actions">
           <button type="submit" class="btn" id="raw-send">Send request</button>
-          <span class="muted">session_id is filled in for /message and /ui-action when the body leaves it empty.</span>
+          <span class="muted">session_id is filled in for /message when the body leaves it empty.</span>
         </div>
         <p class="result" id="raw-result" role="status"></p>
       </form>
@@ -424,7 +401,7 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
 </main>
 
 <footer>
-  <p>Reads GET /health, /status, /snapshot and /stream (Server-Sent Events); writes POST /session-open, /message, /ui-action and /store/apply as user:local; polls GET /runs/&lt;id&gt; while a run is live. Times are shown in this browser's time zone.</p>
+  <p>Reads GET /health, /status, /snapshot and /stream (Server-Sent Events); writes POST /session-open, /message and /store/apply as user:local; polls GET /runs/&lt;id&gt; while a run is live. Times are shown in this browser's time zone.</p>
 </footer>
 </div>
 
@@ -440,8 +417,6 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
   const WORKSPACE = "workspace";
   const selected = new URLSearchParams(location.search);
   const scope = {scope: selected.get("coworld") ? "coworld" : "workspace", coworld: selected.get("coworld"), league: selected.get("league")};
-  const sharedConversation = scope.coworld ? `coworld:${scope.coworld}` : WORKSPACE;
-  const visibleConversation = (id) => id === state.session || id === sharedConversation;
   // Which snapshot table each Records tab shows, with its columns. "store" is where the rows
   // come from (the registry: Goals, Tasks, Versions, Claims and Experiments live in the Coworld
   // store; Directives and settings in both).
@@ -471,9 +446,6 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
     nextMessage: 1,
     tracked: {},          // run id -> the assistant message that shows its output
     events: [],
-    notices: new Map(),   // display id -> notice
-    docs: {},             // conversation -> UI state document
-    docVersions: {},      // conversation -> the document version the page holds
     snapshots: {workspace: null, coworld: null},
     seen: {},             // store -> the seq of its last snapshot (events up to it are history)
     coworldMissing: false,
@@ -561,7 +533,6 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
       client: {id: "ui", kind: "web-ide"},
       session_context: {contract_version: 1, ...scope},
       actor: ACTOR,
-      capabilities: {ui: ["ask", "show", "panel_set", "notify"], panels: ["markdown"], reactions: true},
     });
     state.session = reply.session_id;
     setText("session-id", esc(reply.session_id));
@@ -668,17 +639,6 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
     })();
   }
 
-  async function react(message, value, button) {
-    try {
-      const reply = await api("POST", "/ui-action", {session_id: state.session, action: "reaction", payload: {message_id: message.id, value}, actor: ACTOR});
-      message.reaction = {value, ack: `Reaction ${value} recorded as ${ACTOR} in UI state version ${reply.version}; the agent sees it at its next turn (no run started).`};
-    } catch (error) {
-      message.reaction = {value, ack: `Reaction refused: ${error.message}`, failed: true};
-    }
-    renderMessages();
-    if (button) { const again = document.querySelector(`[data-react="${message.id}:${value}"]`); if (again) again.focus(); }
-  }
-
   function renderMessages() {
     const list = $("messages");
     if (!state.messages.length) { list.innerHTML = '<li class="msg empty"><em>No messages yet. Say something below.</em></li>'; return; }
@@ -690,13 +650,7 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
       }
       const live = !m.done;
       const text = m.done ? linkify(m.text) : '<em class="muted">Waiting for the run to finish…</em>';
-      const reactions = m.done ? `<div class="msg-foot">
-        <span class="muted">React:</span>
-        <button type="button" class="btn small" data-react="${m.id}:thumbs_up" aria-pressed="${m.reaction && m.reaction.value === "thumbs_up"}">Helpful</button>
-        <button type="button" class="btn small" data-react="${m.id}:thumbs_down" aria-pressed="${m.reaction && m.reaction.value === "thumbs_down"}">Not helpful</button>
-        ${m.reaction ? `<span class="${m.reaction.failed ? "err-text" : "ok-text"}">${esc(m.reaction.ack)}</span>` : ""}
-      </div>` : "";
-      return `<li class="msg assistant" id="${m.id}"><div class="msg-head"><span class="msg-speaker">Orchestrator</span><span class="msg-meta">${esc(m.id)} · ${esc(m.run_id)}</span>${chip(m.status, live)}</div><p class="msg-text">${text}</p>${reactions}</li>`;
+      return `<li class="msg assistant" id="${m.id}"><div class="msg-head"><span class="msg-speaker">Orchestrator</span><span class="msg-meta">${esc(m.id)} · ${esc(m.run_id)}</span>${chip(m.status, live)}</div><p class="msg-text">${text}</p></li>`;
     }).join("");
   }
 
@@ -726,23 +680,6 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
     state.events.unshift(event);
     if (state.events.length > EVENT_CAP) state.events.length = EVENT_CAP;
     renderEvents();
-    if (event.kind === "notice") {
-      if (!state.notices.has(event.subject)) state.notices.set(event.subject, {id: event.subject, at: event.at, ...event.payload});
-      renderNotices();
-      return;
-    }
-    if (event.kind === "ui.patch") {
-      const {conversation, version, ops} = event.payload;
-      if (!(version > (state.docVersions[conversation] || 0))) return;  // the page holds a newer document
-      try {
-        state.docs[conversation] = applyOps(state.docs[conversation] || {}, ops || []);
-        state.docVersions[conversation] = version;
-        renderUiState();
-      } catch (error) {
-        scheduleSnapshot(WORKSPACE);  // the document drifted; the snapshot is the truth
-      }
-      return;
-    }
     if (historical) return;
     if (event.kind === "coworld.switched" || event.kind === "coworld.registered") {
       pollHealth();
@@ -751,35 +688,9 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
     if (event.kind !== "watcher.heartbeat" && event.kind !== "turn.rendered") scheduleSnapshot(event.store);
   }
 
-  function applyOps(doc, ops) {
-    // RFC 6902 add, replace and remove on a copy; the store already checked any test.
-    doc = JSON.parse(JSON.stringify(doc));
-    for (const op of ops) {
-      if (op.op === "test") continue;
-      const tokens = op.path.split("/").slice(1).map((t) => t.replace(/~1/g, "/").replace(/~0/g, "~"));
-      if (!tokens.length) { doc = op.op === "remove" ? {} : op.value; continue; }
-      let parent = doc;
-      for (const token of tokens.slice(0, -1)) {
-        if (parent == null || typeof parent !== "object") throw new Error(`no ${token} in ${op.path}`);
-        parent = parent[token];
-      }
-      if (parent == null || typeof parent !== "object") throw new Error(`no parent for ${op.path}`);
-      const last = tokens[tokens.length - 1];
-      if (Array.isArray(parent)) {
-        if (op.op === "remove") parent.splice(Number(last), 1);
-        else if (last === "-") parent.push(op.value);
-        else if (op.op === "add") parent.splice(Number(last), 0, op.value);
-        else parent[Number(last)] = op.value;
-      } else if (op.op === "remove") delete parent[last];
-      else parent[last] = op.value;
-    }
-    return doc;
-  }
-
   function summarize(event) {
     const p = event.payload || {};
     if (event.kind === "notice") return esc(p.text || "");
-    if (event.kind === "ui.patch") return esc(`v${p.version} · ${(p.ops || []).map((o) => `${o.op} ${o.path}`).join(", ")}`);
     const parts = Object.entries(p).slice(0, 3).map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`);
     return esc(truncate(parts.join(" · "), 110));
   }
@@ -788,58 +699,6 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
     const list = $("events");
     if (!state.events.length) { list.innerHTML = '<li class="empty"><em>No events yet.</em></li>'; return; }
     list.innerHTML = state.events.map((e) => `<li><div class="row"><span class="mono num">${esc(e.seq)}</span><span class="muted">${fmtTime(e.at)}</span><span class="muted">${esc(e.store)}</span><span class="mono">${esc(e.kind)}</span><span class="mono">${linkify(e.subject)}</span></div><p class="muted event-summary">${summarize(e)}</p></li>`).join("");
-  }
-
-  // --- notices and UI state ----------------------------------------------------------------
-
-  function renderNotices() {
-    const list = $("notices");
-    const items = [...state.notices.values()].filter(n => (n.coworld_id || null) === scope.coworld).sort((a, b) => (a.at < b.at ? 1 : -1));
-    if (!items.length) { list.innerHTML = '<li class="empty"><em>No notices yet.</em></li>'; return; }
-    list.innerHTML = items.map((n) => `<li data-id="${esc(n.id)}"><div class="row"><span class="mono muted">${esc(n.id)}</span>${chip(n.urgency)}<span class="muted">${fmtTime(n.at || n.created)}</span>${(n.refs || []).length ? `<span class="muted">about ${(n.refs || []).map(linkify).join(", ")}</span>` : ""}</div><p>${linkify(n.text)}</p></li>`).join("");
-  }
-
-  function renderUiState() {
-    const docs = Object.entries(state.docs).filter(([id]) => visibleConversation(id));
-    // Now showing: the newest `show` of any conversation.
-    const shows = docs.filter(([, d]) => d.show).map(([c, d]) => ({conversation: c, ...d.show})).sort((a, b) => (a.at < b.at ? 1 : -1));
-    if (shows.length) {
-      const s = shows[0];
-      setText("show", `${s.ref ? `record ${linkify(s.ref)}` : `view <span class="mono">${esc(s.view)}</span>`} <span class="muted">· ${esc(s.conversation === state.session ? "this conversation" : s.conversation)} · ${fmtTime(s.at)}</span>`);
-      $("show").classList.remove("empty");
-    } else {
-      $("show").innerHTML = "<em>Nothing brought into view yet.</em>"; $("show").classList.add("empty");
-    }
-    // Asks: open first, then answered, newest first.
-    const asks = [];
-    for (const [conversation, doc] of docs) for (const [id, ask] of Object.entries(doc.asks || {})) asks.push({id, conversation, ...ask});
-    asks.sort((a, b) => (a.status !== b.status ? (a.status === "open" ? -1 : 1) : (a.at < b.at ? 1 : -1)));
-    const askList = $("asks");
-    if (!asks.length) askList.innerHTML = '<li class="empty"><em>No questions yet.</em></li>';
-    else askList.innerHTML = asks.map((a) => {
-      const head = `<div class="row"><span class="mono muted">${esc(a.id)}</span>${chip(a.status)}<span class="muted">${esc(a.conversation === state.session ? "this conversation" : a.conversation)} · ${fmtTime(a.at)}</span></div><p>${linkify(a.question)}</p>${(a.refs || []).length ? `<p class="muted">about ${a.refs.map(linkify).join(", ")}</p>` : ""}`;
-      if (a.status !== "open") return `<li>${head}<p class="ok-text">Answered <strong>${esc(typeof a.answer === "string" ? a.answer : JSON.stringify(a.answer))}</strong> by ${esc(a.answered_by || "?")}.</p></li>`;
-      const options = (a.options || []).map((o) => `<button type="button" class="btn small" data-answer="${esc(a.id)}" data-value="${esc(o)}">${esc(o)}</button>`).join("");
-      return `<li>${head}<div class="ask-options">${options}<form data-answer-form="${esc(a.id)}"><label for="answer-${esc(a.id)}" class="sr-only">Another answer</label><input id="answer-${esc(a.id)}" placeholder="Another answer" autocomplete="off"><button type="submit" class="btn small">Answer</button></form></div><p class="hint" id="ask-status-${esc(a.id)}"></p></li>`;
-    }).join("");
-    // Panels
-    const panels = [];
-    for (const [conversation, doc] of docs) for (const [name, panel] of Object.entries(doc.panels || {})) panels.push({name, conversation, ...panel});
-    const panelBox = $("panels");
-    if (!panels.length) panelBox.innerHTML = '<p class="empty"><em>No panels set yet.</em></p>';
-    else panelBox.innerHTML = panels.map((p) => `<div style="margin-bottom: var(--space-3)"><div class="row"><h3>${esc(p.name)}</h3><span class="muted">${esc(p.kind)} panel · ${esc(p.conversation === state.session ? "this conversation" : p.conversation)}${p.at ? ` · ${fmtTime(p.at)}` : ""}</span></div>${p.kind === "markdown" ? `<pre class="doc prose">${linkify(String(p.content ?? ""))}</pre>` : `<pre class="doc">${json(p.content)}</pre>`}</div>`).join("");
-  }
-
-  async function answer(askId, value) {
-    const status = $(`ask-status-${askId}`);
-    if (status) status.textContent = "Sending the answer…";
-    try {
-      const reply = await api("POST", "/ui-action", {session_id: state.session, action: "answer", payload: {ask_id: askId, value}, actor: ACTOR});
-      addMessage({role: "user", text: `Answer to ${askId}: ${value}`, run_id: reply.run_id, delivered: reply.delivered, context: {}});
-      followAdmission(reply.op_id);
-    } catch (error) {
-      if (status) { status.textContent = `Not accepted: ${error.message}`; status.classList.add("err-text"); }
-    }
   }
 
   // --- snapshots and records --------------------------------------------------------------
@@ -855,11 +714,6 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
       state.snapshots[store] = snapshot;
       state.seen[store] = snapshot.seq;
       if (store === "coworld") state.coworldMissing = false;
-      if (store === WORKSPACE) {
-        for (const entry of snapshot.ui_state || []) { state.docs[entry.conversation] = entry.doc; state.docVersions[entry.conversation] = entry.version; }
-        for (const n of (snapshot.records.notices || [])) if (!state.notices.has(n.id)) state.notices.set(n.id, {...n, at: n.created});
-        renderUiState(); renderNotices();
-      }
       renderRecords();
       if (!state.streams[store]) openStream(store, 0);
     } catch (error) {
@@ -928,13 +782,6 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
 
   function jumpTo(ref) {
     const prefix = ref.split("-")[0];
-    if (prefix === "N") {
-      const item = document.querySelector(`#notices li[data-id="${ref}"]`);
-      if (!item) return;
-      item.scrollIntoView({block: "center"});
-      item.classList.add("target"); setTimeout(() => item.classList.remove("target"), 3000);
-      return;
-    }
     const tab = REF_TABS[prefix];
     if (!tab) return;
     setTab(tab);
@@ -1035,7 +882,7 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
     let body;
     if (method === "POST") {
       try { body = JSON.parse($("raw-body").value || "{}"); } catch (error) { result.className = "result err-text"; result.textContent = `The body is not JSON: ${error.message}`; return; }
-      if (body && typeof body === "object" && !body.session_id && state.session && ["/message", "/ui-action"].includes(path)) body.session_id = state.session;
+      if (body && typeof body === "object" && !body.session_id && state.session && path === "/message") body.session_id = state.session;
     }
     result.textContent = `${method} ${path}…`;
     try {
@@ -1063,17 +910,6 @@ footer { margin-top: var(--space-12); padding-top: var(--space-4); border-top: 1
       const open = row.hidden; row.hidden = !open; detail.setAttribute("aria-expanded", String(open));
       return;
     }
-    const reaction = event.target.closest("[data-react]");
-    if (reaction) { const [id, value] = reaction.dataset.react.split(":"); react(state.messages.find((m) => m.id === id), value, reaction); return; }
-    const option = event.target.closest("[data-answer]");
-    if (option) answer(option.dataset.answer, option.dataset.value);
-  });
-  document.addEventListener("submit", (event) => {
-    const form = event.target.closest("[data-answer-form]");
-    if (!form) return;
-    event.preventDefault();
-    const value = form.querySelector("input").value.trim();
-    if (value) answer(form.dataset.answerForm, value);
   });
   $("composer").addEventListener("submit", send);
   $("composer-input").addEventListener("keydown", (event) => {

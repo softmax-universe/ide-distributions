@@ -352,7 +352,7 @@ QUESTIONS: dict[str, list[Question]] = {
     ],
     "skill:client-coplay": [
         q("About how often is a progress line due?", r"30 seconds"),
-        q("Which call saves something to the Library?", r"ui\.panel_set|panel_set"),
+        q("Can you read a file the user attached?", r"\bno\b|not|cannot|deferred"),
         q(
             "How long is an answer when voice is in the context?",
             r"(two or three|2\s*(-|–|or|to)\s*3)",
@@ -370,7 +370,7 @@ QUESTIONS: dict[str, list[Question]] = {
     "skill:merge-conflicts": [
         q("How many outcomes are there to choose from?", r"\bthree\b|\b3\b"),
         q("Which call opens your worktree?", r"worktree_open"),
-        q("What ends the wake?", r"ui\.notify|notify"),
+        q("What ends the wake?", r"chat_update"),
     ],
     "skill:mixin-from-scratch": [
         q(
@@ -387,7 +387,7 @@ QUESTIONS: dict[str, list[Question]] = {
     "skill:review": [
         q("Which single call makes the decision?", r"task\.review"),
         q("What happens after accept: false?", r"resum|reopen"),
-        q("What do you call in mode ask?", r"ui\.ask"),
+        q("What do you call in mode ask?", r"chat_update"),
     ],
     "skill:user-identity": [
         q("Are reads as the User always allowed?", r"yes|always"),
@@ -398,9 +398,14 @@ QUESTIONS: dict[str, list[Question]] = {
         ),
     ],
     "skill:working-with-the-ide": [
-        q("What does a wake use for what the user should hear now?", r"ui\.tell|\btell\b"),
-        q("When is urgency high?", r"today"),
-        q("What part of the agent-context panel do you write?", r"need"),
+        q("What does a wake use for what the user should hear now?", r"chat_update"),
+        q("Where does a progress update go?", r"notice"),
+        q("How do you ask the user from a wake?", r"decision"),
+    ],
+    "tool:chat_update": [
+        q("What are the required arguments?", r"category", r"text"),
+        q("Is it allowed in a chat?", r"\bno\b|refused|not"),
+        q("Which category never interrupts the chat?", r"progress"),
     ],
     "tool:claim": [
         q(
@@ -484,11 +489,6 @@ QUESTIONS: dict[str, list[Question]] = {
         ),
         q("What fields does a failed complete need?", r"failure"),
         q("Is merge needed when a Task succeeded?", r"yes|required"),
-    ],
-    "tool:ui": [
-        q("What are the required arguments for ui_panel_set?", r"panel", r"kind", r"content"),
-        q("Does notify ask anything?", r"\bno\b|never|inform"),
-        q("How does a wake report to the user?", r"notice|notify"),
     ],
     "tool:upload": [
         q("Which argument is required?", r"version"),

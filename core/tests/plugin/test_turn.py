@@ -163,43 +163,12 @@ def test_only_a_chat_is_told_to_ask_in_chat(tmp_path):
         )
     assert "ask in chat" in session_context.render(ctx, "chat2")
     wake = session_context.render(ctx, "wake1")
-    assert "ask in chat" not in wake and "nobody reads" in wake and "ui.tell" in wake
+    assert "ask in chat" not in wake and "nobody reads" in wake and "chat_update" in wake
     assert "No session context" not in wake
     assert f"Work only in {ctx.coworld().root}." in wake
     researcher = ToolContext.from_env("researcher", ctx.env)
     text = session_context.render(researcher, "unknown")
-    assert "ui." not in text and "task_ask" in text
-
-
-def test_reactions_reach_the_agent_at_its_next_turn(tmp_path):
-    from research_core.store import ui_state
-
-    ctx = make_ctx(tmp_path)
-    turn.render_turn(ctx, "chat1", is_first_turn=True, now=NOW)
-    user = Actor.user("u1")
-    ui_state.patch(
-        ctx.wstore,
-        user,
-        "chat1",
-        [
-            {"op": "add", "path": "/reactions", "value": {}},
-            {"op": "add", "path": "/reactions/m-7", "value": {"value": "👍", "by": "user:u1"}},
-        ],
-    )
-    ui_state.patch(
-        ctx.wstore,
-        user,
-        "other-chat",
-        [
-            {"op": "add", "path": "/reactions", "value": {}},
-            {"op": "add", "path": "/reactions/m-9", "value": {"value": "👎", "by": "user:u1"}},
-        ],
-    )
-    text = turn.render_turn(ctx, "chat1", is_first_turn=False, now=NOW)
-    assert "[reactions since your last turn]\n- message m-7: 👍" in text
-    assert "m-9" not in text  # another conversation's reaction
-    assert "ui.patch" not in text  # not counted as a changed-since kind
-    assert "[reactions" not in turn.render_turn(ctx, "chat1", is_first_turn=False, now=NOW)
+    assert "chat_update" not in text and "task_ask" in text
 
 
 def test_an_opening_goal_is_said_to_be_the_first_request():

@@ -13,7 +13,7 @@ Where you are, the image and source commits, the two Python environments, writab
 
 ## Two Python environments
 
-- **Hermes's interpreter** runs the plugin and the store-only tools (`goal`, `task`, `claim`, `directive`, `settings`, `ui`). Nothing else runs there and nothing is installed into it.
+- **Hermes's interpreter** runs the plugin and the store-only tools (`goal`, `task`, `claim`, `directive`, `settings`, `chat_update`). Nothing else runs there and nothing is installed into it.
 - **The workspace environment** (`tools/venv` under the workspace root; the guide prints its Python) runs the `research` CLI, the platform tools, the mixin commands, `experiment.close` and the watcher. It holds `coworld`, `softmax`, `numpy` and `PyYAML`. Run your own scripts that need those with its Python.
 - **Mixin toolchains** live under `tools/<kind>-<version>`, declared in `MIXIN.md` `toolchains`. Setup, merges and full checks install `python` ones (to test first: `uv venv --python <version> <that path>`); install other kinds (Nim) by hand. A command that needs one names it in its `PATH`; a missing one is a repair (`repair` skill).
 
@@ -34,7 +34,7 @@ Where you are, the image and source commits, the two Python environments, writab
 
 - Neither profile has a turn or time limit, but a guard ends the turn at five failures of one tool (not `terminal`, `execute_code` and the like), five identical failing calls or ten identical calls with identical results. A workspace tool has about 400 seconds; a mixin command 240 before it is backgrounded with a log and a resume token (`candidate` skill); its result has the log path and tail.
 - The watcher ticks every minute: it resumes Sessions whose wait resolved, runs due checks, merges reviewed Tasks and syncs the champion every ten minutes. A Task on `task_wait` is asleep, not finished.
-- Reaching the user: the Orchestrator through the conversation or `ui.notify`; a wake through `ui.tell`. A Researcher reaches only the Orchestrator, through its Task (`task_ask`, the result).
+- Reaching the user: the Orchestrator through the conversation; a wake through `chat_update`. A Researcher reaches only the Orchestrator, through its Task (`task_ask`, the result).
 - `paused` stops background starts and holds new user messages; a turn already running finishes.
 
 ## Native terminal store commands

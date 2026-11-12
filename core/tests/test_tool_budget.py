@@ -14,7 +14,7 @@ ORCHESTRATOR = {
     "version",
     "directive",
     "settings",
-    "ui",
+    "chat_update",
     "workspace",
     "upload",
     "submit",
@@ -31,7 +31,6 @@ OWN_TOOLS_ORCHESTRATOR = {
     "goal_set_status",
     "settings_update",
     "task_abandon",
-    "ui_panel_set",
 }
 OWN_TOOLS_RESEARCHER = {
     "task_ask",
@@ -41,7 +40,9 @@ OWN_TOOLS_RESEARCHER = {
     "task_release",
     "task_wait",
 }
-RESEARCHER = (ORCHESTRATOR - {"ui", "submit", "github"}) | OWN_TOOLS_BOTH | OWN_TOOLS_RESEARCHER
+RESEARCHER = (
+    (ORCHESTRATOR - {"chat_update", "submit", "github"}) | OWN_TOOLS_BOTH | OWN_TOOLS_RESEARCHER
+)
 ORCHESTRATOR = ORCHESTRATOR | OWN_TOOLS_BOTH | OWN_TOOLS_ORCHESTRATOR
 INPROC = {
     "goal",
@@ -55,8 +56,7 @@ INPROC = {
     "claim_add_evidence",
     "settings",
     "settings_update",
-    "ui",
-    "ui_panel_set",
+    "chat_update",
 }
 
 
@@ -75,7 +75,7 @@ def test_a_broken_tool_module_fails_loudly(tmp_path, monkeypatch):
 
 
 def test_tool_counts_match_the_design():
-    assert names("orchestrator") == ORCHESTRATOR and len(ORCHESTRATOR) == 24
+    assert names("orchestrator") == ORCHESTRATOR and len(ORCHESTRATOR) == 23
     assert names("researcher") == RESEARCHER and len(RESEARCHER) == 23
     assert len(ORCHESTRATOR) <= catalog.TOOL_BUDGET
 

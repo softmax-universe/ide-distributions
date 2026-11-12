@@ -1,5 +1,7 @@
 # How the rebuild went
 
+> **2026-11-12:** the `ui` tools described here were removed; `ui.tell` became `chat_update` (branch `jb/remove-ui-tools`).
+
 Written October 29, 2026 (Pacific), after the implementation of
 `docs/designs/ide-profile-refactor-2026-10-28-final.html` landed on `jb/idd-profile-refactor`.
 `STATUS.md` says what exists and what is open; this page says how it went: what was decided,

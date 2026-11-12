@@ -41,7 +41,6 @@ from research_core.watcher import (
     brain_check,
     champion_sync,
     checks,
-    context_panel,
     drain,
     goals,
     heartbeat,
@@ -88,11 +87,11 @@ WAKE_INSTRUCTIONS = (
     "You are the Orchestrator in a background wake Session that the watcher started, not a "
     "person: nobody reads this conversation. Act on the event below with the record and "
     "platform tools, read the records before you write, and finish within this run. Never "
-    "answer in this conversation; nobody reads it. Use ui.tell for what the user should hear "
-    "now, with the category that says why: decision (only they can decide; ask it plainly, they "
+    "answer in this conversation; nobody reads it. Use chat_update for what the user should "
+    "hear, with the category that says why: decision (only they can decide; ask it plainly, they "
     "answer in the chat), outcome (work they asked for finished), submission (a Version "
-    "submitted, placed or rejected), failure (something broke that needs them) or merge (a "
-    "Version merged to main). Use ui.notify for routine progress they can read later. Settings "
+    "submitted, placed or rejected), failure (something broke that needs them), merge (a "
+    "Version merged to main) or progress (routine news they can read later). Settings "
     "bound your own initiative, never a request the user already made."
 )
 
@@ -745,7 +744,7 @@ class Coordinator:
         return report
 
     def deliver_chat_updates(self, ctx: TickContext) -> dict[str, Any]:
-        """Hand this pass's Coworld's due ``ui.tell`` updates to its most recent chat as one
+        """Hand this pass's Coworld's due ``chat_update`` updates to its most recent chat as one
         queued follow-up, or to notices when it has no chat (``store/chat_updates.py``). The
         caller skips it while paused, so held updates wait for the resume."""
         coworld_id = ctx.coworld.coworld_id if ctx.coworld is not None else None
@@ -1795,7 +1794,6 @@ class Coordinator:
             report["dispatch"] = self.plan_assignments(ctx)
             report["wakes"] = self.advance_events(ctx)
         report["heartbeat"] = heartbeat.run(ctx)
-        report["context_panel"] = context_panel.run(ctx)
         self._record_report(ctx, report)
         return report
 

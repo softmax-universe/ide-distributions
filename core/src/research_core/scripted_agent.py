@@ -10,20 +10,13 @@ What it does with each run:
 
 * a chat run whose text contains :data:`REQUEST` ("Submit the starter as my champion.")
   sets up the session's Coworld with the request pending; a session with no Coworld is told so;
-* a setup wake carries the pending request out: create the Version, upload, submit, notify;
+* a setup wake carries the pending request out: create the Version, upload, submit, and leave
+  a ``progress`` ``chat_update`` (a notice);
 * every other wake completes with "Nothing to do.";
 * any other chat run renders its turn (what the plugin's hook would show the model), answers
-  ``Noted: <the first 80 characters of the message>`` and, so a client has something to see,
-  reacts to these words in the message:
-
-  ==========  ====================================================================
-  ``ask me``  opens a question with two options through ``ui.ask``
-  ``notify``  sends a notice through ``ui.notify``
-  ``goal``    creates a Goal through the ``goal`` tool (needs a session Coworld), brings
-              it into view through ``ui.show`` and writes a markdown panel about it
-  ==========  ====================================================================
-
-  The reply names what it did, so the trigger words are visible in the conversation too.
+  ``Noted: <the first 80 characters of the message>`` and, when the message contains ``goal``,
+  creates a Goal through the ``goal`` tool (needs a session Coworld), so a client has something
+  to see. The reply names what it did.
 """
 
 from __future__ import annotations
@@ -44,9 +37,7 @@ LEAGUE = LEAGUE_ID
 NOTED_CHARS = 80
 # The trigger words of an ordinary chat run, with what each does; the client page shows them.
 TRIGGERS = {
-    "ask me": "opens a question with two options (answer it in Asks)",
-    "notify": "sends a notice",
-    "goal": "creates a Goal (needs the Coworld), shows it and sets a markdown panel",
+    "goal": "creates a Goal (needs the Coworld)",
 }
 
 
@@ -134,24 +125,6 @@ class ScriptedAgent:
         excerpt = text[:NOTED_CHARS]
         lower = text.lower()
         done: list[str] = []
-        if "ask me" in lower:
-            asked = self.call(
-                ctx,
-                "ui",
-                {
-                    "action": "ask",
-                    "question": f"You said {excerpt!r}. Which option do you want?",
-                    "options": ["Option A", "Option B"],
-                },
-            )
-            done.append(f"asked {asked['ask_id']}")
-        if "notify" in lower:
-            self.call(
-                ctx,
-                "ui",
-                {"action": "notify", "text": f"Notice, as you asked: {excerpt}", "urgency": "low"},
-            )
-            done.append("sent a notice")
         if "goal" in lower:
             if ctx.coworld_or_none() is None:
                 done.append("created no Goal: this session has no Coworld")
@@ -166,19 +139,7 @@ class ScriptedAgent:
                         "reason": text[:200],
                     },
                 )
-                goal_id = goal["record"]["id"]
-                self.call(ctx, "ui", {"action": "show", "ref": goal_id})
-                self.call(
-                    ctx,
-                    "ui_panel_set",
-                    {
-                        "panel": "goal-brief",
-                        "kind": "markdown",
-                        "content": f"# {goal_id}\n\nMade from your message: {excerpt}\n\n"
-                        "End state: the user says it is done.",
-                    },
-                )
-                done.append(f"created {goal_id}, brought it into view and set the goal-brief panel")
+                done.append(f"created {goal['record']['id']}")
         reply = f"Noted: {excerpt}"
         if done:
             reply += "\n\nI " + "; ".join(done) + "."
@@ -205,9 +166,9 @@ class ScriptedAgent:
         assert submitted.get("refused") is None, submitted
         self.call(
             ctx,
-            "ui",
+            "chat_update",
             {
-                "action": "notify",
+                "category": "progress",
                 "text": f"Submitted {vid}, the starter, to {LEAGUE} as you asked.",
                 "refs": [vid],
             },

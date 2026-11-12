@@ -37,7 +37,7 @@ INSTRUCTIONS = {
     "version": "List the last 3 Versions.",
     "directive": "List the active directives.",
     "settings": "Read the setting max_researchers.",
-    "ui": "Notify the user that V-1 was submitted.",
+    "chat_update": "From this background wake, tell the user that V-1 was submitted.",
     "workspace": "Show the environment guide.",
     "upload": "Upload Version V-2.",
     "submit": "Submit V-2 to league_x because the user asked in message m-1.",

@@ -526,6 +526,7 @@
       <li>Hermes <code>session_search</code> is off in both profiles (#249).</li>
       <li>The image pins Hermes by digest (<code>image/Dockerfile</code>), v0.22.6 per <code>docs/hosting.md</code>, not v0.21.6, and runs it with no patches (#249, #252).</li>
       <li>The Orchestrator has 24 tools and a Researcher 23, not 18 and 14: the 13 hardest write actions became their own tools (#188).</li>
+      <li>2026-11-12: the <code>ui</code> tools described here were removed; <code>ui.tell</code> became <code>chat_update</code> (branch <code>jb/remove-ui-tools</code>).</li>
       <li>The <code>play/</code> profile was removed (#199). The pre-AIDE workspace chat protocol was removed; chat reaches the seam only through the AIDE 1.0.0 backend (#236).</li>
       <li>Both profiles run <code>moonshotai/kimi-k3.1-pro</code> with <code>z-ai/glm-5.3</code> as fallback, and titles and image reading use <code>anthropic/claude-haiku-5.5</code> (#237).</li>
     </ul>

@@ -23,7 +23,7 @@ import pytest
 
 from research_core import cli, layout
 from research_core.store import cli as store_cli
-from research_core.store import coworlds, directives, goals, migrate, settings, tasks, ui_state
+from research_core.store import coworlds, directives, goals, migrate, settings, tasks
 from research_core.store._common import now_iso
 from research_core.store.actors import Actor
 from research_core.store.db import Store, quiesce_busy_timeout_ms
@@ -920,15 +920,9 @@ def test_snapshot_shows_each_directive_with_the_id_of_its_store(workspace, capsy
     assert [d["id"] for d in workspace_snapshot["records"]["directives"]] == ["W-1"]
 
 
-def test_snapshot_has_records_settings_ui_state_and_seq(workspace, capsys):
+def test_snapshot_has_records_settings_and_seq(workspace, capsys):
     make_goal(workspace.store)
     settings.update(workspace.store, HARNESS, "submissions.mode", "ask", cites="m")
-    ui_state.patch(
-        workspace.wstore,
-        HARNESS,
-        "workspace",
-        [{"op": "add", "path": "/panels", "value": [{"kind": "text", "content": "hi"}]}],
-    )
 
     code, out = run(capsys, "snapshot")
     assert code == 0, out
@@ -951,7 +945,7 @@ def test_snapshot_has_records_settings_ui_state_and_seq(workspace, capsys):
     assert records["settings"]["submissions.mode"] == "ask"
     assert records["settings"]["submissions.quality_bar"] is True
     assert "paused" not in records["settings"]
-    assert out["ui_state"] == []
+    assert set(out) == {"store", "coworld_id", "seq", "records"}
 
     code, out = run(capsys, "snapshot", "--store", "workspace")
     assert code == 0, out
@@ -966,14 +960,6 @@ def test_snapshot_has_records_settings_ui_state_and_seq(workspace, capsys):
     ]
     assert out["records"]["coworlds"][0]["coworld_id"] == COWORLD_ID
     assert out["records"]["settings"]["paused"] is False
-    assert out["ui_state"] == [
-        {
-            "conversation": "workspace",
-            "doc": {"panels": [{"kind": "text", "content": "hi"}]},
-            "version": 1,
-            "updated": out["ui_state"][0]["updated"],
-        }
-    ]
 
 
 def test_snapshot_rows_and_seq_come_from_one_read_transaction(workspace, capsys, monkeypatch):

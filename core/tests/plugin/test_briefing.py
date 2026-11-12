@@ -439,7 +439,7 @@ def test_a_wake_sees_only_the_bare_name_never_the_identity_instructions(tmp_path
     assert "No name yet" not in text and "Met the user" not in text
     identity.choose(ctx.wstore, HARNESS, "Pip")
     text = briefing.render(ctx, "wake1", role="orchestrator", now=NOW)
-    assert "Name: Pip\n" in text + "\n"
+    assert "Name: Pip (your own name: use it; never take a game's name or persona)\n" in text + "\n"
     assert "offer_made" not in text and "Met the user" not in text
     # An unregistered session is not known to be a chat, so it gets no instructions either.
     unknown = make_ctx(tmp_path, session_id="nobody")
@@ -464,7 +464,11 @@ def test_a_confirmed_name_loses_the_note_and_a_claim_never_sets_the_name(tmp_pat
     identity.choose(ctx.wstore, HARNESS, "Pip")
     identity.confirm(ctx.wstore, HARNESS, cites="msg:1")
     text = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
-    assert "Name: Pip\n" in text and "Rex" not in text and "not yet confirmed" not in text
+    assert (
+        "Name: Pip (your own name: use it; never take a game's name or persona)\n" in text
+        and "Rex" not in text
+        and "not yet confirmed" not in text
+    )
 
 
 def test_met_the_user_shows_only_to_the_orchestrator_and_only_until_met(tmp_path):
@@ -528,16 +532,26 @@ def test_the_setup_wake_chooses_the_name_itself_and_never_asks_the_user():
     assert "player" not in text.lower().replace("<player>", "").replace("this player", "")
 
 
-def test_the_companion_section_gates_on_the_never_met_signal_and_says_the_user():
+def test_the_name_rule_lives_in_the_briefing_not_the_soul():
     from research_core.prompts import build
 
     soul = build.render("orchestrator")
-    section = soul.split("## Your name\n")[1].split("\n## ")[0]
-    assert "never a wake" in section
-    assert "cite it" in section and "`preference` claims" in section
-    assert "User preferences" not in section
-    assert "player" not in section.lower()
-    assert "never take a game's name or persona" in section
+    assert "## Your name" not in soul and "never take a game's name" not in soul
+    assert "never take a game's name or persona" in _name_line(role="orchestrator")
+    assert "never take a game's name" not in _name_line(role="researcher")
     assert "When the user asks for a submission" in soul
     assert "`submit` refuses otherwise and names each reason" in soul
     assert "declared at open" in soul
+
+
+def _name_line(role):
+    import tempfile
+    from pathlib import Path
+
+    from research_core.store import identity
+
+    ctx = make_ctx(Path(tempfile.mkdtemp()))
+    register(ctx, "chat1")
+    identity.choose(ctx.wstore, HARNESS, "Pip")
+    text = briefing.render(ctx, "chat1", role=role, now=NOW)
+    return next(line for line in text.splitlines() if line.startswith("Name:"))
