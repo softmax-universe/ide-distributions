@@ -4,11 +4,18 @@
 records each as a run the moment the platform accepts it. The roster sets the player count, so
 ``_open_seats`` checks it against the game's manifest before any request is sent. ``status``
 refreshes the runs, downloads the results of completed requests, runs the mixin's ``evaluate``
-command on them and stores the rows of our seat (slot 0, where ``request_body`` puts the run's
-Version; rows for opponents' seats are counted under ``other_seat_rows``) on the run, in the
-results-row contract the ``experiment`` tool closes on (``tools/experiment.py``:
-``results.rows`` objects with ``episode_id``, ``game_version``, ``policy_version`` as the
-Version's record id, ``seed``, ``seats``, ``opponents``, ``metrics``, ``status``, ``reason``).
+command on them and stores our seat's rows on the run, in the results-row contract the
+``experiment`` tool closes on (``tools/experiment.py``: ``results.rows`` objects with
+``episode_id``, ``game_version``, ``policy_version`` as the Version's record id, ``seed``,
+``seats``, ``opponents``, ``metrics``, ``status``, ``reason``).
+
+Seats. Our policy sits in seat ``platform/xp.py`` ``OUR_SEAT`` (0) and the opponents in the
+seats after it; ``request`` records the seat and the pinned roster on the run (``results.seat``,
+``results.roster``). ``evaluate`` may print every seat it scores: only our seat's rows are the
+Version's and go into ``results.rows``; the other seats' rows, each labelled with the policy that
+sat there, go to ``<request id>.other_seats.jsonl`` beside the downloaded results folder, for
+context only (``results.other_seats`` counts them and names the file). Output with no row for our
+seat is a broken evaluate.
 
 Rules the tool keeps (A4.4): it puts a Task on a wait only when the platform stays down (below);
 a Researcher calls
@@ -32,7 +39,9 @@ it keeps running and the result carries ``background.resume``; ``status {resume:
 finishes the work when the process is done. A failed or non-conforming ``evaluate`` marks the
 run ``invalid`` and reports the ``evaluate`` capability (A4.1), and the next ``status`` tries it
 again: the episodes were fine, so the Experiment waits for the repair. The evaluate command runs in
-the code repository root with ``XP_RESULTS`` naming the folder of downloaded results.
+the code repository root with ``XP_RESULTS`` naming the folder of downloaded results, ``XP_SEAT``
+our seat and ``XP_POLICY_VERSION_ID`` the policy version in it. The arm is deliberately not
+passed: evaluate must score both arms the same way.
 
 Stdlib at import time (the plugin imports the catalog); PyYAML loads inside ``mixin.load`` in
 the workspace environment where this tool runs.
@@ -43,7 +52,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -55,7 +64,7 @@ from research_core.platform import wait
 from research_core.platform import xp as xp_module
 from research_core.platform.errors import CreditsRefused, PlatformError
 from research_core.platform.protocol import Credits, Platform, XpRequest, with_retries
-from research_core.stats.ingest import rows_from_evaluate_output
+from research_core.stats.ingest import EpisodeRow, rows_from_evaluate_output
 from research_core.store import experiments, intents, settings, tasks, versions
 from research_core.store._common import parse_display_id
 from research_core.store.errors import StoreError
@@ -77,6 +86,12 @@ EVALUATE_BUDGET_S = mixin_module.DEFAULT_BUDGET_S
 STATUS_BUDGET_S = 330
 EVALUATE_FAILED = "invalid: evaluate"
 RESULTS_ENV = "XP_RESULTS"
+# Which seat and policy an evaluate run is about, so a mixin may score that seat alone.
+SEAT_ENV = "XP_SEAT"
+POLICY_VERSION_ENV = "XP_POLICY_VERSION_ID"
+OTHER_SEATS_SUFFIX = ".other_seats.jsonl"
+LEAGUE_SAMPLED = "league-sampled"
+UNKNOWN_SEAT = "unknown"
 CREATE_ROUTE = "POST /v2/experience-requests"
 
 EXPERIMENT = a.string("The Experiment, such as X-5.")
@@ -163,7 +178,7 @@ def handle_request(call: ToolCall) -> dict:
                 refusal = wait.tool_error(ctx, CREATE_ROUTE, error)
                 refusal.context.update(created=created, reconciled=reconciled)
                 raise refusal from error
-            run = _record_run(ctx, record, request, seed=seed, arm=arm, plan=plan)
+            run = _record_run(ctx, record, request, body, seed=seed, arm=arm, plan=plan)
             (reconciled if intent["existing"] and not intent["retried"] else created).append(
                 request.id
             )
@@ -359,9 +374,17 @@ def _estimate(ctx: ToolContext, credits: Credits | None, episodes: int) -> dict:
 
 
 def _record_run(
-    ctx: ToolContext, record: dict, request: XpRequest, *, seed: int, arm: str, plan: dict
+    ctx: ToolContext,
+    record: dict,
+    request: XpRequest,
+    body: dict,
+    *,
+    seed: int,
+    arm: str,
+    plan: dict,
 ) -> dict:
-    """``add_run`` at once, then the state and the Version the run plays (``status`` needs both)."""
+    """``add_run`` at once, then the state, the Version the run plays, its seat and the policy in
+    each pinned seat (``status`` needs them to tell our rows from the opponents')."""
     store, actor = ctx.store, ctx.actor
     run = experiments.add_run(
         store,
@@ -383,6 +406,8 @@ def _record_run(
             "version": plan["refs"][arm],
             "policy_version_id": plan["policy_version_ids"][arm],
             "title": request.title,
+            "seat": xp_module.OUR_SEAT,
+            "roster": xp_module.pinned_seats(body),
         },
     )
 
@@ -552,7 +577,7 @@ def _evaluate(ctx: ToolContext, record: dict, run: dict, budget_s: float) -> dic
     coworld = ctx.coworld()
     platform = ctx.platform()
     request_id = run["platform_request_id"]
-    dest = coworld.documents / "xp" / record["id"] / request_id
+    dest = _results_dir(ctx, record, run)
     files = wait.call_platform(
         ctx,
         "GET /v2/episode-requests/download-manifest",
@@ -568,7 +593,14 @@ def _evaluate(ctx: ToolContext, record: dict, run: dict, budget_s: float) -> dic
             " downloaded results become metric rows",
             downloaded=[str(path) for path in files],
         )
-    env = {**os.environ, **ctx.env, RESULTS_ENV: str(dest)}
+    results = run.get("results") or {}
+    env = {
+        **os.environ,
+        **ctx.env,
+        RESULTS_ENV: str(dest),
+        SEAT_ENV: str(results.get("seat", xp_module.OUR_SEAT)),
+        POLICY_VERSION_ENV: results.get("policy_version_id") or "",
+    }
     result = mixin_module.run_command(
         mixin,
         "evaluate",
@@ -614,6 +646,7 @@ def _finish_evaluate(
             game_version=mixin.coworld_version or "unknown",
             request_id=run["platform_request_id"],
         )
+        ours, others = _split_by_seat(rows, results)
     except ValueError as error:
         report_capability(
             ctx,
@@ -623,38 +656,55 @@ def _finish_evaluate(
         )
         _store_rows(ctx, run, results, f"invalid: evaluate output: {error}")
         return None
-    ours, others = our_seat_rows(rows)
     results["rows"] = [asdict(row) for row in ours]
-    if others:
-        results["other_seat_rows"] = {
-            "count": len(others),
-            "seats": sorted({seat for row in others for seat in row.seats}),
-            "note": (
-                f"evaluate printed rows for seats other than our seat {OUR_SEAT}; they score the"
-                " opponents, not this run's Version, so they are kept out of rows and the verdict"
-            ),
-        }
+    results["other_seats"] = _keep_other_seats(_results_dir(ctx, record, run), others)
     _store_rows(ctx, run, results, "valid")
     return None
 
 
-def our_seat_rows(rows: list) -> tuple[list, list]:
-    """The rows of the seat our Version played, and the rest.
+def _split_by_seat(
+    rows: list[EpisodeRow], results: dict
+) -> tuple[list[EpisodeRow], list[EpisodeRow]]:
+    """Our seat's rows, and every other seat's rows labelled with the policy that sat there.
 
-    ``request_body`` puts the run's Version in slot 0 and opponents in the slots after it, so
-    only seat 0 measures the Version. A mixin's ``evaluate`` often prints every seat; averaging
-    those in makes both arms the same all-seat mean (1/6 against 1/6 in a six-seat game) and a
-    row per opponent seat reads as our own win or loss. When no row names seat 0 the rows are
-    kept as they are: the seat numbering is then the mixin's own.
+    ``rows_from_evaluate_output`` labels every row with our Version; a mixin that scores all
+    seats would otherwise count the opponents as us, so each arm's mean would be mostly
+    opponent data (a win rate near 1/players for both arms: a false tie). Only our seat measures
+    the Version. A pinned seat's policy comes from the roster the request sent; a seat the league
+    sampled is ``league-sampled`` (runs recorded before the roster was kept say ``unknown``).
+    No row for our seat is a broken ``evaluate`` (``ValueError``), never a reason to count the
+    others.
     """
-    if not any(OUR_SEAT in row.seats for row in rows):
-        return list(rows), []
-    ours = [row for row in rows if OUR_SEAT in row.seats]
-    others = [row for row in rows if OUR_SEAT not in row.seats]
+    seat = results.get("seat", xp_module.OUR_SEAT)
+    ours = [row for row in rows if row.seats == (seat,)]
+    if not ours:
+        printed = sorted({s for row in rows for s in row.seats})
+        raise ValueError(
+            f"no row for seat {seat}, where {results['version']} sat ({SEAT_ENV}={seat}); the"
+            f" rows were for seats {printed or 'none'}"
+        )
+    roster = results.get("roster")
+    others = []
+    for row in rows:
+        if row.seats == (seat,):
+            continue
+        if roster is None:
+            policy = UNKNOWN_SEAT
+        else:
+            policy = roster.get(str(row.seats[0]), LEAGUE_SAMPLED)
+        others.append(replace(row, policy_version=policy))
     return ours, others
 
 
-OUR_SEAT = 0
+def _keep_other_seats(dest: Path, others: list[EpisodeRow]) -> dict:
+    """The other seats' rows go to a file beside the results folder, for context, not into the
+    record: they never count for the verdict, and a six-seat game would multiply what a read
+    returns. Outside ``XP_RESULTS``, so a later evaluate never reads it as results."""
+    if not others:
+        return {"rows": 0}
+    path = dest.with_name(dest.name + OTHER_SEATS_SUFFIX)
+    path.write_text("".join(json.dumps(asdict(row)) + "\n" for row in others), encoding="utf-8")
+    return {"rows": len(others), "file": str(path)}
 
 
 def _store_rows(ctx: ToolContext, run: dict, results: dict, validity: str | None) -> None:
@@ -729,6 +779,10 @@ def _report(record: dict, note: str | None = None) -> dict:
 
 
 # --- shared ----------------------------------------------------------------------------------
+
+
+def _results_dir(ctx: ToolContext, record: dict, run: dict) -> Path:
+    return ctx.coworld().documents / "xp" / record["id"] / run["platform_request_id"]
 
 
 def _xp_runs(store, n: int) -> list[dict]:

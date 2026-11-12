@@ -321,8 +321,10 @@ def test_computed_close_refutes_a_guardrail_breach(add_run, call, running):
     assert closed["record"]["results"]["reason_codes"] == ["guardrail_breach:step_ms"]
 
 
-def test_computed_close_averages_per_seat_rows_into_one_pair_per_seed(add_run, call, running):
-    """Per-seat rows (seats [0] and [1] of one episode) make one pair per seed, not two."""
+def test_computed_close_counts_only_the_runs_own_seat(add_run, call, running):
+    """Rows of seat 1 are the opponent's, stored before xp.status kept seats apart. Averaging
+    them in measured a mix of us and the opponent (here 0.50 against 0.60, not 0.40 against
+    0.55), so only seat 0 counts and the rest are reported as dropped."""
     seeds = range(N_MIN)
     baseline, candidate = [], []
     for s in seeds:
@@ -344,8 +346,9 @@ def test_computed_close_averages_per_seat_rows_into_one_pair_per_seed(add_run, c
     closed = call("experiment", {"action": "close", "experiment": "X-1"})
     assert closed["ok"] is True, closed
     assert closed["evaluation"]["pairs"] == N_MIN
+    assert closed["evaluation"]["rows"]["dropped"]["other_seats"] == 2 * N_MIN
     win = next(m for m in closed["record"]["results"]["measurements"] if m["metric"] == "win_rate")
-    assert abs(win["baseline"] - 0.50) < 1e-9 and abs(win["candidate"] - 0.60) < 1e-9
+    assert abs(win["baseline"] - 0.40) < 1e-9 and abs(win["candidate"] - 0.55) < 1e-9
     assert closed["record"]["status"] == "confirmed"
 
 

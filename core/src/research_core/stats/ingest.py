@@ -50,8 +50,10 @@ def rows_from_evaluate_output(
     - ``episode`` (integer or non-empty string, required): the episode's index or id within
       the request.
     - ``seed`` (integer, required): the game seed the episode played.
-    - ``seat`` (integer, required): the roster slot whose metrics this line reports. The run's
-      Version sits in slot 0, and ``xp.status`` stores only seat-0 rows as the run's own.
+    - ``seat`` (integer, required): the roster slot whose metrics this line reports: the game's
+      0-based player slot, as its results index players. Our policy sits in the seat
+      ``XP_SEAT`` names (0); ``xp.status`` keeps that seat's rows as the Version's and files the
+      other seats' rows as context, so a mixin may print every seat or only ``XP_SEAT``.
     - ``opponents`` (list of strings, optional, default ``[]``): the other seats' policy labels.
     - ``metrics`` (object of metric name to finite number): required unless ``status`` is
       ``"failed"``.
@@ -62,7 +64,8 @@ def rows_from_evaluate_output(
     line. ``episode_id`` is ``<request_id>:<episode>:s<seat>`` (``<episode>:s<seat>`` without a
     ``request_id``); pass the platform request id so rows from different requests never share
     an id, because ``ingest_rows`` drops a repeated ``episode_id`` as a duplicate. The caller
-    names the ``policy_version`` and ``game_version`` the request played.
+    names the ``policy_version`` and ``game_version`` the request played; every row carries that
+    ``policy_version``, so the caller relabels the rows of seats our policy did not sit in.
     """
     prefix = f"{request_id}:" if request_id else ""
     rows = []

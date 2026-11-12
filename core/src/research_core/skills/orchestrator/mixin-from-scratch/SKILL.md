@@ -48,11 +48,12 @@ comes from the source with a citation, never from memory.
 5. Make `evaluate` meet the contract: it runs in the code repository root with `XP_RESULTS`
    naming a folder of downloaded results and prints JSON lines, one per scored seat per episode:
    `{"episode", "seed", "seat", "opponents": [...], "metrics": {...}}`, with `"status":
-   "failed"` and a `"reason"` for an episode that did not complete. Metric names match
-   `metrics` in the front matter. `seat` is the roster slot: `xp.request` puts the measured
-   Version in slot 0, so `xp.status` keeps seat-0 rows and sets the others aside; seat numbers
-   must therefore match the platform's slots, not a team or faction index. Test it on real results: `platform.episodes {league}` shows finished
-   episodes.
+   "failed"` and a `"reason"` for an episode that did not complete. `seat` is the roster slot,
+   the game's 0-based player slot its results use, not a team or faction index. Our policy sits
+   in the seat `XP_SEAT` names (0; `XP_POLICY_VERSION_ID` is its policy version): only that
+   seat's lines count for the Experiment, other seats' lines are kept as context, and no line
+   for it marks the run's evaluate broken. Metric names match `metrics` in the front matter.
+   Test it on real results: `platform.episodes {league}` shows finished episodes.
 6. Make `build` produce the artifact at the declared path from a clean tree and `check` fail on
    a broken policy.
 7. Commit on `main` with a message naming the source commit, then `workspace.capabilities

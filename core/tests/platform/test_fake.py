@@ -271,7 +271,13 @@ def test_xp_request_runs_through_pending_running_completed(tmp_path):
     assert [p.name for p in paths] == ["results.json", "replay.json"]
     results = json.loads(paths[0].read_text())
     assert results["seed"] == 11 and results["request_id"] == request.id
-    assert [(e["episode"], e["seat"]) for e in results["episodes"]] == [(0, 0), (1, 0)]
+    # Every seat is scored, the opponent's too, as a real results artifact does.
+    assert [(e["episode"], e["seat"]) for e in results["episodes"]] == [
+        (0, 0),
+        (0, 1),
+        (1, 0),
+        (1, 1),
+    ]
     assert {"score", "errors", "seed"} <= set(results["episodes"][0])
     assert json.loads(paths[1].read_text())["ticks"]
     credits = platform.credits()
@@ -691,7 +697,8 @@ def test_fakegame_build_check_and_evaluate(tmp_path):
         text=True,
     )
     rows = [json.loads(line) for line in evaluated.stdout.splitlines()]
-    assert evaluated.returncode == 0 and len(rows) == 2
+    assert evaluated.returncode == 0 and len(rows) == 4  # two episodes, two seats each
+    assert [row["seat"] for row in rows] == [0, 1, 0, 1]
     assert (
         rows[0]["seat"] == 0
         and rows[0]["seed"] == 3
@@ -749,4 +756,4 @@ def test_xp_create_samples_a_league_seat_for_the_field(tmp_path):
     request = platform.xp_create(body)
     assert request.coworld_id == fake.COWORLD_ID
     (row,) = platform.snapshot()["xp"].values()
-    assert (row["policy"], row["slots"]) == ("pv", [0])
+    assert (row["policy"], row["seats"]) == ("pv", ["pv", fake.LEAGUE_POLICIES[0]])
