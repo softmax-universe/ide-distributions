@@ -10,8 +10,10 @@ A survey turns a pile of finished episodes into a finding: what happened, decomp
 ## Inputs
 
 - An Experiment's downloaded results: `xp.status {experiment}` stores the mixin's `evaluate` rows on the runs; `experiment.read {experiment, section: results}` lists them with request ids; the files are under `documents/xp/<X-n>/<request id>/`.
-- League play: `platform.episodes {league}` or `{policy_version}`, `platform.episode {episode}` for scores and participants, `platform.results` for our standing rows.
+- League play: `platform.episodes {league}` or `{policy_version}`, `platform.episode_summaries {episode_ids}` for scores and participants across up to 50 episodes, `platform.results` for our standing rows.
 - Per-seat metrics come from the mixin's `evaluate` command on downloaded results; what it produces is game-specific: see `code/mixin/skills/<coworld>-survey/SKILL.md` or the mixin docs.
+
+For raw per-episode game metrics absent from summaries, use `platform.episode_results {episode_ids}` in groups of up to 20. Read the returned JSON paths together.
 
 ## Method
 
@@ -23,7 +25,7 @@ A survey turns a pile of finished episodes into a finding: what happened, decomp
 
 ## Record
 
-Write the finding as claims (`writing-claims`): a `measurement` evidence link to the stored results (`<command> @<sha> -> <path under documents/>`), a `replay` link for each narrated episode (`platform.replay {episode}` pins it) and the Experiment (`X-n`) when the batch came from one. Tag the Goal, the policy versions and the group the finding is about. A directional finding says so in the summary.
+Write the finding as claims (`writing-claims`): a `measurement` evidence link to the stored results (`<command> @<sha> -> <path under documents/>`), a `replay` link for each narrated episode (`platform.replays {episode_ids}` pins them together) and the Experiment (`X-n`) when the batch came from one. Tag the Goal, the policy versions and the group the finding is about. A directional finding says so in the summary.
 
 ## Footguns
 

@@ -10,12 +10,12 @@ Before anyone changes the policy because of a bad score, see the cause in a repl
 ## Find episodes
 
 - An Experiment's episodes: `experiment.read {experiment, section: results}` lists the runs with their request ids and seeds; `platform.episodes {policy_version}` lists the newest page of an uploaded Version's episodes (default 20, `limit` up to 100). Continue with `platform.episodes {policy_version, cursor: <next_cursor>}` until the evidence needed is found; do not scan the entire history for the latest episode.
-- League play: `platform.episodes {league}`, `platform.episode {episode}` (scores, participants, status).
+- League play: `platform.episodes {league}`. When you have several episode IDs, read scores, participants and status together with `platform.episode_summaries {episode_ids}` (up to 50).
 - Only completed episodes. A local run is for debugging, never for a decision.
 
 ## Fetch and decode
 
-1. `platform.replay {episode}` downloads the replay into `documents/replays/` once and pins its path, digest and size. A second call returns the pin, or fetches the file again from the episode id if it is gone.
+1. `platform.replay {episode}` downloads the replay into `documents/replays/` once and pins its path, digest and size. For multiple replays, use one `platform.replays {episode_ids}` call for up to 20 IDs. It downloads missing files concurrently and returns each path or error. Both actions reuse existing pins and restore missing files.
 2. Decode it with the game's tool. How to open, expand and read this game's replays and the policy's own logs is game-specific: see `code/mixin/skills/<coworld>-replay-inspection/SKILL.md` or the mixin docs. Policy logs per episode: `softmax_api {method: GET, path: /v2/episode-requests/<ereq>/<pv>/policy-logs/<agent_idx>}`.
 3. Pass the gate before any strategy change. All of these must hold:
    - the episode is completed and its game version is known (`platform.coworld` for the current one);

@@ -15,7 +15,7 @@ A deep profile of chosen opponents: what each policy does, as mechanisms with a 
 ## Evidence
 
 - Episodes where the opponent played: `platform.episodes {policy_version}` for its policy version, or `platform.episodes {league}` filtered by `policy_version_ids`; our Experiments' runs name their `opponents`.
-- `platform.replay {episode}` fetches and pins each replay; decode with the game's tool: see `code/mixin/skills/<coworld>-replay-inspection/SKILL.md` or the mixin docs. Pass the gate in `replay-diagnosis` (completed episode, a decoder that parses, actions mapped to policy versions, a named behaviour).
+- `platform.replays {episode_ids}` fetches and pins up to 20 replays together; decode with the game's tool: see `code/mixin/skills/<coworld>-replay-inspection/SKILL.md` or the mixin docs. Pass the gate in `replay-diagnosis` (completed episode, a decoder that parses, actions mapped to policy versions, a named behaviour).
 - What the author wrote: `platform.forum_search {query}` and `platform.wiki_search {wiki, query}`. A stated strategy is a hypothesis until replays show it.
 - Another Player's policy file is not readable; `platform.policy_file` covers your Player, and for the Orchestrator the user's own.
 
