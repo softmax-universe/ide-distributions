@@ -893,6 +893,11 @@ class Coordinator:
             report["deferred"] = result.get("reason")
 
     def _resume_drained(self, ctx: TickContext, report: dict[str, Any]) -> None:
+        ready_xp = {
+            event.subject
+            for event in events.unhandled(ctx.store, {"task.wait_resolved"})
+            if event.payload.get("kind") == "xp"
+        }
         for session in drained_sessions(ctx):
             task = self._held_task(ctx, session)
             if task is None:
@@ -901,7 +906,7 @@ class Coordinator:
                     {"session": session["id"], "reason": "no Task to continue"}
                 )
                 continue
-            if task["waiting_on"] and task["waiting_on"]["kind"] == "xp":
+            if task["id"] in ready_xp or (task["waiting_on"] or {}).get("kind") == "xp":
                 sessions.mark_drained(ctx.wstore, ctx.actor, [session["id"]], False)
                 continue
             if report["slots"] <= 0:
