@@ -7,6 +7,7 @@ never stop preparation. Scheduling is owned by research serve.
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -20,9 +21,12 @@ args = parser.parse_args()
 
 source = args.source.resolve()
 sys.path.insert(0, str(source.parent / "core" / "src"))
+from research_core.brain.soul import apply as apply_brain  # noqa: E402
 from research_core.prepare import HermesConfig, load_profile_env, prepare  # noqa: E402
 
 load_profile_env(Path(__file__), source)
+if not args.check:
+    apply_brain(Path(os.environ["HERMES_HOME"]), source.name)  # no-op unless IDE_BRAIN=1
 prepare(
     source=source,
     cli=HermesConfig(args.hermes),

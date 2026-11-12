@@ -17,6 +17,7 @@ list them, and a claim cannot yet use them. Stdlib only.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import re
 import sqlite3
@@ -25,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from research_core import refs
+from research_core import brain, refs
 from research_core.store._common import display_id, parse_json
 
 if TYPE_CHECKING:
@@ -396,10 +397,40 @@ EVIDENCE_TYPES: dict[str, EvidenceType] = {
 }
 
 
+WEB_FORMAT = "<http(s) url> (fetched <YYYY-MM-DD>)"
+_WEB = re.compile(r"^https?://\S+ \(fetched (?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2})\)$")
+
+
+def _validate_web(ref: str) -> list[str]:
+    match = _WEB.match(ref) if isinstance(ref, str) else None
+    if match is None:
+        return _format_problem(ref, WEB_FORMAT)
+    try:
+        datetime.date.fromisoformat(match.group("date"))
+    except ValueError:
+        return [f"{ref!r} has an impossible fetched date; use {WEB_FORMAT}"]
+    return []
+
+
+def _inspect_web(ref: str, env: InspectEnv) -> dict[str, Any]:
+    url, _, rest = ref.partition(" (fetched ")
+    return _result("web", ref, url, url=url, fetched_at=rest.rstrip(")"))
+
+
+WEB_TYPE = EvidenceType(
+    name="web", ref_format=WEB_FORMAT, validate=_validate_web, inspect=_inspect_web
+)
+
+
+def _types() -> dict[str, EvidenceType]:
+    """The registry; ``web`` (an unverified research note's source) exists only with IDE_BRAIN=1."""
+    return {**EVIDENCE_TYPES, "web": WEB_TYPE} if brain.enabled() else EVIDENCE_TYPES
+
+
 def check_ref(store: Store, type_name: object, ref: object) -> list[str]:
     """Every problem with one evidence link: an unknown type, a malformed reference, or a
     referenced record that does not exist. Empty when the link is good."""
-    kind = EVIDENCE_TYPES.get(type_name) if isinstance(type_name, str) else None
+    kind = _types().get(type_name) if isinstance(type_name, str) else None
     if kind is None:
         return [_unknown_type(type_name)]
     problems = kind.validate(ref)  # type: ignore[arg-type]
@@ -421,7 +452,7 @@ def inspect_evidence(type_name: str, ref: str, env: InspectEnv) -> dict[str, Any
     The answer always has ``type``, ``ref`` and ``summary``; an unknown type, a malformed
     reference, a type without an inspector or an inspector failure is a ``problem``.
     """
-    kind = EVIDENCE_TYPES.get(type_name)
+    kind = _types().get(type_name)
     if kind is None:
         return _result(type_name, ref, ref, problem=_unknown_type(type_name))
     problems = kind.validate(ref)
@@ -436,5 +467,5 @@ def inspect_evidence(type_name: str, ref: str, env: InspectEnv) -> dict[str, Any
 
 
 def _unknown_type(type_name: object) -> str:
-    known = ", ".join(sorted(EVIDENCE_TYPES))
+    known = ", ".join(sorted(_types()))
     return f"evidence type {type_name!r} is not registered (known: {known})"

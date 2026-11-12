@@ -25,12 +25,13 @@ import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from research_core import refs
+from research_core import brain, refs
 from research_core.store import evidence_types, registry
 from research_core.store._common import (
     display_id,
     fetch_row,
     json_field,
+    parse_iso,
     parse_json,
     require,
     word_count,
@@ -251,6 +252,8 @@ def read(store: Store, claim_id: int | str) -> dict[str, Any]:
     record["evidence"] = evidence
     record.update(_computed(evidence))
     record["cited_by"] = _cited_by(store, number)
+    if brain.enabled():  # IDE_BRAIN=1 only: a rule unused for 90 days is flagged stale
+        record["stale"] = brain.is_stale(record, parse_iso(store.now()))
     return record
 
 

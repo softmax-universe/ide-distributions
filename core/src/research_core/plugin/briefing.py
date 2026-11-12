@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from research_core import brain
 from research_core.plugin.executor import profile_env
 from research_core.store._common import parse_display_id, parse_iso
 from research_core.tools.catalog import Role
@@ -52,6 +53,7 @@ MAX_CHARS: dict[str, int] = {"orchestrator": 3600, "researcher": 3800}
 RECENT_VERSIONS = 3
 # Caps on what is loaded before the budget cuts; the "+N more" note counts what exists.
 PREFERENCE_CLAIMS_LOADED = 100
+RULE_CLAIMS_LOADED = 20  # per tag (rule, gotcha), IDE_BRAIN=1 only
 GOAL_CLAIMS_LOADED = 300
 TRUNCATED = "[+ truncated]"
 TITLE_CHARS = 70
@@ -140,6 +142,7 @@ def render(
         _item("Your Task", _session_task, inputs),
         _item("Goals", _goals, inputs),
         _item("User preferences", _preference_claims, inputs),
+        *([_item("Rules and gotchas", _rule_gotcha_claims, inputs)] if brain.enabled() else []),
         _item("Goal claims", _goal_claims, inputs),
     ]
     return ctx.scrub(_fit(sections, inputs.now, max_chars))
@@ -489,6 +492,32 @@ def _preference_claims(inputs: Inputs) -> Section:
         entries=entries,
         more="search with claim.search",
         total=_count_tagged(inputs.store, ["preference"]),
+    )
+
+
+def _rule_gotcha_claims(inputs: Inputs) -> Section:
+    """Claims tagged ``rule`` and ``gotcha`` (IDE_BRAIN=1), beside the preference claims; a rule
+    unused for 90 days is marked stale."""
+    from research_core.store import claims
+
+    if inputs.store is None:
+        return Section()
+    entries: list[str] = []
+    for tag in ("rule", "gotcha"):
+        for found in claims.search(
+            inputs.store, "", tags=[tag], include_retired=False, limit=RULE_CLAIMS_LOADED
+        ):
+            note = ""
+            if tag == "rule" and brain.is_stale(claims.read(inputs.store, found["id"]), inputs.now):
+                note = " [stale: unused 90 days]"
+            entries.append(f"{found['id']} ({tag}): {_clip(found['summary'], SUMMARY_CHARS)}{note}")
+    if not entries:
+        return Section()
+    return Section(
+        lines=["Rules and gotchas I learned (claims; confirm with evidence when they hold):"],
+        entries=entries,
+        more="search with claim.search",
+        total=_count_tagged(inputs.store, ["rule", "gotcha"]),
     )
 
 
