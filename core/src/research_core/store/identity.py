@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from research_core import refs
 from research_core.store._common import json_field, parse_json
 from research_core.store.errors import StoreError
 
@@ -22,6 +23,9 @@ if TYPE_CHECKING:
 NAME = "identity.name"
 CONFIRMED = "identity.name_confirmed"
 MET = "identity.met_user"
+OFFERED = "identity.offer_made"
+# Placeholders a cogent might cite instead of a message; none is a reference to one.
+_PLACEHOLDERS = frozenset({"setup", "wake", "none", "n/a", "na", "x", "user", "yes", "ok"})
 MAX_NAME = 40
 
 
@@ -45,11 +49,23 @@ def _put(tx: Any, actor: Actor, key: str, value: Any, cites: str) -> None:
     tx.event("settings.updated", key, {"key": key, "value": value, "cites": cites})
 
 
+def user_cites(cites: Any, what: str) -> str:
+    """The user's message that ``what`` rests on. Refuses a blank, a placeholder ("setup") or
+    cites that only name records (``C-5``), the same rule settings.update's tool applies."""
+    text = cites.strip() if isinstance(cites, str) else ""
+    if not text or text.lower() in _PLACEHOLDERS or refs.names_only_records(text):
+        raise StoreError(
+            [f"cites must be the user's own message that {what}, not a record or a placeholder"]
+        )
+    return text
+
+
 def read(store: Store) -> dict[str, Any]:
     return {
         "name": _get(store, NAME),
         "name_confirmed": bool(_get(store, CONFIRMED)),
         "met_user": bool(_get(store, MET)),
+        "offer_made": bool(_get(store, OFFERED)),
     }
 
 
@@ -68,7 +84,10 @@ def choose(store: Store, actor: Actor, name: Any) -> dict[str, Any]:
         current = tx.one("SELECT value FROM settings WHERE key = ?", (NAME,))
         if current is not None and parse_json(current["value"]):
             raise StoreError(
-                [f"the cogent is already named {parse_json(current['value'])!r}; keep it"]
+                [
+                    f"the cogent is already named {parse_json(current['value'])!r}; "
+                    "if the user asked to rename it, call again with name and cites (their message)"
+                ]
             )
         _put(tx, actor, NAME, text, "setup")
     return read(store)
@@ -77,8 +96,7 @@ def choose(store: Store, actor: Actor, name: Any) -> dict[str, Any]:
 def confirm(store: Store, actor: Actor, *, cites: str, name: Any = None) -> dict[str, Any]:
     """The user's one allowed rewrite: confirm the name, or give a new one. Then it is locked."""
     _need_workspace(store)
-    if not isinstance(cites, str) or not cites.strip():
-        raise StoreError(["cites is required: the user's message that confirmed or renamed"])
+    cites = user_cites(cites, "confirmed or renamed it")
     new = None if name is None else _clean(name)
     with store.tx(actor) as tx:
         current = tx.one("SELECT value FROM settings WHERE key = ?", (NAME,))
@@ -98,9 +116,17 @@ def confirm(store: Store, actor: Actor, *, cites: str, name: Any = None) -> dict
 def mark_met(store: Store, actor: Actor, *, cites: str) -> dict[str, Any]:
     """Record that the first get-to-know-you chat happened (idempotent)."""
     _need_workspace(store)
-    if not isinstance(cites, str) or not cites.strip():
-        raise StoreError(["cites is required: the user's message from that chat"])
+    cites = user_cites(cites, "you met them in")
     if not _get(store, MET):
         with store.tx(actor) as tx:
             _put(tx, actor, MET, True, cites)
+    return read(store)
+
+
+def mark_offered(store: Store, actor: Actor) -> dict[str, Any]:
+    """Record that the one rename offer was shown, so it is never made again (write-once)."""
+    _need_workspace(store)
+    if not _get(store, OFFERED):
+        with store.tx(actor) as tx:
+            _put(tx, actor, OFFERED, True, "offer")
     return read(store)

@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import research_core.tools.workspace  # noqa: F401  (registers the tool)
 from research_core import environment_guide, gitops
-from research_core.store import capabilities, coworlds
+from research_core.store import capabilities, coworlds, sessions
 from research_core.store.actors import Actor
 from research_core.tools.base import ToolContext, run_tool
 from tests.fixtures.fakegame_repo import make_fakegame_repo
@@ -237,7 +239,12 @@ def test_coworld_switch_offers_the_source_a_listed_coworld_does_not_need():
 
 def test_identity_action_names_once_then_the_user_rewrites_once(call):
     named = call("workspace", {"action": "identity", "name": "Pip"})
-    assert named["identity"] == {"name": "Pip", "name_confirmed": False, "met_user": False}
+    assert named["identity"] == {
+        "name": "Pip",
+        "name_confirmed": False,
+        "met_user": False,
+        "offer_made": False,
+    }
     again = call("workspace", {"action": "identity", "name": "Rex"})
     assert again["ok"] is False and "already named" in str(again)
     assert call("workspace", {"action": "identity"})["identity"]["name"] == "Pip"
@@ -256,3 +263,71 @@ def test_the_settings_tool_cannot_write_the_name(call):
         "settings", {"action": "update", "key": "identity.name", "value": "Rex", "cites": "m:1"}
     )
     assert refused["ok"] is False
+
+
+@pytest.fixture
+def register_session(ctx_factory):
+    def register(session_id, kind):
+        return sessions.register(
+            ctx_factory().wstore,
+            Actor.harness(),
+            coworld_id="cow_fake",
+            session_id=session_id,
+            profile="orchestrator",
+            kind=kind,
+        )
+
+    return register
+
+
+def test_identity_cites_must_be_the_users_message_and_never_come_from_a_wake(
+    call, register_session
+):
+    call("workspace", {"action": "identity", "name": "Pip"})
+    for bad in ("setup", "C-5"):
+        for args in ({"name": "Rex"}, {"confirm": True}, {"met_user": True}):
+            refused = call("workspace", {"action": "identity", "cites": bad, **args})
+            assert refused["ok"] is False and "user's own message" in str(refused)
+    no_cites = call("workspace", {"action": "identity", "confirm": True})
+    assert no_cites["ok"] is False and "cites" in str(no_cites)
+    register_session("w1", "wake")
+    for args in ({"name": "Rex"}, {"confirm": True}, {"met_user": True}):
+        woke = call("workspace", {"action": "identity", "cites": "msg:1", **args}, session_id="w1")
+        assert woke["ok"] is False and "no user is present in a wake" in str(woke)
+    state = call("workspace", {"action": "identity"})["identity"]
+    assert state["name"] == "Pip" and not state["name_confirmed"] and not state["met_user"]
+    register_session("c1", "chat")
+    real = call(
+        "workspace", {"action": "identity", "name": "Rex", "cites": "msg:1"}, session_id="c1"
+    )
+    assert real["identity"]["name"] == "Rex" and real["identity"]["name_confirmed"]
+
+
+def test_a_wake_may_still_choose_the_first_name_without_cites(call, register_session):
+    register_session("w1", "wake")
+    named = call("workspace", {"action": "identity", "name": "Pip"}, session_id="w1")
+    assert named["identity"]["name"] == "Pip"
+
+
+def test_a_nameless_existing_workspace_is_named_by_a_user_cited_call_then_locked(
+    call, register_session
+):
+    register_session("c1", "chat")
+    assert call("workspace", {"action": "identity"})["identity"]["name"] is None
+    named = call(
+        "workspace", {"action": "identity", "name": "Pip", "cites": "msg:1"}, session_id="c1"
+    )
+    assert named["identity"]["name"] == "Pip" and named["identity"]["name_confirmed"]
+    again = call(
+        "workspace", {"action": "identity", "name": "Rex", "cites": "msg:2"}, session_id="c1"
+    )
+    assert again["ok"] is False and "cannot change" in str(again)
+
+
+def test_the_rename_offer_is_recorded_once_whether_or_not_it_is_answered(call, register_session):
+    register_session("c1", "chat")
+    call("workspace", {"action": "identity", "name": "Pip"})
+    offered = call("workspace", {"action": "identity", "offer_made": True}, session_id="c1")
+    assert offered["identity"]["offer_made"] is True and offered["identity"]["name"] == "Pip"
+    refused = call("workspace", {"action": "identity", "name": "Rex"})
+    assert refused["ok"] is False and "name and cites" in str(refused)

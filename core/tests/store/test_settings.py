@@ -29,6 +29,7 @@ DEFAULTS = {
     "identity.name": None,
     "identity.name_confirmed": False,
     "identity.met_user": False,
+    "identity.offer_made": False,
 }
 WORKSPACE_KEYS = {
     "paused",
@@ -41,6 +42,7 @@ WORKSPACE_KEYS = {
     "identity.name",
     "identity.name_confirmed",
     "identity.met_user",
+    "identity.offer_made",
 }
 
 
@@ -204,6 +206,7 @@ def test_update_accepts_the_workspace_keys(workspace_store, harness):
         "identity.name": None,
         "identity.name_confirmed": False,
         "identity.met_user": False,
+        "identity.offer_made": False,
     }
 
 

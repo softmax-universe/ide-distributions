@@ -68,22 +68,31 @@ def handle(call: ToolCall) -> dict:
 
 def identity_action(call: ToolCall) -> dict[str, Any]:
     """Read the cogent's identity, or write it under the write-once rules of store.identity."""
-    from research_core.store import identity
+    from research_core.store import identity, sessions
 
     ctx = call.ctx
     name, cites = call.get("name"), call.get("cites")
-    met, confirm = call.get("met_user"), call.get("confirm")
+    met, confirm, offered = call.get("met_user"), call.get("confirm"), call.get("offer_made")
     wrote = False
     try:
-        if name is not None and not cites:
+        if cites or confirm or met:
+            # The user's word: only a chat has a user in it, never a wake.
+            session_id = ctx.hermes_session_id()
+            session = sessions.read(ctx.wstore, session_id) if session_id else None
+            if session is not None and session["kind"] == "wake":
+                raise StoreError(["no user is present in a wake; do this in a chat with them"])
+        if name is not None and not cites and not confirm:
             wrote = True
             identity.choose(ctx.wstore, ctx.actor, name)
-        elif cites and (name is not None or confirm):
+        elif name is not None or confirm:
             wrote = True
             identity.confirm(ctx.wstore, ctx.actor, cites=cites, name=name)
         if met:
             wrote = True
-            identity.mark_met(ctx.wstore, ctx.actor, cites=cites or "")
+            identity.mark_met(ctx.wstore, ctx.actor, cites=cites)
+        if offered:
+            wrote = True
+            identity.mark_offered(ctx.wstore, ctx.actor)
     except StoreError as error:
         raise ToolError(str(error)) from None
     return {"identity": identity.read(ctx.wstore), "wrote": wrote}
@@ -445,12 +454,14 @@ SPEC = durable_tool(
                 "identity",
                 "Read the cogent's own name and whether it has met the user. name alone "
                 "(setup only) is refused once a name exists; name or confirm with cites (the "
-                "user's message) is the user's one rewrite, then locked; met_user with cites "
-                "records the first get-to-know-you chat.",
+                "user's own chat message, never a record id or a wake) is the user's one rewrite, "
+                "then locked, and also names a cogent that has none; met_user with cites records "
+                "the first get-to-know-you chat; offer_made records the one rename offer.",
                 {
                     "name": a.string("Your own short name, one line."),
                     "confirm": a.boolean("The user kept the name you have (needs cites)."),
                     "met_user": a.boolean("Record that you have met the user (needs cites)."),
+                    "offer_made": a.boolean("Record that you made the one rename offer."),
                     "cites": a.string("The user's message reference."),
                 },
                 (),

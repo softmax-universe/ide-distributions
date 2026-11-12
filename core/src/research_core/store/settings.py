@@ -242,11 +242,24 @@ SETTINGS: dict[str, SettingSpec] = {
             "the identity module",
             "True once the cogent has had its first get-to-know-you chat with the user.",
         ),
+        _s(
+            "identity.offer_made",
+            "bool",
+            False,
+            "workspace",
+            "the identity module",
+            "True once the one rename offer was shown to the user, so it is not made again.",
+        ),
     )
 }
 
 # Written only by store/identity.py, which enforces write-once.
-IDENTITY_KEYS = ("identity.name", "identity.name_confirmed", "identity.met_user")
+IDENTITY_KEYS = (
+    "identity.name",
+    "identity.name_confirmed",
+    "identity.met_user",
+    "identity.offer_made",
+)
 
 
 def spec(key: str) -> SettingSpec:

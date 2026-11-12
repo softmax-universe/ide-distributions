@@ -24,6 +24,7 @@ def test_settings_update_cannot_write_identity_keys(workspace_store, harness):
         "name": None,
         "name_confirmed": False,
         "met_user": False,
+        "offer_made": False,
     }
 
 
@@ -60,6 +61,9 @@ def test_confirming_without_a_new_name_keeps_it_and_locks(workspace_store, harne
 def test_confirming_needs_the_users_message_and_a_name(workspace_store, harness):
     with pytest.raises(StoreError, match="cites"):
         identity.confirm(workspace_store, harness, cites="")
+    for bad in ("setup", "C-5", "Claim C-5", "x", "T-1, C-2"):
+        with pytest.raises(StoreError, match="user's own message"):
+            identity.confirm(workspace_store, harness, cites=bad, name="Rex")
     with pytest.raises(StoreError, match="no name yet"):
         identity.confirm(workspace_store, harness, cites="msg:1")
 
@@ -95,3 +99,40 @@ def test_met_user_is_idempotent_and_needs_a_citation(workspace_store, harness):
         identity.mark_met(workspace_store, harness, cites=" ")
     identity.mark_met(workspace_store, harness, cites="msg:1")
     assert identity.mark_met(workspace_store, harness, cites="msg:2")["met_user"] is True
+
+
+def test_record_ids_and_placeholders_cannot_stand_for_the_users_message(workspace_store, harness):
+    for bad in ("setup", "C-5", "G-3, T-4", "wake", "n/a"):
+        with pytest.raises(StoreError, match="user's own message"):
+            identity.mark_met(workspace_store, harness, cites=bad)
+        with pytest.raises(StoreError, match="user's own message"):
+            identity.confirm(workspace_store, harness, cites=bad, name="Rex")
+    assert identity.read(workspace_store) == {
+        "name": None,
+        "name_confirmed": False,
+        "met_user": False,
+        "offer_made": False,
+    }
+    assert identity.mark_met(workspace_store, harness, cites="msg:7 hi, I'm Sam")["met_user"]
+
+
+def test_an_existing_nameless_workspace_gets_a_name_from_a_user_cited_call(
+    workspace_store, harness
+):
+    assert identity.read(workspace_store)["name"] is None
+    state = identity.confirm(workspace_store, harness, cites="msg:1", name="Pip")
+    assert state["name"] == "Pip" and state["name_confirmed"] is True
+    with pytest.raises(StoreError, match="cannot change"):
+        identity.confirm(workspace_store, harness, cites="msg:2", name="Rex")
+    with pytest.raises(StoreError, match="already named"):
+        identity.choose(workspace_store, harness, "Rex")
+
+
+def test_the_rename_offer_is_recorded_once_and_the_refusal_points_to_the_rename_path(
+    workspace_store, harness
+):
+    assert identity.mark_offered(workspace_store, harness)["offer_made"] is True
+    assert identity.mark_offered(workspace_store, harness)["offer_made"] is True
+    identity.choose(workspace_store, harness, "Pip")
+    with pytest.raises(StoreError, match="name and cites"):
+        identity.choose(workspace_store, harness, "Rex")

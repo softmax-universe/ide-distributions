@@ -256,11 +256,12 @@ def _identity_lines(inputs: Inputs) -> list[str]:
     name = settings.get(inputs.wstore, "identity.name")
     lines = []
     if name:
-        note = (
-            ""
-            if settings.get(inputs.wstore, "identity.name_confirmed")
-            else (" (chosen at setup, not yet confirmed by the user)")
-        )
+        if settings.get(inputs.wstore, "identity.name_confirmed"):
+            note = ""
+        elif settings.get(inputs.wstore, "identity.offer_made"):
+            note = " (chosen at setup; rename offer made)"
+        else:
+            note = " (chosen at setup, not yet confirmed by the user)"
         lines.append(f"Name: {_clip(name, SUMMARY_CHARS)}{note}")
     if inputs.role == "orchestrator" and not settings.get(inputs.wstore, "identity.met_user"):
         lines.append("Met the user: no")
