@@ -10,26 +10,27 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from research_core import brain
-from research_core.brain import _fs
 from research_core.prompts import build
+
+
+def _write(path: Path, text: str) -> None:
+    """Atomic: a temp file beside it, then ``os.replace``."""
+    tmp = path.with_name(f".{path.name}.tmp{os.getpid()}")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def apply(profile_home: Path, role: str, env: Mapping[str, str] | None = None) -> list[str]:
     env = os.environ if env is None else env
-    home = Path(profile_home)
-    soul = home / "SOUL.md"
+    soul = Path(profile_home) / "SOUL.md"
     current = soul.read_text(encoding="utf-8") if soul.is_file() else None
     if not brain.enabled(env):
         if current is not None and current == build.render(role, brain=True):
-            _fs.write(home, soul, build.render(role))
+            _write(soul, build.render(role))
             return ["brain: flag off, plain SOUL.md restored"]
         return []
-    actions: list[str] = []
-    try:
-        wanted = build.render(role, brain=True)
-        if current != wanted:
-            _fs.write(home, soul, wanted)
-            actions.append("brain: SOUL.md carries the learning section")
-    except _fs.UnsafePath as error:
-        actions.append(f"brain: refused, {error}")
-    return actions
+    wanted = build.render(role, brain=True)
+    if current == wanted:
+        return []
+    _write(soul, wanted)
+    return ["brain: SOUL.md carries the learning section"]

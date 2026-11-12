@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from research_core import brain
-from research_core.brain import _fs, soul
+from research_core.brain import soul
 from research_core.plugin import briefing
 from research_core.prompts import build
 from research_core.store import claims, evidence_types, notices
@@ -226,7 +226,7 @@ def test_learning_section_fits_the_allowance_and_names_the_path():
 # --- SOUL hook ------------------------------------------------------------------------------
 
 
-def test_soul_hook_writes_restores_and_refuses_symlinks(tmp_path):
+def test_soul_hook_writes_and_restores(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     env = {**ON, "IDE_WORKSPACE": str(tmp_path / "w")}
@@ -239,20 +239,82 @@ def test_soul_hook_writes_restores_and_refuses_symlinks(tmp_path):
     assert (home / "SOUL.md").read_text() == build.render("orchestrator")
     (home / "SOUL.md").write_text("custom")
     assert soul.apply(home, "orchestrator", off) == []
-    (home / "SOUL.md").unlink()
-    (home / "SOUL.md").symlink_to(tmp_path / "target")
-    assert any("refused" in a for a in soul.apply(home, "orchestrator", env))
-    assert not (tmp_path / "target").exists()
 
 
-def test_atomic_write_and_path_checks(tmp_path):
-    target = tmp_path / "a" / "f.txt"
-    _fs.write(tmp_path, target, "one")
-    _fs.write(tmp_path, target, "two", mode=0o444)
-    assert target.read_text() == "two" and [p.name for p in target.parent.iterdir()] == ["f.txt"]
-    with pytest.raises(_fs.UnsafePath):
-        _fs.write(tmp_path, tmp_path.parent / "x.txt", "x")
-    (tmp_path / "link").symlink_to(tmp_path / "dangling")
-    with pytest.raises(_fs.UnsafePath):
-        _fs.write(tmp_path, tmp_path / "link", "x")
-    assert not (tmp_path / "dangling").exists()
+# --- the profile prepare scripts' guard -----------------------------------------------------
+
+
+def _run_prepare_script(role, monkeypatch, home, flag):
+    import runpy
+    import sys
+
+    from research_core import prepare as prepare_module
+    from research_core.brain import soul as soul_module
+
+    calls = {"prepare": 0, "apply": 0}
+    real_apply = soul_module.apply
+
+    def counting_apply(*args, **kwargs):
+        calls["apply"] += 1
+        return real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(soul_module, "apply", counting_apply)
+    monkeypatch.setattr(prepare_module, "HermesConfig", lambda hermes: object())
+    monkeypatch.setattr(prepare_module, "load_profile_env", lambda *a: None)
+    monkeypatch.setattr(prepare_module, "prepare", lambda **kw: calls.__setitem__("prepare", 1))
+    for name, value in (("HERMES_HOME", home), ("IDE_BRAIN", flag)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, str(value))
+    script = ROOT / role / "scripts" / "prepare.py"
+    monkeypatch.setattr(
+        sys, "argv", [str(script), "--source", str(ROOT / role), "--hermes", "hermes"]
+    )
+    runpy.run_path(str(script), run_name="__main__")
+    return calls
+
+
+@pytest.mark.parametrize("role", build.ROLES)
+def test_prepare_script_guard(role, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    plain = build.render(role)
+    (home / "SOUL.md").write_text(plain)
+    # flag off, plain SOUL: the brain code is not even called
+    calls = _run_prepare_script(role, monkeypatch, home, None)
+    assert calls == {"prepare": 1, "apply": 0} and (home / "SOUL.md").read_text() == plain
+    # HERMES_HOME unset: no KeyError, prepare still runs, nothing applied
+    calls = _run_prepare_script(role, monkeypatch, None, "1")
+    assert calls == {"prepare": 1, "apply": 0}
+    # flag on: the learning section is written
+    calls = _run_prepare_script(role, monkeypatch, home, "1")
+    assert calls["apply"] == 1
+    assert (home / "SOUL.md").read_text() == build.render(role, brain=True)
+    # flag turned off later: the marker in the installed SOUL triggers the restore
+    calls = _run_prepare_script(role, monkeypatch, home, None)
+    assert calls["apply"] == 1 and (home / "SOUL.md").read_text() == plain
+
+
+# --- briefing cap ---------------------------------------------------------------------------
+
+
+def test_briefing_caps_rules_and_gotchas_and_keeps_preferences(tmp_path, monkeypatch):
+    from tests.plugin.test_briefing import NOW
+
+    monkeypatch.setenv("IDE_BRAIN", "1")
+    ctx = _briefing_ctx(tmp_path)
+    for n in range(1, 4):
+        _claim(ctx.store, ["preference"], n)
+    for n in range(4, 29):
+        _claim(ctx.store, ["rule"], n)
+    for n in range(29, 54):
+        _claim(ctx.store, ["gotcha"], n)
+    text = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
+    assert len(text) <= 3600
+    for n in range(1, 4):  # the preference claims are not squeezed out
+        assert f"C-{n}: Finding {n}" in text
+    section = text[text.index("Rules and gotchas") :]
+    shown = section.count("(rule)") + section.count("(gotcha)")
+    assert 0 < shown <= 2 * briefing.RULE_CLAIMS_LOADED
+    assert "more, search with claim.search" in section

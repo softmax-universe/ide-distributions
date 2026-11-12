@@ -21,12 +21,20 @@ args = parser.parse_args()
 
 source = args.source.resolve()
 sys.path.insert(0, str(source.parent / "core" / "src"))
-from research_core.brain.soul import apply as apply_brain  # noqa: E402
 from research_core.prepare import HermesConfig, load_profile_env, prepare  # noqa: E402
 
 load_profile_env(Path(__file__), source)
-if not args.check:
-    apply_brain(Path(os.environ["HERMES_HOME"]), source.name)  # no-op unless IDE_BRAIN=1
+# IDE_BRAIN=1 adds the learning section to the installed SOUL.md; with the flag off, a SOUL that
+# still carries it is restored. Otherwise this step imports and does nothing.
+BRAIN_MARKERS = ("## How I learn (the brain)", "## What the Orchestrator has learned")
+_home = os.environ.get("HERMES_HOME")
+if not args.check and _home:
+    _soul = Path(_home) / "SOUL.md"
+    _text = _soul.read_text(encoding="utf-8") if _soul.is_file() else ""
+    if os.environ.get("IDE_BRAIN") == "1" or any(mark in _text for mark in BRAIN_MARKERS):
+        from research_core.brain.soul import apply as apply_brain  # noqa: E402
+
+        apply_brain(Path(_home), source.name)
 prepare(
     source=source,
     cli=HermesConfig(args.hermes),
