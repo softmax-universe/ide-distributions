@@ -1545,6 +1545,9 @@ class Backend:
         body = {
             "op_id": request_id,
             "client": client,
+            # False when the frontend named no client: DEFAULT_CLIENT is only a fill-in then, and
+            # the seam must not take it for the human IDE.
+            "client_declared": params.client is not None,
             "actor": "user:aide",
             "session_context": {"contract_version": 1, **params.scope.model_dump()},
         }

@@ -34,7 +34,13 @@ SLEEP_STOP = "workspace:sleep"
 # Clients that put a human in front of the IDE chat, as (client id, client kind). Only a Session
 # one of these opened may write the cogent's identity: the Cogent runtime's Coworld play sessions
 # and unregistered sessions registered by a hook carry other people's lines as user rows.
-HUMAN_CHAT_CLIENTS = (("aide", "ide"), ("softmax", "web"), ("ui", "web-ide"))
+# ("ide-next", "web") is the softmax.com web IDE (softmax repo, request-workspace.tsx opens it so).
+HUMAN_CHAT_CLIENTS = (
+    ("aide", "ide"),
+    ("softmax", "web"),
+    ("ui", "web-ide"),
+    ("ide-next", "web"),
+)
 # What a hook records for a Session it registers without a /session-open: no human client.
 UNKNOWN_CLIENT = {"id": "unknown", "kind": "unknown"}
 

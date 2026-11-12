@@ -1208,6 +1208,24 @@ def test_session_open_stamps_the_named_client_and_send_refuses_typed_inference(s
     run(system, scenario, inference=Closed())
 
 
+def test_an_aide_open_with_no_client_is_recorded_unknown_and_cannot_write_identity(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        anonymous = await opened(backend)  # the frontend names no client
+        named = await call(
+            backend,
+            "session.open",
+            {"scope": WORKSPACE, "client": {"id": "aide", "kind": "ide"}},
+        )
+        named_id = named["result"]["session"]["id"]
+        assert system[2]._clients[anonymous] == {"id": "aide", "kind": "ide"}
+        row = sessions.read(ctx.wstore, anonymous)
+        assert row["client"] == sessions.UNKNOWN_CLIENT
+        assert not sessions.opened_by_human_chat(row)
+        assert sessions.opened_by_human_chat(sessions.read(ctx.wstore, named_id))
+
+    run(system, scenario)
+
+
 def test_scope_mismatches_are_forbidden_and_unscoped_sessions_are_hidden(system):
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)
