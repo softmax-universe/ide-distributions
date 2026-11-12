@@ -1,6 +1,6 @@
 # Background updates that reach the user (2026-11-12)
 
-> **Implemented on branch `jb/wake-chat-updates` (2026-11-12), not yet merged.** This is the
+> **Implemented (2026-11-12, branch `jb/wake-chat-updates`).** This is the
 > `ui.tell` design (Part 1 of the first draft). Part 2 made notices an AIDE resource. James
 > cancelled it, so this copy leaves it out (see "Not in scope and known limits"). Two changes came
 > in during implementation: the `category` field and its `chat_updates.categories` setting (see
