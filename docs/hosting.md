@@ -178,8 +178,8 @@ refused in a chat Session and in any other Session that is not a wake. It record
 written as a notice at once and never reaches the chat as a message. A category that the
 workspace setting `chat_updates.categories` does not list becomes a notice at once too, and the
 tool's result says when an update went to notices; `progress` is not a value of that setting.
-The default lists
-`decision`, `outcome`, `submission` and `failure`, so `merge` is a notice. On each pass the
+The default lists `decision`, `outcome`, `submission` and `failure`, so `merge` is a notice. On
+each pass the
 coordinator (`Coordinator.deliver_chat_updates`) takes a Coworld's pending rows once the newest
 is two minutes old or the oldest is ten minutes old. It enqueues one `origin="followup"`
 admission, keyed `chat-updates:<first id>-<last id>`, into the Coworld's most recently used
