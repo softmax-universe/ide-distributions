@@ -901,6 +901,9 @@ class Coordinator:
                     {"session": session["id"], "reason": "no Task to continue"}
                 )
                 continue
+            if task["waiting_on"] and task["waiting_on"]["kind"] == "xp":
+                sessions.mark_drained(ctx.wstore, ctx.actor, [session["id"]], False)
+                continue
             if report["slots"] <= 0:
                 return
             n = int(task["id"].removeprefix("T-"))
@@ -1730,7 +1733,7 @@ class Coordinator:
             due = ctx.meta(workflow_key)
             if due is None or ctx.now - parse_iso(due) >= timedelta(seconds=60):
                 report["champion_sync"] = champion_sync.run(ctx)
-                report["waits"] = waits.run(ctx)
+                report["waits"] = waits.run(ctx, xp_change_feed=True)
                 report["merge"] = merge.run(ctx)
                 report["goals"] = goals.run(ctx)
                 report["checks"] = checks.run(ctx)

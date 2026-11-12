@@ -163,6 +163,11 @@ While awake it waits for changes on that feed. When every request in the batch r
 terminal state, AIDE admits one follow-up turn in the original chat. The AIDE event log
 and history carry its reply across client reconnects.
 
+A Researcher's `xp.request` records accepted work in the held Task's XP wait.
+The same change feed resolves it when the requests finish. The coordinator resumes the
+Researcher through the normal Task continuation path. The Researcher evaluates the results
+and reports through the Task. The Orchestrator decides what to tell the user.
+
 `research workspace sleep` preserves lifecycle v1: pause admission, drain recorded workers and
 tracked processes, settle chat/wake runs, then checkpoint and flush the retained volume.
 Exit 0 authorizes the host to stop compute. Explicit Stop and fifteen-minute automatic sleep

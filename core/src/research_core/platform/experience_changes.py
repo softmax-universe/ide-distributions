@@ -83,7 +83,7 @@ async def connect(env: Mapping[str, str], ws: Workspace) -> AsyncIterator[ReadCh
         yield read
 
 
-async def wait_for_terminal(read: ReadChanges, ids: tuple[str, ...]) -> None:
+async def wait_for_terminal(read: ReadChanges, ids: tuple[str, ...]) -> bool:
     """Follow one selection from a fresh snapshot, including after workspace wake."""
     expected = set(ids)
     cursor = None
@@ -93,7 +93,7 @@ async def wait_for_terminal(read: ReadChanges, ids: tuple[str, ...]) -> None:
         if isinstance(result, ChangePage):
             if {batch.id for batch in result.batches} == expected:
                 if all(batch.status in TERMINAL_STATES for batch in result.batches):
-                    return
+                    return True
                 cursor = result.next_cursor
                 backoff = 1
                 continue
@@ -107,6 +107,8 @@ async def wait_for_terminal(read: ReadChanges, ids: tuple[str, ...]) -> None:
         delay = backoff
         if isinstance(result, httpx.HTTPStatusError):
             status = result.response.status_code
+            if status == 404 and b'"scope_changed"' in result.response.content:
+                return False
             if status in {409, 410} and cursor is not None:
                 cursor = None
                 continue

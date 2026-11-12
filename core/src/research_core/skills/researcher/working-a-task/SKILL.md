@@ -47,14 +47,11 @@ claim to write, how to fix a broken build. A question you can answer with a tool
 
 ## 5. Wait, then END YOUR RUN
 
-Anything outside your control is a wait: `task_wait {task, kind, detail, ref}` with kind `xp`
-(no `ref`: your Task's open requests), `credits` (after a 402), `process` (`ref`: the pid of
-a background build or evaluate), `permit` (`ref`: the route to read), `submission` (`ref`: the
-policy version id), `platform` (set for you when a route keeps failing), `user` (`ref`: the setting
-or T-n their answer changes) or `dependency` (`ref`: the T-n). Then stop: end the run with no further tool call. That
-is not quitting: the watcher continues the Task when the wait resolves, usually in a new Session.
-Never poll in a loop and never sleep. On resume, call the tool you were waiting for
-(`xp.status {experiment}` for XP) and `directive.list`, since directives may have changed while you waited.
+`xp.request` records your wait. After other async work, use `task_wait {task, kind, detail, ref}`:
+`credits` after a 402, `process` with the PID, `permit` with the route, `submission` with the
+policy version, `user` with the setting or Task, or `dependency` with its Task. Platform failures
+record their own wait. End your run. On resume, read `directive.list`, evaluate XP with
+`xp.status {experiment}` and report through the Task. Never poll or sleep.
 
 ## 6. Complete
 
