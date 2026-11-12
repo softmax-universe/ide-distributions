@@ -775,6 +775,56 @@ def test_repeated_text_counts_each_character_once(writer, stream_file, datadog, 
     assert chars == {"user_text": 5}
 
 
+def _first_request_record(datadog) -> dict:
+    return next(
+        entry
+        for entry in datadog.entries
+        if entry.get("stage") == "request" and entry.get("model_attempt_id") == "att_1"
+    )
+
+
+def test_a_manifest_that_does_not_add_up_is_missing(writer, stream_file, datadog):
+    """A manifest whose messages do not add up to its ``message_count`` blocks its request, and
+    the report names it, so the command does not exit 0."""
+    two_requests(writer)
+    sent(writer, stream_file, datadog)
+    ref = next(
+        r for r in _first_request_record(datadog)["content_refs"] if r["name"] == "request_manifest"
+    )
+    [chunk] = [entry for entry in datadog.entries if entry.get("content_digest") == ref["digest"]]
+    manifest = json.loads(chunk["body"])
+    manifest["message_count"] += 1
+    tampered = rec.json_object(manifest, chunk["content_kind"])
+    replaced = {"content_digest": tampered.digest, "size_bytes": tampered.size_bytes}
+    datadog.take([{**chunk, **replaced, "body": tampered.body}])
+    ref["digest"] = tampered.digest
+
+    report = rebuild_session(search_of(datadog), "ses_1")
+    first = report["requests"][0]
+    assert first["request"] is None and first["blocked_by"] == [tampered.digest]
+    count = manifest["message_count"]
+    assert report["missing"] == [
+        {
+            "kind": "manifest_mismatch",
+            "digest": tampered.digest,
+            "message_count": count,
+            "messages_listed": count - 1,
+        }
+    ]
+
+
+def test_a_request_record_with_no_manifest_is_missing(writer, stream_file, datadog):
+    two_requests(writer)
+    sent(writer, stream_file, datadog)
+    request = _first_request_record(datadog)
+    refs = request["content_refs"]
+    request["content_refs"] = [r for r in refs if r["name"] != "request_manifest"]
+
+    report = rebuild_session(search_of(datadog), "ses_1")
+    assert report["requests"][0]["request"] is None
+    assert report["missing"] == [{"kind": "no_request_manifest", "model_attempt_id": "att_1"}]
+
+
 def test_a_lost_reply_is_named_and_its_record_stays(writer, stream_file, datadog):
     two_requests(writer)
     records = sent(writer, stream_file, datadog)

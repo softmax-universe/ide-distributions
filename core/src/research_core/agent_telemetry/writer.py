@@ -178,8 +178,8 @@ class InlineWriter(Writer):
             self._write(kind, time.time() if occurred_at is None else occurred_at, payload)
 
 
-# A queue item: a capture's pickled payload, a job to run on the thread, or a point to reach.
-_Item = tuple[str, float, bytes] | Callable[[], None] | threading.Event
+# A queue item: a capture's pickled payload, or a job to run on the thread.
+_Item = tuple[str, float, bytes] | Callable[[], None]
 
 
 class TelemetryWriter(Writer):
@@ -241,7 +241,7 @@ class TelemetryWriter(Writer):
         """
         reached = threading.Event()
         with self._ready:
-            self._queue.append(reached)
+            self._queue.append(reached.set)
             self._ready.notify()
         return reached.wait(timeout_s)
 
@@ -258,9 +258,7 @@ class TelemetryWriter(Writer):
             if dropped != reported:
                 reported = dropped
                 logger.warning("telemetry: %d records dropped so far", dropped)
-            if isinstance(item, threading.Event):
-                item.set()
-            elif isinstance(item, tuple):
+            if isinstance(item, tuple):
                 kind, occurred_at, blob = item
                 self._write(kind, occurred_at, pickle.loads(blob))
             elif item is not None:

@@ -249,9 +249,10 @@ records nothing.
   within the trace, or within the run on such a record.
 - **Records from before `otel_trace_id`:** a record written from 2026-11-10 until records carried `otel_trace_id` has a
   trace the rebuild cannot read, so it is found only by its other links, and its tool call IDs are scoped to nothing: a
-  call ID reused in another trace of the Session could attach its result to the wrong request. The last of these ages
-  out 15 days after `otel_trace_id` deploys. By then every record from before traces is gone too, and the rebuild's
-  `run_id` fallback can be deleted.
+  call ID reused in another trace of the Session could attach its result to the wrong request. `otel_trace_id` deployed
+  on 2026-11-12 (Pacific), so the last of these ages out on 2026-11-27 (Pacific). By then every record from before
+  traces is gone too, and the rebuild's `run_id` fallback (its `run_id` search and its scoping of call IDs by run) can
+  be deleted. Store events still carry `run_id` as a field after that; only the rebuild stops following it.
 - **A record to its step:** `span_id` names the model attempt (`chat`), tool call (`execute_tool`) or turn
   (`invoke_agent`) span it belongs to. It is for Datadog's link from a log to its span, and the rebuild does not read it.
   A record written before its turn's span starts, at the turn's first model request, has no trace or span IDs: an

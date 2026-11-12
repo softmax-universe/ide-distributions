@@ -92,7 +92,7 @@ def _quoted(value: str) -> str:
 
 
 def _any_of(field: str, values: Iterable[str]) -> str:
-    return f"@{field}:(" + " OR ".join(_quoted(value) for value in sorted(values)) + ")"
+    return f"@{field}:(" + " OR ".join(_quoted(value) for value in values) + ")"
 
 
 def _batches(values: Iterable[str]) -> Iterator[list[str]]:
@@ -125,12 +125,11 @@ class _Finder:
         self.records: dict[str, dict[str, Any]] = {}
         self.chunks: dict[str, dict[int, dict]] = defaultdict(dict)
         self.objects: dict[str, bytes | None] = {EMPTY_DIGEST: b""}
-        self.searched: set[str] = set()
         self.parsed: dict[str, Any] = {}
         self.missing: dict[str, list[dict[str, Any]]] = {}
 
     def _find(self, condition: str) -> None:
-        scope = _any_of("workspace_id", self.workspaces) if self.workspaces else ""
+        scope = _any_of("workspace_id", sorted(self.workspaces)) if self.workspaces else ""
         for entry in self.search.entries(f"service:ide-agent-telemetry {scope} {condition}"):
             self.workspaces.add(entry["workspace_id"])
             if entry["family"] == "content":
@@ -155,11 +154,12 @@ class _Finder:
                     self.session_ids |= linked
         # A retried request names only its admission, and a store event or a workspace tool's
         # record only the trace of the message it served. A record written before records named
-        # their trace (retained for 15 days) names its run instead.
+        # their trace (retained for 15 days) names its run instead. A record with a Session ID
+        # was found above if it is this Session's, and ``owned`` drops it otherwise.
         for field in ("admission_id", "otel_trace_id", "run_id"):
             values = {r[field] for r in self.records.values() if self.owned(r) and field in r}
             for batch in _batches(values):
-                self._find(_any_of(field, batch))
+                self._find(f"{_any_of(field, batch)} -@session_id:*")
 
     def owned(self, record: dict[str, Any]) -> bool:
         """A record with another Session's ID came here by a link, and is not this Session's."""
@@ -172,12 +172,10 @@ class _Finder:
         seen: set[str] = set()
         while frontier:
             seen |= frontier
-            wanted = {d for d in frontier if d not in self.searched and self.read(d) is None}
-            self.searched |= wanted
+            wanted = frontier - self.objects.keys()
             for batch in _batches(wanted):
                 self._find(_any_of("content_digest", batch))
             for digest in wanted:
-                del self.objects[digest]
                 self.read(digest)
             frontier = {name for digest in frontier for name in self._names(digest)} - seen
 
@@ -248,6 +246,14 @@ def _rebuild_request(finder: _Finder, manifest_digest: str) -> dict[str, Any]:
     if blocked:
         return {"request": None, "blocked_by": sorted(blocked)}
     if len(digests) != manifest["message_count"]:
+        finder.missing[manifest_digest] = [
+            {
+                "kind": "manifest_mismatch",
+                "digest": manifest_digest,
+                "message_count": manifest["message_count"],
+                "messages_listed": len(digests),
+            }
+        ]
         return {"request": None, "blocked_by": [manifest_digest]}
     messages = [finder.json(listed) for listed in digests]
     for marker in manifest.get("cache_markers", ()):
@@ -316,11 +322,12 @@ def _source_chars(finder: _Finder, manifest: dict, request: dict, places: dict) 
 
 def _token_rows(chars: dict[str, int], usage: dict[str, Any] | None) -> list[dict[str, Any]]:
     prompt_tokens = (usage or {}).get("input_tokens")
+    total = sum(chars.values())
     rows = []
     for source, count in sorted(chars.items(), key=lambda item: -item[1]):
         rows.append({"source": source, "chars": count})
         if prompt_tokens is not None:
-            rows[-1]["estimated_tokens"] = round(prompt_tokens * count / sum(chars.values()))
+            rows[-1]["estimated_tokens"] = round(prompt_tokens * count / total)
     return rows
 
 
@@ -379,10 +386,14 @@ def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> li
             replies[record["model_attempt_id"]][record["stage"]] = record
     requests = []
     attempts = [r for r in operations if r["action"] == "model_attempt" and r["stage"] == "request"]
-    for position, attempt in enumerate(_order(attempts), start=1):
+    for position, attempt in enumerate(attempts, start=1):
         entry = {"position": position, **attempt, "tools": []}
         manifest_digest = _ref(attempt, "request_manifest")
         entry["manifest_digest"] = manifest_digest
+        if manifest_digest is None:
+            attempt_id = attempt["model_attempt_id"]
+            problem = {"kind": "no_request_manifest", "model_attempt_id": attempt_id}
+            finder.missing[attempt_id] = [problem]
         entry.update(_rebuild_request(finder, manifest_digest or EMPTY_DIGEST))
         stages = replies[attempt["model_attempt_id"]]
         reply = stages.get("response", {})
