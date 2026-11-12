@@ -11,7 +11,7 @@ a Session from Datadog alone. Capture is always on, and there is no setting.
 
 | Source | What |
 |---|---|
-| Gateway plugin | Each physical model request and reply, with reasoning, usage and cost. System prompt sections and context parts. Tool calls as proposed, what ran, and each result as the model got it. Every committed row's ID and its text, except a tool row's, which is on its result. Approvals, compaction, subagents, lifecycle, and each log line but the access line of a successful seam poll (a 200 for `GET /p/<profile>/v1/runs/<id>` from its urllib client), which comes once a second per live run. A failed poll and the AIDE backend's run read are sent. All text goes through Hermes's secret scanner first. |
+| Gateway plugin | Each physical model request and reply, with reasoning and usage. System prompt sections and context parts. Tool calls as proposed, what ran, and each result as the model got it. Every committed row's ID and its text. Approvals, compaction, subagents, lifecycle, and each log line but the access line of a successful seam poll (a 200 for `GET /p/<profile>/v1/runs/<id>` from its urllib client), which comes once a second per live run. A failed poll and the AIDE backend's run read are sent. All text goes through Hermes's secret scanner first. |
 | `research serve` | Each POST to a route in `RECORDED_ROUTES`, whatever its outcome: `/session-open`, `/message`, `/message-cancel`, `/ui-action`, `/store/apply`, `/models`. Also committed store events, coordinator passes, attachment outcomes, wakes and successors. Metadata only, with Softmax tokens masked. |
 | Other `research` commands | Their committed store events and tool completions. Metadata only, with Softmax tokens masked. |
 
@@ -29,7 +29,9 @@ Text is sent once per process, by digest. A request is a manifest that lists dig
 In the gateway and `research serve` a caller only copies what it was given and puts it on a bounded queue, which drops and
 counts what does not fit. A background thread redacts, hashes and writes, so a stuck stream holds up no callback and no
 commit through this path. That thread also does the reads whose result it records: the `state.db` rows a turn committed,
-read after the turn's end, and `SOUL.md`, read when the request that sends it is written. A short command, such as a
+read after the turn's end or a compaction, and `SOUL.md`, read when the request that sends it is written. A store event's
+row (an admission, a durable command or a Session) is the exception: `observed.py` reads it on the committing thread, just
+after the COMMIT, with one `SELECT` by key. A short command, such as a
 workspace tool's process, writes each record to the stream before the capture returns, as any process logs to stdout, and
 exits with nothing left to write. The container runtime drains the stream into the pod's log file whether or not the
 Datadog Agent reads it, so such a write waits only while the runtime itself stops draining; a tool call then waits too. No
@@ -58,7 +60,7 @@ each lost nothing with no wait, one run each. A line is searchable 12 to 27 seco
 | Loss | Why it is accepted |
 |---|---|
 | Nothing confirms delivery. A line that never arrives is not noticed, and a stream that cannot be opened stays closed for the life of that process | There is no sender to tell. Rebuild reports what a surviving record refers to |
-| Any exit of the gateway or `research serve`, graceful or not, loses what the memory queue still holds: across 20 turns of a real gateway with tool results of 40,000 characters, 629 captures found at most 4 records queued (median 1), at most 945 KB. A short command has no queue. A process killed during a call leaves `model_request` / `started` and what it had committed, because request content is written when the attempt ends. So a user's message survives through its commit, and rebuild names the call `call_with_no_attempt` (`test_a_kill_during_a_call_leaves_only_the_started_record`, `test_a_kill_during_the_first_call_keeps_the_users_message`) | The queue empties as records arrive, and nothing on the agent's path may wait for it |
+| Any exit of the gateway or `research serve`, graceful or not, loses what the memory queue still holds: across 20 turns of a real gateway with tool results of 40,000 characters, 629 captures found at most 4 records queued (median 1), at most 945 KB. A short command has no queue. A process killed during a call keeps the call's request, because it is written before the call, and rebuild names the attempt `attempt_with_no_end` (`test_a_kill_during_a_call_keeps_its_request`, `test_a_kill_during_the_first_call_keeps_the_users_message`) | The queue empties as records arrive, and nothing on the agent's path may wait for it |
 | The Agent falling behind by more than the retained log files would lose lines. Untested | 240 MB over about 15 rotations lost nothing with the Agent keeping up |
 | A full queue drops records, which a stream that has stopped soon causes. The writer's thread logs the count each time it changes. A capture over the 64 MiB byte limit goes in only when nothing is queued, so a request that large captured just after another record, such as its own context parts, is dropped, and rebuild shows `call_with_no_attempt` | A caller must never wait |
 | Any process in the workspace can write a line that looks like ours | James: restriction work matters very little here |
@@ -81,7 +83,8 @@ python3 ~/coding/metta/scripts/token_broker_client.py exec --scope datadog.conte
 Add `--workspace <id>` if the command says several workspaces hold that ID. `--session` takes any ID of
 the Session, first or after compaction. The command needs only `DD_API_KEY` and `DD_APP_KEY`: no
 state.db, volume or workspace API. It exits 0 when nothing was missing, 1 when something was, and 2 when
-it could not start, which includes Datadog refusing the search or not answering.
+it could not start, which includes Datadog refusing the search, not answering, or answering that a search did not
+finish (`meta.status` other than `done`, such as `timeout`), because such an answer can hold part of the results.
 
 It prints one JSON object. Each entry is the record as written, with the text of what it refers to under
 each reference's name:
@@ -115,7 +118,9 @@ characters only.
 | `chunk_gap` | Entries exist, but no sending of the object supplied these chunks: `missing_chunks` names them |
 | `digest_failure` | The joined chunks do not match the digest or size |
 | `row_without_text` | A committed row that no request lists and whose own text is unknown: its commit text or a tool row's result was lost, or two results with no row ID share its call ID |
-| `call_with_no_attempt` | A call started and no attempt was written: the process probably died during it |
+| `call_with_no_attempt` | A call started and no attempt was written: its request record was dropped or lost |
+| `attempt_with_no_end` | An attempt's request was written and nothing says how it ended: the process probably died during the call |
+| `reply_with_no_request` | A reply, failure or partial reply names an attempt whose request record is lost |
 
 A missing object blocks each request that needs it, and that request shows `blocked_by`. Nothing is guessed.
 
@@ -153,7 +158,7 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 | The provider-billed `cost` is not captured: `post_api_request` passes a token summary without the provider's raw usage. | `agent/api_request_hooks.py`, `_usage_summary_for_api_request_hook` |
 | Auxiliary requests and replies are Hermes's capped hook payloads (`HERMES_PLUGIN_PAYLOAD_MAX_CHARS`, 50,000 characters, 8,000 per string). | `agent/auxiliary_hooks.py` |
 | Prompt sections name SOUL and this plugin's own sections, found by their text. Hermes's guidance, the project's rules and the skill index are unattributed. | `plugin/capture.py`, `_sections` |
-| Committed rows are read from `state.db` on the writer's thread after each turn's end. Rows of a turn that a killed gateway never ended are not recorded (they stay in `state.db`), and a new process records only rows written after it started. Any gateway exit, graceful or not, also loses what the writer still had queued. | `plugin/capture.py`, `_capture_commits` |
+| Committed rows are read from `state.db` on the writer's thread after each turn's end, and a compaction's old ID's rows at the compaction. Rows of a turn that a killed gateway never ended are not recorded (they stay in `state.db`), and a new process records only rows written after it started. Any gateway exit, graceful or not, also loses what the writer still had queued. | `plugin/capture.py`, `_capture_commits` |
 | `extra_headers` and `extra_query` are not captured, because they are not part of the request body. | `plugin/capture.py`, `wire_request` |
 | After a restart the first Session ID is lost too. Rebuild follows `parent_session_id` on `compaction` records. | `test_compaction_is_followed_in_both_directions_after_a_restart` |
 | Hermes gives a row ID only to rows committed since its last prune or restart, so a `full` manifest after one names few rows. Text is not lost: rebuild joins by row ID first, and a listing with none through its tool call ID, unless the row's own result has other text. | `test_each_committed_row_equals_state_db` |
@@ -162,12 +167,11 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 | An auxiliary call outside a turn has session ID `no-session`, and a log line with no Session tag has none, so a Session's report does not show them. | `plugin/capture.py` |
 | Hermes sends a tool call's arguments as compact JSON and its row keeps the model's text. A request shows the first, and `tool` / `proposed` keeps the second. | `_comparable` in `test_rebuild_real.py` |
 | Across a restart, requests are ordered by each process's earliest time, because `sequence` compares only inside one process. This assumes one gateway process at a time and a clock that did not go back. | `agent_telemetry/rebuild.py`, `_order` |
-| A Datadog search that answers `status: timeout` returns partial results and is not flagged. What it left out shows as `no_content`, or not at all. | `agent_telemetry/rebuild.py` handles only a 429 |
 
 ## Proof and cost
 
 `core/tests/hermes/test_rebuild_real.py` runs a real gateway through a real `research serve`, with tool calls, a prune, a restart and a tool-guard halt, feeds every line to a fake Logs search, and compares the rebuild with what a stub model received and each row of `state.db`. No real agent content has yet been rebuilt from real Datadog.
 
-Measured 2026-11-06 on the pinned Hermes with the former telemetry patches, before this chain's last review fixes, in a Linux container rather than gVisor, with stubs answering at once and three runs of 200 turns per cell at a 196 to 199 KB request. Capture adds about 4 to 5 ms to a tool cycle at the median, flat out 45.1 to 49.0 ms against 40.2 to 42.0 and paced 44.9 to 46.9 against 41.3 to 44.0, and the 99th percentiles overlap (64 to 185 with capture, 99 to 206 without). `on_model_attempt` takes 0.27 to 0.30 ms at the median and at most 0.50 at the 99th, and the other callbacks at most 0.07 and 0.21. On 2026-11-05 a gateway held 386 MiB with capture and 387 without after 100 turns, and an 8 MB request cleared the writer in 1.1 s, inside the 2-second exit flush. On 2026-11-06 a 66 MiB request through the writer alone, with a stand-in for Hermes's scanner, took a process from 88 MiB to a peak of 419 MiB and took 3.9 s to clear, which an exit flush would not wait for.
+These figures were measured on the former patched-Hermes capture and predate today's hook-based capture. On 2026-11-06, on the pinned Hermes with those patches, in a Linux container rather than gVisor, with stubs answering at once and three runs of 200 turns per cell at a 196 to 199 KB request, capture added about 4 to 5 ms to a tool cycle at the median, flat out 45.1 to 49.0 ms against 40.2 to 42.0 and paced 44.9 to 46.9 against 41.3 to 44.0, and the 99th percentiles overlapped (64 to 185 with capture, 99 to 206 without). On 2026-11-05 a gateway held 386 MiB with capture and 387 without after 100 turns, and an 8 MB request cleared the writer in 1.1 s. On 2026-11-06 a 66 MiB request through the writer alone, with a stand-in for Hermes's scanner, took a process from 88 MiB to a peak of 419 MiB and took 3.9 s to clear; an exit before then loses it.
 
 A 100-turn Session, about 200 model calls, writes 5,358 lines and 5.2 MB with 5,000-character tool results, and 6,496 lines and 8.9 MB with 20,000. A user row's commit text adds almost nothing, because the same message from a request is already stored under its digest. At 1,105 model calls a day (the highest day in the plan's Appendix I), that is an estimated $2.30 and $2.82 a month, at a third-party $0.10 per GB and $2.50 per million events for 30-day retention while content is kept for 15, so check them against the contract. Each line also leaves a blank line on the stream. By reading the Agent's source (`pkg/logs/internal/decoder/line_parser.go`) a blank line is forwarded, and whether Datadog then keeps it as an empty event under `service:hermes-runtime` is not measured. If it does, the event count doubles and the estimates become $4.51 and $5.51, and those empty events show among that service's logs.

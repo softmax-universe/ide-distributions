@@ -11,7 +11,7 @@ import json
 import time
 import urllib.error
 import urllib.request
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
@@ -35,6 +35,11 @@ _SINGLE_REFERENCES = (
 
 class AmbiguousSession(Exception):
     """More than one workspace has records under this Session ID."""
+
+
+class IncompleteSearch(Exception):
+    """Datadog answered a search with a status other than ``done``, such as ``timeout``, so what
+    it returned may be partial."""
 
 
 class LogsSearch:
@@ -67,6 +72,8 @@ class LogsSearch:
             filters = {"query": query, **window}
             answer = self._post({"filter": filters, "page": page, "sort": "timestamp"})
             meta = answer.get("meta") or {}
+            if meta.get("status") != "done":
+                raise IncompleteSearch(f"the search answered status {meta.get('status')!r}")
             for row in answer.get("data") or ():
                 yield row["attributes"]["attributes"]
             page["cursor"] = (meta.get("page") or {}).get("after")
@@ -310,8 +317,8 @@ def _order(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """Oldest process first, then by time inside a process, where there is one clock.
 
     A restart makes a new ``source_instance`` and restarts ``sequence``. Within a process
-    ``sequence`` alone is not wire order: an attempt is written when it ends, and an auxiliary call
-    when it starts.
+    ``sequence`` alone is not wire order: it is the order the hooks ran in, and an auxiliary call,
+    such as a title, runs beside the turn's calls.
     """
     items = list(records)
     starts: dict[str, str] = {}
@@ -373,11 +380,21 @@ def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> li
         for stage in ("failed", "unread"):
             if stage in stages:
                 entry[stage] = _with_text(finder, stages[stage])
+        if not stages.keys() & {"response", "failed", "unread"}:
+            # Its request is written before the call, so the process probably died during it.
+            finder.missing[attempt["model_attempt_id"]] = [
+                {"kind": "attempt_with_no_end", "model_attempt_id": attempt["model_attempt_id"]}
+            ]
         if entry["request"] is not None:
             manifest = finder.json(manifest_digest)
             chars = _source_chars(finder, manifest, entry["request"], places)
             entry["tokens_by_source"] = _token_rows(chars, reply.get("usage"))
         requests.append(entry)
+    # A reply, failure or partial reply whose request record was lost.
+    for attempt_id in sorted(replies.keys() | partials.keys()):
+        if "request" not in replies[attempt_id]:
+            problem = {"kind": "reply_with_no_request", "model_attempt_id": attempt_id}
+            finder.missing[attempt_id] = [problem]
     return requests
 
 
@@ -440,20 +457,23 @@ def _rows(finder: _Finder, operations: list[dict], requests: list[dict]) -> list
 
     A row joins by its row ID first. Hermes gives a row ID only to rows committed since its last
     prune or restart, so a listing with none joins through its tool call ID: to the row that last
-    held that ID, or by the ID alone, unless the row's own result says otherwise, because a call ID
-    can come back on a new row. A row no request lists never reached a model, such as a turn's last
-    reply or the text Hermes's tool guard ends a turn with: see ``_unlisted_message``.
+    held that ID when no other committed row has it, or by the ID alone, unless the row's own result
+    says otherwise, because a call ID can come back on a new row. A row no request lists never
+    reached a model, such as a turn's last reply or the text Hermes's tool guard ends a turn with:
+    see ``_unlisted_message``.
     """
     first: dict[tuple[str, str], tuple[str, dict]] = {}
     last: dict[tuple[str, str], tuple[str, dict]] = {}
     row_of_call: dict[str, str] = {}
+    # A call ID two committed rows share does not say which of them a listing is.
+    rows_of_call = Counter(r.get("tool_call_id") for r in operations if r["action"] == "message")
     for request in requests:
         body = request["request"] or {"messages": ()}
         for position, message in enumerate(body["messages"]):
             listed = (request["message_digests"][position], message)
             row = request["hermes_message_ids"].get(str(position))
             call = message.get("tool_call_id")
-            if call and row:
+            if call and row and rows_of_call[call] < 2:
                 row_of_call[call] = row
             row = row or row_of_call.get(call)
             key = ("row", row) if row else ("call", call)

@@ -32,6 +32,7 @@ from research_core.plugin.capture import (
 from research_core.plugin.tracing import make_instrumentation
 from tests.telemetry.conftest import (
     HERMES_STYLE_SECRET,
+    insert_rows,
     objects_of,
     rebuild_request,
     scrub,
@@ -254,6 +255,35 @@ def test_a_tool_result_is_what_the_next_request_sent_once(capture, writer, strea
     assert objects_of(records)[_digest(result, "result")] == b"spilled: see file"
 
 
+def test_a_call_id_a_later_turn_reuses_has_its_result_captured(capture, writer, stream_file):
+    """Kimi reuses call IDs across turns, so a result is new once per turn, not once per Session."""
+    for turn, text in (("turn-1", "first"), ("turn-2", "second")):
+        wire = {
+            **REQUEST,
+            "messages": [
+                *REQUEST["messages"],
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+                {"role": "tool", "tool_call_id": "c1", "content": text},
+            ],
+        }
+        _request(capture, request=wire, turn_id=turn)
+        capture.on_session_end(session_id="ses_1", turn_id=turn, completed=True)
+    records = _flushed(writer, stream_file)
+    results = _operations(records, "tool", "result")
+    assert [objects_of(records)[_digest(r, "result")] for r in results] == [b"first", b"second"]
+    assert capture._results_seen == {}
+
+
+def test_a_reply_with_no_request_recorded_joins_no_earlier_attempt(capture, writer, stream_file):
+    """The middleware kept no request for the second call, so its reply has no attempt to join."""
+    _request(capture)
+    _reply(capture)
+    capture.pre_api_request(session_id="ses_1", api_request_id="turn-1:api:2")
+    _reply(capture, api_request_id="turn-1:api:2")
+    responses = _operations(_flushed(writer, stream_file), "model_attempt", "response")
+    assert [r["model_attempt_id"] for r in responses] == [f"{CALL}#1"]
+
+
 @pytest.mark.parametrize(
     ("status", "result", "stage"),
     [
@@ -368,6 +398,32 @@ def test_records_after_compaction_keep_the_first_session(capture, writer, stream
     records = _flushed(writer, stream_file)
     tool = _operations(records, "tool", "completed")[0]
     assert tool["session_id"] == "ses_1" and tool["hermes_session_id"] == "ses_3"
+
+
+def test_rows_committed_before_a_compaction_partway_through_a_turn_are_read(
+    capture, home, writer, stream_file
+):
+    """Hermes can compact after a tool call and go on under a new ID. The turn's rows from before
+    that are under the old ID, and its end reads only the new one."""
+
+    def commit(session: str, content: str) -> None:
+        row = {"session_id": session, "role": "tool", "content": content, "timestamp": time.time()}
+        insert_rows(home, [row])
+
+    commit("ses_1", "before")
+    capture.post_compaction(session_id="ses_2", old_session_id="ses_1", kind="auto")
+    commit("ses_2", "after")
+    capture.on_session_end(session_id="ses_2", turn_id="turn-1", completed=True)
+    records = _flushed(writer, stream_file)
+    rows = _operations(records, "message", "committed")
+    assert [json.loads(objects_of(records)[_digest(r, "message")])["content"] for r in rows] == [
+        "before",
+        "after",
+    ]
+    assert [(r["session_id"], r["hermes_session_id"]) for r in rows] == [
+        ("ses_1", "ses_1"),
+        ("ses_1", "ses_2"),
+    ]
 
 
 def _traced(writer) -> tuple[dict, GatewayCapture]:

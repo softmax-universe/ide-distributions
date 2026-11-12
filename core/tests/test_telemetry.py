@@ -148,3 +148,8 @@ def test_both_tool_boundaries_name_the_same_call_and_only_a_short_error_class(
     assert all("\n" not in line for line in lines)
     statuses = [json.loads(line)["status"] for line in lines]
     assert statuses == ["warning", "warning", "info", "warning", "warning"]
+
+
+def test_a_failed_tools_text_that_only_looks_like_json_stays_a_tool_error():
+    """Raising here would leave the tool's span open and its failure uncounted."""
+    assert tracing.native_error_type("error", "tool_error", "{not valid json}") == "tool_error"

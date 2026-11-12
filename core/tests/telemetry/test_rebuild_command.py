@@ -28,6 +28,7 @@ TOOL = {"type": "function", "function": {"name": "read_file", "parameters": {}}}
 TRACE = "4bf92f3577b34da6a3ce929d0e0e4736"
 LONG_RESULT = 'café 日本語 😀 "quoted"\n' * 2000
 USAGE = {"input_tokens": 1000, "output_tokens": 7}
+REPLY = {"role": "assistant", "content": "ok"}
 
 
 def request_body(history: list[dict]) -> dict:
@@ -297,6 +298,7 @@ def test_a_restart_sends_a_full_manifest_and_everything_it_lists(
             model_attempt_id=f"att_{number}",
             native_event_type="stream",
         )
+        writer.capture_response(REPLY, session_id="ses_1", model_attempt_id=f"att_{number}")
         assert writer.flush(5.0)
     records = stored_records(stream_file)
     chunks: dict[str, set] = {"gateway-1": set(), "gateway-2": set()}
@@ -444,6 +446,17 @@ def test_a_datadog_failure_is_could_not_start_and_says_so_in_one_line(datadog, t
         assert done.returncode == 2, done.stderr
         assert "Traceback" not in done.stderr
         assert len(done.stderr.strip().splitlines()) == 1, done.stderr
+
+
+def test_a_search_datadog_did_not_finish_is_could_not_start(writer, stream_file, datadog, tmp_path):
+    """A ``timeout`` answer can hold part of the results, so nothing is rebuilt from it."""
+    two_requests(writer)
+    sent(writer, stream_file, datadog)
+    datadog.status = "timeout"
+    keys = {"DD_API_KEY": "a", "DD_APP_KEY": "b", "HOME": str(tmp_path)}
+    done = _command(datadog, "--session", "ses_1", **keys)
+    assert done.returncode == 2 and done.stdout == ""
+    assert "status 'timeout'" in done.stderr and "Traceback" not in done.stderr
 
 
 def committed(writer, row, kind="tool", trace="trace_1", **fields):
@@ -649,6 +662,7 @@ def test_a_new_row_with_a_reused_call_id_keeps_its_own_result(writer, stream_fil
         model_attempt_id="att_1",
         otel_trace_id="trace_1",
     )
+    writer.capture_response(REPLY, session_id="ses_1", model_attempt_id="att_1")
     _result(writer, "10", "call_1", "OLD result")
     committed(writer, "10", tool_call_id="call_1")
     _result(writer, "77", "call_1", "NEW result")
@@ -871,6 +885,51 @@ def test_a_users_message_survives_a_kill_during_its_first_call(writer, stream_fi
     report = rebuild_session(search_of(datadog), "s")
     [attempt] = report["requests"]
     assert attempt["request"]["messages"][-1] == {"role": "user", "content": scrub(text)}
+    # Nothing says how the attempt ended, so the report does not look complete.
+    ended = {"kind": "attempt_with_no_end", "model_attempt_id": attempt["model_attempt_id"]}
+    assert report["missing"] == [ended]
+
+
+def test_a_reply_whose_request_was_lost_is_named(writer, stream_file, datadog):
+    """A reply, a failure and a broken stream's partial reply of attempts whose request records
+    never arrived are neither requests nor events, so the report names them."""
+    ids = {"session_id": "ses_1", "otel_trace_id": "trace_1"}
+    writer.capture_response({"role": "assistant", "content": "hi"}, model_attempt_id="a1", **ids)
+    writer.capture_operation("model_attempt", "failed", model_attempt_id="a2", **ids)
+    partial = {"role": "assistant", "content": "h"}
+    writer.capture_response(partial, model_attempt_id="a3", partial=True, **ids)
+    sent(writer, stream_file, datadog)
+
+    report = rebuild_session(search_of(datadog), "ses_1")
+    assert report["requests"] == []
+    assert report["missing"] == [
+        {"kind": "reply_with_no_request", "model_attempt_id": attempt}
+        for attempt in ("a1", "a2", "a3")
+    ]
+
+
+def test_a_reused_call_id_listed_with_no_row_id_rewrites_no_other_row(writer, stream_file, datadog):
+    """After a restart a new row with a reused call ID is listed with no row ID. Two committed rows
+    have that ID, so the listing is not taken for the old row's rewrite."""
+    old = {"role": "tool", "tool_call_id": "call_1", "content": "OLD result"}
+    new = {"role": "tool", "tool_call_id": "call_1", "content": "NEW result"}
+    user = {"role": "user", "content": "Go"}
+    for number, row in ((1, {**old, "_row_id": 10}), (2, new)):
+        writer.capture_request(
+            request_body([user, row]),
+            session_id="ses_1",
+            provider="moonshot",
+            model_attempt_id=f"att_{number}",
+            otel_trace_id=f"trace_{number}",
+        )
+    committed(writer, "10", tool_call_id="call_1")
+    committed(writer, "20", tool_call_id="call_1", trace="trace_2")
+    sent(writer, stream_file, datadog)
+
+    report = rebuild_session(search_of(datadog), "ses_1")
+    by_row = {row["hermes_message_id"]: row for row in report["rows"]}
+    assert by_row["10"]["message"] == old and "rewritten_to" not in by_row["10"]
+    assert by_row["20"]["message"] == new
 
 
 @pytest.mark.parametrize(
@@ -888,6 +947,7 @@ def test_a_user_row_joins_its_listing_by_row_id_or_keeps_its_commit(
     writer.capture_request(
         request_body([listing]), session_id="ses_1", provider="moonshot", model_attempt_id="att_1"
     )
+    writer.capture_response(REPLY, session_id="ses_1", model_attempt_id="att_1")
     insert_rows(
         home,
         [{"session_id": "ses_1", "role": "user", "content": "The row", "timestamp": time.time()}],
