@@ -508,11 +508,11 @@
 <div class="dc-page">
 <article id="doc">
 <header class="masthead">
-<span class="eyebrow">Implementation plan · November 4, 2026 · Proposed</span>
+<span class="eyebrow">Implementation plan · November 4, 2026 · Superseded</span>
 <h1>Logging all agent operations to Datadog</h1>
 <p class="context">As of ide 6ae5522, metta e6e4949.</p>
 </header>
-<div class="callout callout-warn"><span class="callout-label">The build differs from this plan</span>This plan is kept for its evidence, Hermes observation points, field names and Datadog limits. Where they disagree, <a href="datadog-agent-logging-build-scope.md">docs/designs/datadog-agent-logging-build-scope.md</a> wins: it cuts settings, health records, quotas, monitors and more, and retention is 15 days in the <code>main</code> index, not 6 months on Flex. For what was built, read <a href="../agent-telemetry.md">docs/agent-telemetry.md</a>.</div>
+<div class="callout callout-warn"><span class="callout-label">Superseded: kept as a record</span>This plan is kept for its evidence, Hermes observation points, field names and Datadog limits, and its body is not updated. <a href="datadog-agent-logging-build-scope.md">docs/designs/datadog-agent-logging-build-scope.md</a> superseded it before the build, and wins where they disagree: there is no outbox, exporter or Worker, lines go from the container's output to the Datadog Agent, settings, health records, quotas and monitors are cut, and retention is 15 days in the <code>main</code> index, not 6 months on Flex. That scope was built in #218, #231 and #220 (merged November 6, 2026), with patches to Hermes. Later changes, dates Pacific: #249 and #252 (November 9) removed every Hermes patch, so capture uses Hermes's own hooks and middleware (<code>plugin/capture.py</code>) and writes a request before its call; #236 (November 9) removed the bridge and its records; #253 and #258 (November 10) fixed capture bugs, removed every exit flush, made short commands write inline, and replaced <code>run_id</code> joins with OpenTelemetry trace joins, one user message to one trace; #265 (November 10) widened token masking. For what runs now, read <a href="../agent-telemetry.md">docs/agent-telemetry.md</a>.</div>
 <section id="summary">
 <h2>Executive Summary</h2>
 
