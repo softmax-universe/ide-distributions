@@ -296,6 +296,23 @@ def tool(spec: ToolSpec) -> ToolSpec:
 
 # Where the watcher's login check keeps the Player id (workspace store meta).
 PLAYER_ID_META = "player_id"
+# The platform's limit (metta ``observatory_protocol.stats.POLICY_NAME_MAX_LENGTH``).
+POLICY_NAME_MAX_LENGTH = 64
+
+
+def player_policy_name(base: str, player_id: str | None) -> str:
+    """``<base>-<player>``: ``base`` with the first 12 letters and digits of the Player id.
+
+    Policy names are global on the platform and belong to the User who first uploads one, so a
+    name every workspace builds the same way (``<coworld>-main``, a mixin's fixed name) is soon
+    owned by another account and later uploads under it fail with 409. The tag keeps the name to
+    this Player. This is a workaround until the platform stops requiring unique names; without a
+    Player id the base stands. The base is shortened so the whole name fits the platform limit.
+    """
+    tag = "".join(ch for ch in (player_id or "").removeprefix("ply_") if ch.isalnum())[:12]
+    if not tag:
+        return base[:POLICY_NAME_MAX_LENGTH]
+    return f"{base[: POLICY_NAME_MAX_LENGTH - len(tag) - 1]}-{tag}"
 
 
 @dataclass

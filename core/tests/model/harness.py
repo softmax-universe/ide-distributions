@@ -26,7 +26,7 @@ built-in tools, sorted by name as Hermes's registry does, through Hermes's own s
 ``IDE_HERMES_SRC`` names; without it the full-toolset tests fail rather than send schemas Hermes
 would rewrite.
 
-``hermes_builtin_tools.json`` is the Hermes tools of a real Session on the pinned image: the 15
+``hermes_builtin_tools.json`` is the Hermes tools of a real Session on the pinned image: the 14
 tools Hermes froze for it, the same for both roles, captured with ``IDE_TOOL_CALL_CONTEXT``
 (README, "Develop and test"). ``test_real_session.py`` fails when a real Session's list no longer
 matches. To regenerate after an image change, run ``-k test_a_real_session`` with that variable,

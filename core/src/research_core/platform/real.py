@@ -34,6 +34,7 @@ from contextlib import ExitStack
 from datetime import datetime
 from functools import partial
 from pathlib import Path
+from threading import Lock
 from typing import Any, cast
 from urllib.parse import quote, urlsplit
 from uuid import UUID
@@ -85,6 +86,7 @@ class RealPlatform:
         self._env: Mapping[str, str] = os.environ if env is None else env
         self._server = identities.server(self._env)
         self._stack = ExitStack()
+        self._client_lock = Lock()
         self._api_clients: dict[Identity, CoworldApiClient] = {}
         self._upload_clients: dict[Identity, CoworldUploadClient] = {}
         self._forum_clients: dict[Identity, ForumWikiClient] = {}
@@ -110,11 +112,12 @@ class RealPlatform:
     def _client[T](
         self, cache: dict[Identity, T], identity: Identity, build: Callable[[str], T]
     ) -> T:
-        self.last_identity = identity
-        if identity not in cache:
-            token = identities.token_for(self._env, identity)
-            cache[identity] = self._stack.enter_context(build(token))
-        return cache[identity]
+        with self._client_lock:
+            self.last_identity = identity
+            if identity not in cache:
+                token = identities.token_for(self._env, identity)
+                cache[identity] = self._stack.enter_context(build(token))
+            return cache[identity]
 
     def _api(self, identity: Identity = "player") -> CoworldApiClient:
         return self._client(
@@ -555,6 +558,13 @@ class RealPlatform:
         )
         return _dump(row)
 
+    def episode_summaries(self, ids: list[str]) -> tuple[list[dict], list[str]]:
+        page = self._call(
+            "GET /v2/episode-requests",
+            lambda: self._api().list_bulk_episodes(ids, view="results"),
+        )
+        return [_dump(row) for row in page.entries], page.unavailable_ids
+
     def episode_artifact(self, episode_request_id: str, artifact_type: str) -> bytes:
         return self._call(
             f"GET /v2/episode-requests/{episode_request_id}/artifacts/{artifact_type}",
@@ -904,4 +914,5 @@ def _xp(row: coworld_api.ExperienceRequestRow, title: str | None = None) -> XpRe
         created_at=_iso(row.created_at),
         error=row.error,
         title=row.title or title,
+        coworld_version=row.coworld_version,
     )

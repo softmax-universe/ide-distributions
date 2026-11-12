@@ -256,20 +256,27 @@ def read(store: Store, claim_id: int | str) -> dict[str, Any]:
 
 def search(
     store: Store,
-    query: str,
+    query: str | None = None,
     *,
     tags: Sequence[str] | None = None,
     include_retired: bool = True,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
-    """Claims matching ``query``: full-text when it has words, substring otherwise.
+    """Claims matching ``query``: full-text when it has words, substring otherwise; with no
+    query (``None`` or blank) every claim, most recently updated first, so ``tags`` alone
+    lists a Goal's claims or a topic's.
 
     Each result carries the summary, tags, status, a matching snippet and the computed
     freshness, contested and counts. Summary matches rank above body matches; retired claims
     come last, marked ``retired``. ``tags`` keeps only claims carrying all of them.
     """
     tokens = _WORD.findall(query or "")
-    if tokens:
+    if not (query or "").strip():
+        rows = store.q(
+            "SELECT c.*, NULL AS snippet FROM claims c"
+            " ORDER BY (status <> 'active'), updated DESC, id DESC"
+        )
+    elif tokens:
         # Each word becomes a quoted FTS5 phrase: no user punctuation reaches the MATCH syntax.
         match = " ".join(f'"{token}"' for token in tokens)
         rows = store.q(

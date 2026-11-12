@@ -355,6 +355,7 @@ def test_xp_create_and_get(platform, server):
     assert created.id == "xreq_1" and created.status == "pending" and not created.terminal
     assert created.title == "ide:X-1:7:pair"  # from the create body (A4.4)
     assert created.episode_count == 4 and created.coworld_id == "cow_1"
+    assert created.coworld_version == "1"
     assert created.created_at == NOW_ISO
 
     fetched = platform.xp_get("xreq_1")

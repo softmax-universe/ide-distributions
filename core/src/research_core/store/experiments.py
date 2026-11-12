@@ -36,6 +36,8 @@ from research_core.store.errors import NotFound, StoreError
 from research_core.store.registry import EXPERIMENT, RECORDS, record_from_row
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from research_core.store.actors import Actor
     from research_core.store.db import Store
 
@@ -50,6 +52,10 @@ METRIC_ROLES = ("primary", "guardrail", "performance")
 DECISION_RULE_KEYS = ("text", "n_min", "k")
 MEASUREMENT_KEYS = ("metric", "baseline", "candidate", "n", "effect")
 VERDICTS = ("confirmed", "refuted", "inconclusive")
+# A run's platform request states that never change again.
+REQUEST_TERMINAL_STATES = ("completed", "failed", "cancelled")
+# The validity xp.status gives a run whose episodes are fine but whose evaluate failed.
+EVALUATE_FAILED = "invalid: evaluate"
 SECTIONS = ("hypothesis", "methods", "results")
 SUMMARY_MAX_WORDS = 40
 
@@ -283,6 +289,42 @@ def add_run(
     return _run_record(store, run_id)
 
 
+def open_requests(store: Store, task_id: int) -> list[str]:
+    """The platform request ids of the Task's Experiments' runs that are not yet terminal."""
+    rows = store.q(
+        "SELECT r.platform_request_id, r.state FROM experiment_runs r"
+        " JOIN experiments e ON e.id = r.experiment_id WHERE e.task_id = ? ORDER BY r.id",
+        (task_id,),
+    )
+    return [row[0] for row in rows if row[1] not in REQUEST_TERMINAL_STATES]
+
+
+def unsettled(run: dict[str, Any]) -> str | None:
+    """Why a run's rows may still change, or None once they are final.
+
+    A request still running, a finished request ``xp.status`` has not evaluated, and a failed
+    evaluate (waiting for its repair) are unsettled. A run marked invalid for any other reason is
+    settled: its rows never count.
+    """
+    if run["state"] not in REQUEST_TERMINAL_STATES:
+        return f"request {run['state'] or 'not started'}"
+    if run["validity"].startswith(EVALUATE_FAILED):
+        return "evaluate failed; after the repair xp.status evaluates it again"
+    if run["validity"] == "valid" and "rows" not in (run.get("results") or {}):
+        return "finished but not evaluated; xp.status stores its rows"
+    return None
+
+
+def recorded_requests(store: Store, request_ids: list[str]) -> set[str]:
+    """Which of ``request_ids`` some Experiment run records."""
+    marks = ", ".join("?" for _ in request_ids)
+    rows = store.q(
+        f"SELECT platform_request_id FROM experiment_runs WHERE platform_request_id IN ({marks})",
+        tuple(request_ids),
+    )
+    return {row[0] for row in rows}
+
+
 def require_run_of(store: Store, run_id: int, experiment_id: int) -> None:
     """Refuse a run that does not exist or belongs to another Experiment than the caller named,
     naming that Experiment's run ids."""
@@ -484,28 +526,53 @@ def read(store: Store, experiment_id: int | str, section: str | None = None) -> 
     return record
 
 
-def search(store: Store, query: str, limit: int = 20) -> list[dict[str, Any]]:
-    """Full-text search over summary, hypothesis, methods, results and tags; best match first."""
-    match = fts_match(query)
-    if match is None:
-        return []
-    rows = store.q(
-        "SELECT e.id, e.summary, e.status, e.tags, e.created, e.closed"
-        " FROM experiments_fts f JOIN experiments e ON e.id = f.rowid"
-        " WHERE experiments_fts MATCH ? ORDER BY rank LIMIT ?",
-        (match, limit),
-    )
-    return [
-        {
-            "id": display_id("X", row["id"]),
-            "summary": row["summary"],
-            "status": row["status"],
-            "tags": parse_json(row["tags"], []),
-            "created": row["created"],
-            "closed": row["closed"],
-        }
-        for row in rows
-    ]
+def search(
+    store: Store,
+    query: str | None = None,
+    *,
+    tags: Sequence[str] | None = None,
+    goal_id: int | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Full-text search over summary, hypothesis, methods, results and tags; best match first.
+
+    With no query (``None`` or blank) every Experiment, newest first, so ``tags`` or
+    ``goal_id`` alone lists them. ``tags`` keeps only Experiments carrying all of them;
+    ``goal_id`` only those created for that Goal. A query with no words matches nothing.
+    """
+    columns = "e.id, e.summary, e.status, e.tags, e.goal_id, e.created, e.closed"
+    if not (query or "").strip():
+        rows = store.q(f"SELECT {columns} FROM experiments e ORDER BY e.id DESC")
+    else:
+        match = fts_match(query or "")
+        if match is None:
+            return []
+        rows = store.q(
+            f"SELECT {columns} FROM experiments_fts f JOIN experiments e ON e.id = f.rowid"
+            " WHERE experiments_fts MATCH ? ORDER BY rank",
+            (match,),
+        )
+    wanted = set(tags or ())
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        if len(results) >= limit:
+            break
+        row_tags = parse_json(row["tags"], [])
+        if not wanted <= set(row_tags):
+            continue
+        if goal_id is not None and row["goal_id"] != goal_id:
+            continue
+        results.append(
+            {
+                "id": display_id("X", row["id"]),
+                "summary": row["summary"],
+                "status": row["status"],
+                "tags": row_tags,
+                "created": row["created"],
+                "closed": row["closed"],
+            }
+        )
+    return results
 
 
 def fts_match(query: str) -> str | None:

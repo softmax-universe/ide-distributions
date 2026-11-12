@@ -89,6 +89,7 @@ class XpRequest:
     created_at: str | None = None
     error: str | None = None
     title: str | None = None
+    coworld_version: str | None = None  # the game version the platform runs the request on
 
     @property
     def terminal(self) -> bool:
@@ -209,6 +210,8 @@ class Platform(Protocol):
     ) -> EpisodePage: ...
 
     def episode(self, episode_request_id: str) -> dict: ...
+
+    def episode_summaries(self, ids: list[str]) -> tuple[list[dict], list[str]]: ...
 
     def episode_artifact(self, episode_request_id: str, artifact_type: str) -> bytes: ...
 

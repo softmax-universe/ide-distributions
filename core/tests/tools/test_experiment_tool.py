@@ -180,6 +180,11 @@ def test_create_refs_goal_and_task_and_rejects_wrong_kinds(call, two_versions):
     assert goal["ok"] is True
     created = call("experiment", create_args(goal="G-1"))
     assert created["record"]["goal_id"] == 1
+    call("experiment", create_args())
+    # A Goal's Experiments, listed without words to search for.
+    of_goal = call("experiment", {"action": "search", "goal": "G-1"})
+    assert [r["id"] for r in of_goal["records"]] == ["X-1"]
+    assert [r["id"] for r in call("experiment", {"action": "search"})["records"]] == ["X-2", "X-1"]
     wrong = call("experiment", create_args(goal="T-1"))
     assert wrong["ok"] is False and "goal must be a goal reference" in wrong["error"]
 
@@ -198,6 +203,8 @@ def test_search_and_abandon(call, two_versions):
     found = call("experiment", {"action": "search", "query": "retreating win rate"})
     assert [r["id"] for r in found["records"]] == ["X-1"]
     assert call("experiment", {"action": "search", "query": "zeppelin"})["records"] == []
+    listed = call("experiment", {"action": "search"})
+    assert listed["ok"] is True and [r["id"] for r in listed["records"]] == ["X-1"]
 
     abandoned = call("experiment", {"action": "abandon", "experiment": "X-1", "reason": "moot"})
     assert abandoned["record"]["status"] == "abandoned"
@@ -245,6 +252,28 @@ def test_update_run(add_run, call, running):
 
     nothing = call("experiment", {"action": "update_run", "run": 1}, role="researcher")
     assert nothing["ok"] is False and "nothing to update" in nothing["error"]
+
+
+def test_computed_close_records_episodes_the_platform_failed(add_run, call, running):
+    """A crashed episode leaves no row; the rule cannot see it, so the record names it."""
+    seeds = range(N_MIN)
+    run_ids = record_runs(
+        add_run,
+        call,
+        {
+            "baseline": [row("V-1", s, 0.50 + (0.01 if s % 2 else -0.01)) for s in seeds],
+            "candidate": [row("V-2", s, 0.60 + (0.01 if s % 2 else -0.01)) for s in seeds],
+        },
+    )
+    update = {"action": "update_run", "run": run_ids[-1], "results": {"episodes_failed": 2}}
+    assert call("experiment", update, role="researcher")["ok"] is True
+    closed = call(
+        "experiment", {"action": "close", "experiment": "X-1", "interpretation": "A clear win."}
+    )
+    assert closed["evaluation"]["failed_episodes"] == {"baseline": 0, "candidate": 2}
+    assert closed["record"]["results"]["interpretation"] == (
+        "A clear win. Episodes the platform failed, not counted: baseline 0, candidate 2."
+    )
 
 
 def test_computed_close_confirms_a_clear_margin(add_run, call, running):
@@ -314,8 +343,10 @@ def test_computed_close_refutes_a_guardrail_breach(add_run, call, running):
     assert closed["record"]["results"]["reason_codes"] == ["guardrail_breach:step_ms"]
 
 
-def test_computed_close_averages_per_seat_rows_into_one_pair_per_seed(add_run, call, running):
-    """Per-seat rows (seats [0] and [1] of one episode) make one pair per seed, not two."""
+def test_computed_close_counts_only_the_runs_own_seat(add_run, call, running):
+    """Rows of seat 1 are the opponent's, stored before xp.status kept seats apart. Averaging
+    them in measured a mix of us and the opponent (here 0.50 against 0.60, not 0.40 against
+    0.55), so only seat 0 counts and the rest are reported as dropped."""
     seeds = range(N_MIN)
     baseline, candidate = [], []
     for s in seeds:
@@ -330,6 +361,7 @@ def test_computed_close_averages_per_seat_rows_into_one_pair_per_seed(add_run, c
                 {
                     "action": "update_run",
                     "run": added["id"],
+                    "state": "completed",
                     "results": {"rows": [r for r in rows if r["seed"] == s]},
                 },
                 role="researcher",
@@ -337,8 +369,9 @@ def test_computed_close_averages_per_seat_rows_into_one_pair_per_seed(add_run, c
     closed = call("experiment", {"action": "close", "experiment": "X-1"})
     assert closed["ok"] is True, closed
     assert closed["evaluation"]["pairs"] == N_MIN
+    assert closed["evaluation"]["rows"]["dropped"]["other_seats"] == 2 * N_MIN
     win = next(m for m in closed["record"]["results"]["measurements"] if m["metric"] == "win_rate")
-    assert abs(win["baseline"] - 0.50) < 1e-9 and abs(win["candidate"] - 0.60) < 1e-9
+    assert abs(win["baseline"] - 0.40) < 1e-9 and abs(win["candidate"] - 0.55) < 1e-9
     assert closed["record"]["status"] == "confirmed"
 
 
@@ -368,10 +401,28 @@ def test_computed_close_with_only_invalid_runs_is_refused(add_run, call, running
     assert refused["ok"] is False and refused["context"]["invalid_runs"] == [only]
 
 
-def test_computed_close_without_rows_is_refused(add_run, call, running):
-    add_run(kind="xp", platform_request_id="xreq_1", arm="baseline")
-    refused = call("experiment", {"action": "close", "experiment": "X-1"})
-    assert refused["ok"] is False
+def test_computed_close_waits_until_every_runs_rows_are_final(add_run, call, running):
+    """A close is final: read early, it would miss rows on their way and say n_short for good."""
+    run_id = add_run(kind="xp", platform_request_id="xreq_1", arm="baseline")["id"]
+    close = {"action": "close", "experiment": "X-1"}
+
+    def update(**fields):
+        update_run = {"action": "update_run", "run": run_id, **fields}
+        assert call("experiment", update_run, role="researcher")["ok"] is True
+
+    for fields, reason in (
+        ({}, "request not started"),
+        ({"state": "running"}, "request running"),
+        ({"state": "completed"}, "finished but not evaluated; xp.status stores its rows"),
+        ({"validity": "invalid: evaluate failed (exit 1)"}, "evaluate failed"),
+    ):
+        if fields:
+            update(**fields)
+        refused = call("experiment", close)
+        assert refused["ok"] is False and "rows are not final" in refused["error"]
+        assert refused["context"]["unsettled_runs"][str(run_id)].startswith(reason)
+    update(validity="invalid: wrong roster")
+    refused = call("experiment", close)
     assert refused["problems"] == [
         "no evaluation rows recorded yet; run xp.status first or close with an explicit verdict"
     ]
@@ -391,6 +442,7 @@ def test_computed_close_refuses_when_no_rows_pair(add_run, call, running):
         {
             "action": "update_run",
             "run": stray["id"],
+            "state": "completed",
             "results": {"rows": [row("pv-elsewhere", 0, 0.9)]},
         },
         role="researcher",
@@ -421,6 +473,7 @@ def test_malformed_stored_rows_are_named(add_run, call, running):
         {
             "action": "update_run",
             "run": added["id"],
+            "state": "completed",
             "results": {"rows": [{"episode_id": "e1", "seed": "seven"}, "not a row"]},
         },
         role="researcher",

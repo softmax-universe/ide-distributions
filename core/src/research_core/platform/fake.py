@@ -10,7 +10,9 @@ next ``submissions``/``memberships`` read after ``polls_to_complete`` polls, the
 its membership goes ``pending`` -> ``competing`` and, with ``auto_champion="always"``,
 becomes the Player's champion in that league. An XP request is ``pending`` before its first
 ``xp_get``, ``running`` until ``polls_to_complete`` polls, then ``completed``. The game seats
-:data:`FAKE_GAME_SEATS`, and ``xp_create`` refuses the rosters the real route refuses.
+:data:`FAKE_GAME_SEATS`, and ``xp_create`` refuses the rosters the real route refuses. A
+request's results score every seat, ours and the opponents', as a real results artifact does; a
+sampled seat plays a league policy.
 
 Seeded metrics (the research lever the fake research cycle measures). A ``policy.json`` upload
 with ``{"parameters": {"aggression": a, "patience": p}}`` plays by those parameters; any other
@@ -173,12 +175,20 @@ def _league_metrics(policy: str, seed: int) -> dict:
     return {"score": round(score, 4), "errors": int(_unit(policy, seed, "errors") * 5)}
 
 
-def _roster(body: dict) -> tuple[str | None, list[int]]:
-    """Our policy (the first roster entry) and the seats it sits in, in order."""
+def _roster(body: dict) -> tuple[str | None, list[str]]:
+    """Our policy (the first roster entry) and the policy in each seat, in seat order.
+
+    Pinned entries take their slot; each sampled entry (slot -1) takes the next free seat and
+    plays a league policy, as the platform samples a champion into it.
+    """
     roster = body["roster"]
-    policy = roster[0]["player"].get("policy_ref")
-    slots = [entry["slot"] for entry in roster if entry["player"].get("policy_ref") == policy]
-    return policy, sorted(slots)
+    seats: list[str | None] = [None] * len(roster)
+    for entry in roster:
+        if entry.get("slot", -1) != -1:
+            seats[entry["slot"]] = entry["player"]["policy_ref"]
+    sampled = iter(LEAGUE_POLICIES * len(roster))
+    filled = [policy if policy is not None else next(sampled) for policy in seats]
+    return roster[0]["player"].get("policy_ref"), filled
 
 
 def _refuse_create(body: dict) -> None:
@@ -852,13 +862,14 @@ class FakePlatform:
             created_at=row["created_at"],
             error="injected failure" if status == "failed" else None,
             title=row["title"],
+            coworld_version=COWORLD_VERSIONS.get(row["coworld_id"], (None, None))[1],
         )
 
     def xp_create(self, body: dict) -> XpRequest:
         route = "POST /v2/experience-requests"
         self._require_identity("player", route)
         _refuse_create(body)
-        policy, slots = _roster(body)
+        policy, seats = _roster(body)
         title = body.get("title")
 
         def action(state: dict) -> XpRequest:
@@ -893,7 +904,7 @@ class FakePlatform:
                 ),
                 "seed": (body.get("game_config_overrides") or {}).get("seed"),
                 "policy": policy,
-                "slots": slots,
+                "seats": seats,
                 "polls": 0,
                 "created_at": self._iso(),
                 "body": body,
@@ -959,16 +970,16 @@ class FakePlatform:
         return self._operate("xp_episodes", action, persist=False)
 
     def _xp_results(self, state: dict, row: dict) -> dict:
-        upload = state["policies"].get(row["policy"] or "") or {}
-        parameters = upload.get("parameters")
+        """Every seat's metrics, as a real results artifact scores every player slot."""
         seed = row["seed"]
         episodes = []
         for index in range(row["episodes"]):
-            for slot in row["slots"]:
+            for slot, policy in enumerate(row["seats"]):
+                parameters = (state["policies"].get(policy) or {}).get("parameters")
                 if seed is None:
                     metrics = _unseeded_metrics(row["id"], index, slot)
                 else:
-                    metrics = seeded_metrics(seed, index, slot, row["policy"], parameters)
+                    metrics = seeded_metrics(seed, index, slot, policy, parameters)
                 episode = {"episode": index, "seat": slot, **metrics}
                 if seed is not None:
                     episode["seed"] = seed
@@ -1068,11 +1079,14 @@ class FakePlatform:
         end = offset + limit
         return EpisodePage(rows[offset:end], str(end) if end < len(rows) else None)
 
-    def _find_episode(self, state: dict, episode_request_id: str) -> dict:
-        candidates = self._league_episodes(state, 30)
+    def _known_episodes(self, state: dict) -> list[dict]:
+        rows = self._league_episodes(state, 30)
         for policy_version_id in state["policies"]:
-            candidates.extend(self._policy_episodes(state, policy_version_id))
-        for episode in candidates:
+            rows.extend(self._policy_episodes(state, policy_version_id))
+        return rows
+
+    def _find_episode(self, state: dict, episode_request_id: str) -> dict:
+        for episode in self._known_episodes(state):
             if episode["id"] == episode_request_id:
                 return episode
         raise self._not_found(f"GET /v2/episode-requests/{episode_request_id}")
@@ -1081,6 +1095,17 @@ class FakePlatform:
         return self._operate(
             "episode", lambda state: self._find_episode(state, episode_request_id), persist=False
         )
+
+    def episode_summaries(self, ids: list[str]) -> tuple[list[dict], list[str]]:
+        def select(state: dict) -> tuple[list[dict], list[str]]:
+            by_id = {row["id"]: row for row in self._known_episodes(state)}
+            fields = ("id", "created_at", "status", "scores", "participants")
+            return (
+                [{key: by_id[id_][key] for key in fields} for id_ in ids if id_ in by_id],
+                [id_ for id_ in ids if id_ not in by_id],
+            )
+
+        return self._operate("episode_summaries", select, persist=False)
 
     def episode_artifact(self, episode_request_id: str, artifact_type: str) -> bytes:
         episode = self.episode(episode_request_id)

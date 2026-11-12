@@ -48,13 +48,15 @@ comes from the source with a citation, never from memory.
 5. Make `evaluate` meet the contract: it runs in the code repository root with `XP_RESULTS`
    naming a folder of downloaded results and prints JSON lines, one per scored seat per episode:
    `{"episode", "seed", "seat", "opponents": [...], "metrics": {...}}`, with `"status":
-   "failed"` and a `"reason"` for an episode that did not complete. Metric names match
-   `metrics` in the front matter. Test it on real results: `platform.episodes {league}` shows finished
-   episodes.
+   "failed"` and a `"reason"` for an episode that did not complete. `episode` differs between a
+   request's episodes; lines not starting with `{` are logging. `seat` is the game's 0-based
+   player slot, not a team index. Ours is `XP_SEAT` (0; `XP_POLICY_VERSION_ID` plays it): only
+   its lines count, other seats' are context, and none for it breaks evaluate. Metric names
+   match `metrics` in the front matter. Test it on real results: `platform.episodes {league}` shows finished episodes.
 6. Make `build` produce the artifact at the declared path from a clean tree and `check` fail on
    a broken policy.
 7. Commit on `main` with a message naming the source commit, then `workspace.capabilities
-   {check: true}`: the watcher runs build, check, upload (the first passes for real, as policy `<coworld>-tool-check`) and evaluate next tick. Setup ends only
+   {check: true}`: the watcher runs build, check, upload (the first passes for real, as policy `<coworld>-tool-check-<player>`, a name unique to this Player) and evaluate next tick. Setup ends only
    when build, check and upload pass; a failure creates a maintenance Task on its own.
 8. Import the repository's lesson notes as claims with `claim_write` and `doc` evidence when the
    deterministic import skipped them (the setup wake's payload lists what was imported).

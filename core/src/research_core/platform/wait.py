@@ -20,7 +20,9 @@ imported when needed.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from typing import TYPE_CHECKING, Any
 
 from research_core.platform.errors import PlatformError
@@ -32,6 +34,7 @@ from research_core.transitions import report_capability
 if TYPE_CHECKING:  # pragma: no cover
     from research_core.store.db import Store
 
+PLATFORM_READ_WORKERS = 6
 IDENTITIES: tuple[Identity, ...] = ("player", "user")
 # Tests replace this to skip the backoff; ``call_platform`` reads it on every call.
 sleep: Callable[[float], None] = time.sleep
@@ -50,6 +53,25 @@ def call_platform[T](
         return with_retries(fn, sleep=sleep) if retries else fn()
     except PlatformError as error:
         raise tool_error(ctx, route, error, identity=identity) from error
+
+
+def read_platform_batch[T](
+    reads: Mapping[str, Callable[[], T]],
+) -> Iterator[tuple[str, T | PlatformError]]:
+    """Overlap bounded independent reads. Translate failures on the caller's store thread."""
+    if not reads:
+        return
+    with ThreadPoolExecutor(max_workers=PLATFORM_READ_WORKERS) as executor:
+        pending = {
+            key: executor.submit(copy_context().run, with_retries, read, sleep=sleep)
+            for key, read in reads.items()
+        }
+        for key, future in pending.items():
+            try:
+                result = future.result()
+            except PlatformError as error:
+                result = error
+            yield key, result
 
 
 def tool_error(

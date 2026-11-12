@@ -27,7 +27,7 @@ from research_core.platform.fake import FakePlatform
 from research_core.store import capabilities, sessions, tasks
 from research_core.store.actors import Actor
 from research_core.tools import version as version_tool
-from research_core.tools.base import run_tool
+from research_core.tools.base import POLICY_NAME_MAX_LENGTH, player_policy_name, run_tool
 from tests.fixtures.fakegame_repo import COWORLD_ID, STARTER_POLICY, fixture_files
 
 HARNESS = Actor.harness()
@@ -153,6 +153,22 @@ def test_version_create_builds_and_tags(lab):
     assert second["id"] == "V-2" and second["based_on"] == ["V-1"]
     listed = lab.run("version", {"action": "list", "limit": 5}, role="researcher")
     assert [r["id"] for r in listed["records"]] == ["V-2", "V-1"]
+
+
+def test_version_policy_names_are_this_players_own(lab):
+    """Policy names are global; ``cow_fake-main`` from every workspace would collide (409)."""
+    player = {"SOFTMAX_PLAYER_ID": "ply_f39295d0-ac38-4a62-ac4f-e1d62d7dc9d1"}
+    result = lab.run("version", {"action": "create", "summary": "Mine"}, env=player)
+    assert result["ok"] is True, result
+    assert result["record"]["policy_name"] == "cow_fake-main-f39295d0ac38"
+
+
+def test_player_policy_name_tags_and_fits_the_platform_limit():
+    player = "ply_f39295d0-ac38-4a62-ac4f-e1d62d7dc9d1"
+    assert player_policy_name("cow_x-main", player) == "cow_x-main-f39295d0ac38"
+    assert player_policy_name("cow_x-main", None) == "cow_x-main"
+    long = player_policy_name("cow_x-" + "b" * 80, player)
+    assert len(long) == POLICY_NAME_MAX_LENGTH and long.endswith("-f39295d0ac38")
 
 
 def test_version_create_records_the_runtime_image(lab, tmp_path):

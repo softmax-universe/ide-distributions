@@ -27,7 +27,8 @@ priority, depends_on, experiment}`.
 
 An ideation Task delivers two to five proposals: `task_complete {task, proposed_tasks: ["T-7", "T-8"], result, merge: "no", merge_reason}`
 with the ids `task_propose` returned. Ground every proposal in the Goal's claims and in what was
-tried: `claim.search {query, tags: ["G-n"], include_retired: true}`, `experiment.search` for
+tried: `claim.search {tags: ["G-n"], include_retired: true}` lists its claims (add `query` to
+narrow), `experiment.search {goal: "G-n"}` lists its Experiments, including
 the refuted and inconclusive Experiments too, then `platform.standings` and
 `platform.active_policies {league, exclude_player: true}` for what the league looks like now.
 Game-specific levers: see `code/mixin/skills/<coworld>-diagnosis/SKILL.md` and `code/mixin/skills/<coworld>-ab/SKILL.md` or the mixin docs.

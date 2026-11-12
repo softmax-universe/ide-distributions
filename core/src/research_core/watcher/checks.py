@@ -23,8 +23,10 @@ What is checked, each a capability row (``capabilities.mark``):
   fact, not a capability);
 * full runs only: the mixin's toolchains are installed, then its ``build``, ``check`` and
   ``evaluate`` commands run in a temporary
-  worktree of ``main`` (``evaluate`` on downloaded results under ``documents/xp`` when there are
-  any, else skipped with "no results to evaluate"), and ``upload``: the mixin's own ``upload``
+  worktree of ``main`` (``evaluate`` on the newest downloaded request under ``documents/xp``
+  with ``XP_SEAT`` and ``XP_POLICY_VERSION_ID`` from its run, as ``xp.status`` runs it, and its
+  output must meet the row contract with a row for that seat; skipped with "no results to
+  evaluate" when nothing was downloaded), and ``upload``: the mixin's own ``upload``
   command if it has one, then the starter artifact is really sent through ``upload_file_policy``
   when the platform is the fake or the route was never verified; a real platform whose
   upload already passed records "skipped: real upload not attempted" and keeps its mark.
@@ -63,11 +65,14 @@ from research_core import mixin as mixin_module
 from research_core.platform import credits as credits_module
 from research_core.platform.errors import PlatformError
 from research_core.platform.protocol import WhoAmI, with_retries
+from research_core.platform.xp import OUR_SEAT
+from research_core.stats.ingest import rows_from_evaluate_output
 from research_core.store import capabilities, coworlds, notices, tasks
-from research_core.store._common import now_iso, parse_display_id, parse_iso
+from research_core.store._common import now_iso, parse_display_id, parse_iso, parse_json
 from research_core.store.db import Store
 from research_core.store.errors import StoreError
-from research_core.tools.base import PLAYER_ID_META
+from research_core.tools.base import PLAYER_ID_META, player_policy_name
+from research_core.tools.xp import POLICY_VERSION_ENV, RESULTS_ENV, SEAT_ENV, evaluate_output
 from research_core.watcher.merge import CHECKS_DUE, install_toolchains, temporary_worktree
 from research_core.watcher.resume import emit_event
 
@@ -87,7 +92,6 @@ REPAIR_NOTICE_AT = 2
 COMMAND_BUDGET_S = 240
 CLI_TIMEOUT_S = 60
 CHECK_WORKTREE = "tool-check"
-RESULTS_ENV = "XP_RESULTS"
 UPLOAD_NAME_SUFFIX = "tool-check"
 # What each Task type needs (B.15): a broken capability blocks these types' open Tasks.
 NEEDS: dict[str, tuple[str, ...]] = {
@@ -321,8 +325,48 @@ def _evaluate_check(ctx: TickContext, loaded: mixin_module.Mixin, tree: Path) ->
     if results_dir is None:
         note = "no results to evaluate"
         return _result("evaluate", "command", None, note, capability="evaluate", note=note)
-    env = {**os.environ, **ctx.env, RESULTS_ENV: str(results_dir)}
-    return _command_check(ctx, loaded, "evaluate", tree, env)
+    # The folder is named for its request; its run says which seat and policy were ours.
+    run = ctx.store.one(
+        "SELECT results FROM experiment_runs WHERE platform_request_id = ?", (results_dir.name,)
+    )
+    run_results = parse_json(run["results"], {}) if run else {}
+    seat = run_results.get("seat", OUR_SEAT)
+    env = {
+        **os.environ,
+        **ctx.env,
+        RESULTS_ENV: str(results_dir),
+        SEAT_ENV: str(seat),
+        POLICY_VERSION_ENV: run_results.get("policy_version_id") or "",
+    }
+    result = _command_check(ctx, loaded, "evaluate", tree, env)
+    if result["ok"]:
+        problem = _evaluate_output_problem(Path(result["log"]), seat)
+        if problem:
+            result.update(ok=False, output=f"{problem}\n{result['output']}")
+    return result
+
+
+def _evaluate_output_problem(log_path: Path, seat: int) -> str | None:
+    """How an evaluate that exited 0 still breaks the contract ``xp.status`` reads, if it does:
+    an exit code alone passed output no Experiment could use."""
+    try:
+        rows = rows_from_evaluate_output(
+            evaluate_output(log_path), policy_version="check", game_version="check"
+        )
+    except ValueError as error:
+        return f"evaluate output does not meet the contract: {error}"
+    if not any(row.seats == (seat,) for row in rows):
+        return f"evaluate printed no row for seat {seat}, our policy's seat ({SEAT_ENV})"
+    return None
+
+
+def upload_probe_name(coworld_id: str, player_id: str | None) -> str:
+    """The upload check's policy name: ``<coworld>-tool-check-<player>``.
+
+    The Player's id, which ``login:player`` stores earlier in the same tick, keeps the name to
+    this account (``player_policy_name``); without one the bare name stands.
+    """
+    return player_policy_name(f"{coworld_id}-{UPLOAD_NAME_SUFFIX}", player_id)
 
 
 def _upload_check(
@@ -345,7 +389,9 @@ def _upload_check(
     if not send:
         note = "skipped: real upload not attempted (the route was verified before)"
         return _result("upload", "route", None, note, capability="upload", note=note)
-    name = f"{ctx.coworld.coworld_id}-{UPLOAD_NAME_SUFFIX}"
+    name = upload_probe_name(
+        ctx.coworld.coworld_id, ctx.env.get("SOFTMAX_PLAYER_ID") or ctx.meta(PLAYER_ID_META)
+    )
     try:
         version = with_retries(
             lambda: (
@@ -623,10 +669,19 @@ def _run_version(binary: Path) -> tuple[bool, str]:
 
 
 def _results_dir(xp_dir: Path) -> Path | None:
-    """The downloaded-results folder when it holds at least one ``results.json``."""
-    if not xp_dir.is_dir():
-        return None
-    return xp_dir if any(xp_dir.rglob("results.json")) else None
+    """The newest downloaded request folder (``<xp>/<X-n>/<request id>``) holding a
+    ``results.json``.
+
+    One request, as ``xp.status`` runs evaluate: the whole ``xp`` folder grows with every
+    Experiment, and evaluating all of it would outgrow the check's budget and mark a working
+    evaluate broken (which blocks improvement and research Tasks).
+    """
+    folders = [
+        folder
+        for folder in xp_dir.glob("*/*")
+        if folder.is_dir() and any(folder.rglob("results.json"))
+    ]
+    return max(folders, key=lambda folder: folder.stat().st_mtime, default=None)
 
 
 def _was_ok(store: Store, name: str) -> bool:

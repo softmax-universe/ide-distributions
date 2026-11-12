@@ -4,6 +4,7 @@ capability, link the Tasks that need it, and notify after two failed repairs (de
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -83,7 +84,7 @@ def test_full_run_marks_capabilities_and_sets_the_coworld_up(tmp_path):
     assert versions["coworld"]["installed"] and versions["softmax"]["installed"]
     assert "lock_refreshed" in versions
     uploaded = [p for p in ctx.platform.snapshot()["policies"].values()]
-    assert [p["name"] for p in uploaded] == ["cow_fake-tool-check"]
+    assert [p["name"] for p in uploaded] == ["cow_fake-tool-check-fake"]  # Player ply_fake
     [ran] = events_of(store, "checks.ran")
     assert ran["payload"]["mode"] == "full" and ran["payload"]["skipped"] == {
         "evaluate": "no results to evaluate"
@@ -148,6 +149,54 @@ def test_failing_check_creates_one_repair_task_and_a_second_failure_joins_it(tmp
     assert checks.run(ctx)["broken"] == ["check"]
     assert len(tasks.list(ctx.store, type="maintenance")) == 1  # the repeat joined it
     assert len(events_of(ctx.store, "capability.failed")) == 1
+
+
+def write_results(folder, *, mtime: float | None = None, text: str | None = None) -> None:
+    """A downloaded request folder holding the fake platform's results for one two-seat episode."""
+    episodes = [{"episode": 0, "seat": seat, "score": 50.0, "errors": 1} for seat in (0, 1)]
+    folder.mkdir(parents=True)
+    path = folder / "results.json"
+    path.write_text(text or json.dumps({"seed": 1, "episodes": episodes}))
+    if mtime is not None:
+        os.utime(folder, (mtime, mtime))
+
+
+def test_evaluate_runs_on_the_newest_downloaded_request_only(tmp_path):
+    """All of documents/xp grows with every Experiment and would outgrow the check's budget; an
+    older request's results (here unreadable) are not evaluated."""
+    ctx = fake_ctx(tmp_path)
+    setup_code_repo(ctx)
+    xp = ctx.coworld.documents / "xp"
+    write_results(xp / "X-1" / "xreq_old", mtime=1_000_000, text="not json")
+    write_results(xp / "X-2" / "xreq_new")
+
+    report = checks.run(ctx)
+
+    assert "evaluate" in report["ok"], report
+    assert capabilities.read(ctx.store, "evaluate")["status"] == "ok"
+
+
+def test_evaluate_output_off_the_row_contract_breaks_the_check(tmp_path):
+    """An exit code of 0 used to pass output no Experiment could read."""
+    ctx = fake_ctx(tmp_path)
+    setup_code_repo(ctx)
+    path = ctx.coworld.code / "mixin" / "MIXIN.md"
+    text = path.read_text()
+    assert "  evaluate: python3 mixin/tools/evaluate.py\n" in text
+    opponent_only = json.dumps("python3 mixin/tools/evaluate.py | grep -v '\"seat\": 0'")
+    path.write_text(
+        text.replace(
+            "  evaluate: python3 mixin/tools/evaluate.py\n", f"  evaluate: {opponent_only}\n"
+        )
+    )
+    gitops.commit_all(ctx.coworld.code, "Score the opponent's seat only")
+    write_results(ctx.coworld.documents / "xp" / "X-1" / "xreq_1")
+
+    report = checks.run(ctx)
+
+    assert report["broken"] == ["evaluate"]
+    output = capabilities.read(ctx.store, "evaluate")["output"]
+    assert output.startswith("evaluate printed no row for seat 0")
 
 
 def test_dependents_gain_the_dependency_on_the_repair_task(tmp_path):
@@ -328,3 +377,12 @@ def test_a_full_check_installs_the_mixin_toolchains(tmp_path, monkeypatch):
     checks.mixin_checks(ctx)
 
     assert len(declared) == 1
+
+
+def test_the_upload_probe_name_is_this_players_own():
+    """Policy names are global; a bare ``<coworld>-tool-check`` is soon another account's (409)."""
+    player = "ply_f39295d0-ac38-4a62-ac4f-e1d62d7dc9d1"
+    assert checks.upload_probe_name("cow_x", player) == "cow_x-tool-check-f39295d0ac38"
+    other = checks.upload_probe_name("cow_x", "ply_0b8c1d2e-0000-4000-8000-000000000000")
+    assert other != checks.upload_probe_name("cow_x", player)
+    assert checks.upload_probe_name("cow_x", None) == "cow_x-tool-check"

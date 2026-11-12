@@ -35,12 +35,24 @@ Never conclude from a rung below the question's weight.
 2. Pin seats by explicit policy version id: `platform.active_policies {league, exclude_player: true}` lists the field, `platform.policy_versions` ours. "Latest" in a roster is a reproducibility hole.
 3. Cost: `platform.credits`; the request result carries an `estimate` (`credits` skill). Shrink seeds or split into batches before you start, keeping both arms of a seed together.
 4. `xp.request`. Each accepted request is recorded as a run at once; the result lists `created`, `reconciled`, `requests` and `runs`. Repeating the call creates only the missing requests.
-5. `task_wait {task, kind: xp, detail: "X-n's requests", ref: [<request ids>]}` and end your run. Reading starts when the watcher resumes you: `xp.status {experiment}`.
+5. `task_wait {task, kind: xp, detail: "X-n's requests"}` and end your run (it waits on your Task's open requests). Reading starts when the watcher resumes you: `xp.status {experiment}`.
 6. Both arms of an A/B go out in the same window; when the binding gives a batch size, respect it.
+
+## Read episode scores
+
+Find an uploaded version's episode IDs with `platform.episodes {policy_version}`. Use
+`platform.episode {episode}` for one episode. For a tally use the bulk score example in
+`softmax-api-routes`. Pass up to 50 IDs of one kind (episode or experience request) as an array,
+set `view: "results"` to include scores, and follow `next_cursor` when present. Join
+`participant_scores` to the participant positions. For artifact fields such as ticks, use
+`research softmax exec -- coworld episode-results <ereq_id>`.
 
 ## Footguns
 
 - Sampled seats (`league`) in an A/B invalidate the comparison: the arms saw different fields.
+- The measured Version always plays seat 0 and only seat-0 rows count. A design that needs it on
+  other seats or sides (two pairs as Light, two as Dark) cannot be run; never promise one. Vary
+  seeds and opponents instead, and say which side seat 0 plays.
 - A created or running request counts for nothing until its results are inspected.
 - A platform 4xx: read the error's detail and, if the route or body may have changed, the `softmax-api-routes` skill; do not retry blind.
 - Above the `xp.ask_above_requests_per_experiment` setting a Researcher's request is refused (`credits` skill).

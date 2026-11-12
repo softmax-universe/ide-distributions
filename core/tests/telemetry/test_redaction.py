@@ -5,7 +5,11 @@ import json
 
 import pytest
 
-from research_core.agent_telemetry.redaction import SOFTMAX_TOKEN_MASK, Redactor
+from research_core.agent_telemetry.redaction import (
+    SOFTMAX_TOKEN_MASK,
+    SOFTMAX_TOKEN_PREFIXES,
+    Redactor,
+)
 
 from .conftest import HERMES_STYLE_SECRET, scrub
 
@@ -54,6 +58,22 @@ def test_a_real_token_is_masked_after_anything_a_token_can_follow(plain, before)
 )
 def test_a_word_that_only_looks_like_a_token_stays(plain, word):
     assert plain.text(word) == word
+
+
+@pytest.mark.parametrize("prefix", SOFTMAX_TOKEN_PREFIXES)
+def test_every_credential_prefix_is_masked(plain, prefix):
+    token = fake_token(prefix)
+    assert plain.text(f"Bearer {token}") == f"Bearer {SOFTMAX_TOKEN_MASK}"
+
+
+def test_a_player_credential_inside_tool_output_json_is_masked(plain):
+    """Seen live: the workspace tool's output, nested as escaped JSON in a captured tool part."""
+    credential = fake_token("cga_")
+    output = json.dumps({"workspace_id": "w", "credential": credential})
+    tool_output = f"{output}\ntokens:\n  x: {credential}"
+    captured = json.dumps({"content": json.dumps({"output": tool_output})})
+    assert credential.rstrip("=") not in plain.text(captured)
+    assert credential.rstrip("=") not in json.dumps(plain.value(json.loads(captured)))
 
 
 def test_keys_that_redact_alike_keep_both_values():

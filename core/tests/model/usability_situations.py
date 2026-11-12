@@ -798,9 +798,8 @@ XP_ACCEPTED = ok(
     estimate={"episodes": 2, "credits": 2.0},
     warnings=[],
     followup_scheduled=False,
-    next="task_wait {task, kind: xp, detail: 'XP requests for X-5', ref: "
-    '["xreq_1", "xreq_2"]} and end your run; the watcher resumes you when they finish, then '
-    "xp.status stores the rows",
+    next="task_wait {task, kind: xp, detail: 'XP requests for X-5'} and end your run; the watcher "
+    "resumes you when they finish, then xp.status stores the rows",
 )
 BUILD_BACKGROUND = json.dumps(
     background_result(
@@ -1512,7 +1511,8 @@ HARD = [
         ),
         task_type="improvement",
         prior=(Prior("xp", {"action": "request", "experiment": "X-5"}, XP_ACCEPTED),),
-        args={"kind": "xp", "ref": r"(?=.*\bxreq_1\b)(?=.*\bxreq_2\b)", "task": r"\bT-21\b"},
+        # Without ref the wait takes the Task's open requests; a ref given must name both.
+        args={"kind": "xp", "ref?": r"(?=.*\bxreq_1\b)(?=.*\bxreq_2\b)", "task": r"\bT-21\b"},
         x5="pending",
     ),
     task(

@@ -21,7 +21,7 @@ claims and in what was tried. No code: an ideation Task reads and proposes.
 Start: read the Task, its Goal (`goal.read`: the end state, "where it stands", the claims tagged
 `G-n` and how many Experiments it has in each status), the directives, the briefing and these
 instructions; load `proposing`. Read what is known: `claim.search {query: <lever>,
-include_retired: true}`, and `experiment.search {query: "G-n"}` and by lever for what was tried,
+include_retired: true}`, and `experiment.search {goal: "G-n"}` and by lever for what was tried,
 whatever its verdict. A refuted claim or a failed Experiment is a lead: what changed since, what
 was not controlled. Read the league
 now: `platform.standings`, `platform.active_policies {league, exclude_player: true}`, the champion.

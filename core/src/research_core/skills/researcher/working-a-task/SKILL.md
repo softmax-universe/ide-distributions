@@ -48,7 +48,7 @@ claim to write, how to fix a broken build. A question you can answer with a tool
 ## 5. Wait, then END YOUR RUN
 
 Anything outside your control is a wait: `task_wait {task, kind, detail, ref}` with kind `xp`
-(`ref`: the request ids from `xp.request`), `credits` (after a 402), `process` (`ref`: the pid of
+(no `ref`: your Task's open requests), `credits` (after a 402), `process` (`ref`: the pid of
 a background build or evaluate), `permit` (`ref`: the route to read), `submission` (`ref`: the
 policy version id), `platform` (set for you when a route keeps failing), `user` (`ref`: the setting
 or T-n their answer changes) or `dependency` (`ref`: the T-n). Then stop: end the run with no further tool call. That

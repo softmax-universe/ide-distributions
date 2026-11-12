@@ -111,6 +111,11 @@ def test_write_read_search_and_retire_through_the_tool(call):
     assert [c["id"] for c in active_only["records"]] == ["C-2"]
     everything = call("claim", {"action": "search", "query": "scouts"})
     assert [c["retired"] for c in everything["records"]] == [False, True]
+    # No query lists claims, so tags alone find a Goal's or a topic's.
+    listed = call("claim", {"action": "search", "tags": ["opening"]})
+    assert listed["ok"] is True
+    assert [c["id"] for c in listed["records"]] == ["C-2", "C-1"]
+    assert call("claim", {"action": "search"})["ok"] is True
 
 
 def test_add_evidence_and_refute(call):

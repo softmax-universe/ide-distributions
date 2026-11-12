@@ -65,6 +65,26 @@ def test_a_wake_is_not_told_to_ask_in_chat(call, register_session):
     assert asked["ok"] is True and "in chat" not in asked["next"] and "end the run" in asked["next"]
 
 
+def test_parallel_wakes_do_not_ask_the_same_question_twice(call, ctx_factory, register_session):
+    register_session("w1", "wake")
+    register_session("w2", "wake")
+    first = call(
+        "ui", {"action": "ask", "question": "Submit V-2?", "refs": ["V-2"]}, session_id="w1"
+    )
+    second = call(
+        "ui",
+        {"action": "ask", "question": "Shall I submit V-2 now?", "refs": ["V-2"]},
+        session_id="w2",
+    )
+    assert second["ok"] is True and second["already_open"] is True
+    assert second["ask_id"] == first["ask_id"] and "already waiting" in second["next"]
+    other = call(
+        "ui", {"action": "ask", "question": "Submit V-3?", "refs": ["V-3"]}, session_id="w2"
+    )
+    assert other["ask_id"] != first["ask_id"]
+    assert set(doc(ctx_factory, "coworld:cow_fake")["asks"]) == {first["ask_id"], other["ask_id"]}
+
+
 def test_show_needs_exactly_one_of_ref_or_view(call):
     neither = call("ui", {"action": "show"})
     assert neither["ok"] is False and "ref" in neither["error"] and "view" in neither["error"]
