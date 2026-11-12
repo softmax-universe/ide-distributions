@@ -130,6 +130,12 @@ conversation, that message included. `POST /message-cancel` cancels a `waiting` 
 once; a cancelled message never waits. It answers `409` for a message that joined another
 admission's live run, since stopping that run would end the other admission too.
 
+The bridge also admits follow-up turns into a chat on its own (origin `followup`): the results of
+an `xp.request` the chat made, and a background wake's `ui.tell` updates. A follow-up fails, waits
+and resumes like a message. Its prompt is a user message in the native transcript that the user
+did not type, so `/messages/context` marks it `runtime_input: true`, and the AIDE backend shows it
+as a continuation, not as the user's message.
+
 `run_id` is the admission's current run: `null` while it is `waiting`, and a new run on each
 resume. A client follows the admission's `status` until it is `completed`,
 `cancelled`, `failed` or `interrupted`, and tracks whichever run `run_id` names at the time, not
