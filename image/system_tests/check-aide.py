@@ -44,9 +44,7 @@ files = fixture_files("cow_fake")
 mixin = ctx.coworld().mixin
 (mixin / "tools").mkdir(parents=True, exist_ok=True)
 (mixin / "MIXIN.md").write_text(files["MIXIN.md"])
-(mixin / "tools/evaluate.py").write_text(
-    files["tools/evaluate.py"].replace('"source": str(path),', '')
-)
+(mixin / "tools/evaluate.py").write_text(files["tools/evaluate.py"])
 platform = ctx.platform()
 platform.configure(polls_to_complete=10000)
 for number, patience in ((1, 5), (2, 8)):
