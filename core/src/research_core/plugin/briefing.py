@@ -261,10 +261,21 @@ def _identity_lines(inputs: Inputs) -> list[str]:
         elif settings.get(inputs.wstore, "identity.offer_made"):
             note = " (chosen at setup; rename offer made)"
         else:
-            note = " (chosen at setup, not yet confirmed by the user)"
+            note = (
+                " (chosen at setup, not yet confirmed by the user: offer once to change it,"
+                " then workspace.identity {offer_made})"
+            )
         lines.append(f"Name: {_clip(name, SUMMARY_CHARS)}{note}")
+    elif inputs.role == "orchestrator":
+        lines.append(
+            "No name yet (setup chooses one; otherwise in your first chat with the user choose"
+            " one with them: workspace.identity {name, cites})"
+        )
     if inputs.role == "orchestrator" and not settings.get(inputs.wstore, "identity.met_user"):
-        lines.append("Met the user: no")
+        lines.append(
+            "Met the user: no (introduce yourself briefly and ask their name and what they enjoy,"
+            " save it, then workspace.identity {met_user, cites} once they reply)"
+        )
     return lines
 
 

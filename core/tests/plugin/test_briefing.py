@@ -376,10 +376,14 @@ def test_a_workspace_session_and_every_coworld_show_the_same_name(tmp_path):
     before = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
     assert "Name:" not in before
     assert "Met the user: no" in before
+    assert "No name yet" in before and "workspace.identity {name, cites}" in before
+    researcher = briefing.render(ctx, "chat1", role="researcher", now=NOW)
+    assert "No name yet" not in researcher
 
     identity.choose(ctx.wstore, HARNESS, "Pip")
     text = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
-    assert "Name: Pip (chosen at setup, not yet confirmed by the user)" in text
+    assert "Name: Pip (chosen at setup, not yet confirmed by the user: offer once" in text
+    assert "{offer_made}" in text and "No name yet" not in text
     identity.mark_offered(ctx.wstore, HARNESS)
     offered = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
     assert "Name: Pip (chosen at setup; rename offer made)" in offered
@@ -443,9 +447,8 @@ def test_the_companion_section_gates_on_the_never_met_signal_and_says_the_user()
 
     soul = build.render("orchestrator")
     section = soul.split("## Your name\n")[1].split("\n## ")[0]
-    assert '"Met the user: no"' in section
-    assert 'No "Name:" line' in section and "{name, cites}" in section
-    assert "offer_made" in section and "not a wake or record id" in section
+    assert "never a wake or record id" in section
+    assert "cite it" in section and "`preference` claims" in section
     assert "User preferences" not in section
     assert "player" not in section.lower()
     assert "never take a game's name or persona" in section

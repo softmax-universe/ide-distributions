@@ -157,11 +157,14 @@ The workspace admission ledger records every chat, worker, continuation, and eve
 UI answers and their delivery inputs commit together; retrying the same answer returns its receipt.
 
 An Orchestrator chat's `xp.request` records a follow-up before returning `followup_scheduled: true`.
-The platform keeps running the requests while the workspace sleeps. At startup, AIDE opens
-Observatory's experience request change feed with a fresh snapshot for each retained batch.
-While awake it waits for changes on that feed. When every request in the batch reaches a
-terminal state, AIDE admits one follow-up turn in the original chat. The AIDE event log
-and history carry its reply across client reconnects.
+The follow-up is an `xp_followups` row in the workspace store (`core/src/research_core/xp_followups.py`).
+The platform keeps running the requests while the workspace sleeps. At startup, `research serve` opens
+Observatory's experience request change feed (`platform/experience_changes.py`) with a fresh snapshot
+for each retained batch. While awake it waits for changes on that feed. When every request in the
+batch reaches a terminal state, it admits one `origin="followup"` turn in the original chat, keyed
+`xp-followup:<row id>`, and records that admission on the row in the same transaction. Nothing is
+admitted while `paused` is set. The AIDE event log and history carry its reply across client
+reconnects.
 
 A background Orchestrator wake reaches the user's chat with `ui.tell {category, text, refs?}`
 (`core/src/research_core/store/chat_updates.py`). The tool is refused in a chat Session. It
