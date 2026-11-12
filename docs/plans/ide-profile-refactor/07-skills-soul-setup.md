@@ -4,6 +4,7 @@
 > 2026 (Pacific). The checkboxes were not kept up to date; the plan is historical. Since then
 > #198 reworked the tools, skills, prompts and docs so they agree. See [STATUS.md](STATUS.md),
 > `core/README.md` and the profile READMEs for the current state.
+> **2026-11-12:** the `ui` tools described here were removed; `ui.tell` became `chat_update` (branch `jb/remove-ui-tools`).
 
 Read `00-overview.md`, then entries 2–6. This entry makes the profiles *teachable*: the prompt
 text, the skills, the task type instructions and the wake prompts, plus the last two tools, the

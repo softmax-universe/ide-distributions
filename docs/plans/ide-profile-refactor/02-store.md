@@ -3,6 +3,7 @@
 > **Implemented.** Status as of November 12, 2026: built and merged in PR #106 on October 29,
 > 2026 (Pacific). The checkboxes were not kept up to date; the plan is historical. See
 > [STATUS.md](STATUS.md) and `core/README.md` for the current state.
+> **2026-11-12:** the `ui` tools described here were removed; `ui.tell` became `chat_update` (branch `jb/remove-ui-tools`).
 
 Read `00-overview.md` first. The store is the fixed machinery: SQLite per Coworld plus a small
 workspace store, numbered migrations, an append-only `events` table, token-marked writes with

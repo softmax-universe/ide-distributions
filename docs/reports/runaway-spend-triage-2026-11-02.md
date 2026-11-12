@@ -1,5 +1,7 @@
 # Triage: the $10-in-27-minutes incident and its three Asana tasks
 
+> **2026-11-12:** the `ui` tools described here were removed; `ui.tell` became `chat_update` (branch `jb/remove-ui-tools`).
+
 Triage briefing for James Boggs, November 2, 2026 (PST). Covers JAME-176 (runaway tool-call loop), JAME-175 (dispatcher error classes) and JAME-174 (budget-aware research serve). Researched at ide-distributions `2a224d2d`, metta `5a41cd9aa2`, and Hermes v0.21.6 source.
 
 ## Executive summary

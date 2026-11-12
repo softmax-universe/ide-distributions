@@ -12,7 +12,7 @@ a Session from Datadog alone. Capture is always on, and there is no setting.
 | Source | What |
 |---|---|
 | Gateway plugin | Each model request and reply, one per outer attempt, with reasoning and token usage (not the billed cost: see "Known holes"). System prompt sections and context parts. Tool calls as proposed, what ran, and each result as the model got it. Every committed row's ID and its text. Approvals, compaction, subagents, lifecycle, and each log line but the access line of a successful seam poll (a 200 for `GET /p/<profile>/v1/runs/<id>` from its urllib client), which comes once a second per live run. A failed poll and the AIDE backend's run read are sent. All text goes through Hermes's secret scanner first. |
-| `research serve` | Each POST to a route in `RECORDED_ROUTES`, whatever its outcome: `/session-open`, `/message`, `/message-cancel`, `/ui-action`, `/store/apply`, `/models`. Also committed store events, coordinator passes, attachment outcomes, wakes and successors. Metadata only, with Softmax tokens masked. |
+| `research serve` | Each POST to a route in `RECORDED_ROUTES`, whatever its outcome: `/session-open`, `/message`, `/message-cancel`, `/store/apply`, `/models`. Also committed store events, coordinator passes, attachment outcomes, wakes and successors. Metadata only, with Softmax tokens masked. |
 | Other `research` commands | Their committed store events and tool completions. Metadata only, with Softmax tokens masked. |
 
 The AIDE backend (`image/aide.py`) records nothing itself. See "Known holes".

@@ -3,6 +3,7 @@
 > **Implemented.** Status as of November 12, 2026: these amendments bound the implementers of
 > the plan, and the build that applied them merged as PR #106 on October 29, 2026 (Pacific). They
 > are historical and do not bind later changes. See [STATUS.md](STATUS.md) for the current state.
+> **2026-11-12:** the `ui` tools described here were removed; `ui.tell` became `chat_update` (branch `jb/remove-ui-tools`).
 
 Three independent reviewers checked entries 00–07 against the design. The findings below are
 adopted; where this file and an entry file differ, **this file wins**. Each item names the entry

@@ -7,6 +7,12 @@
 > "Which updates reach the chat"). Where this document and the code differ, `docs/hosting.md`
 > ("Coordinator and pause") and `core/src/research_core/store/chat_updates.py` are the current
 > truth.
+>
+> **Renamed, November 12, 2026 (branch `jb/remove-ui-tools`):** the whole `ui` tool was removed
+> (`ui.show`, `ui_panel_set`, `ui.ask`, `ui.notify` and UI state). `ui.tell` is now its own tool,
+> `chat_update {category, text, refs?}`, with the same rules, and `ui.notify` folded into it as the
+> category `progress`: routine news, written as a notice at once, never a chat message, and not a
+> value of `chat_updates.categories`. The body below keeps the names it was written with.
 
 ## Problem
 
@@ -87,9 +93,9 @@ setting leaves out is written as a notice at once. The tool result says so, so t
 update will not interrupt the chat. An empty list sends every update to notices, so no separate
 on/off switch is needed. The debounce windows stay constants.
 
-The field is named `category` rather than `kind` because `ui_panel_set` already has a `kind` field
-with a different enum. The grouped `ui` tool validates fields by name across its actions, so a
-second `kind` field would collide with it.
+The field was named `category` rather than `kind` because `ui_panel_set` already had a `kind` field
+with a different enum, and the grouped `ui` tool validated fields by name across its actions.
+`chat_update` kept the name.
 
 ### Wake instructions
 
@@ -103,10 +109,10 @@ number of words, so it stays at 2,492 of its 2,500-word budget.
 ## Not in scope and known limits
 
 - **Notices still reach the user only through the next chat turn.** The AIDE backend serves no
-  notices. A notice (a `ui.notify` call, a category the setting leaves out, or an update for a
-  Coworld with no chat) appears only when the turn hook lists unread notices at the user's next
-  chat turn.
-- **`ui.ask`, `ui.show` and `ui.panel_set` are invisible in the hosted image.** AIDE serves no UI
-  state. Wakes no longer rely on `ui.ask`. The chat side needs its own fix.
+  notices. A notice (a `progress` update, formerly `ui.notify`; a category the setting leaves out;
+  or an update for a Coworld with no chat) appears only when the turn hook lists unread notices at
+  the user's next chat turn.
+- **`ui.ask`, `ui.show` and `ui.panel_set` were invisible in the hosted image**, because AIDE
+  serves no UI state. They were removed on November 12, 2026; a chat asks in its reply.
 - **A sleeping workspace is not woken** when platform work finishes. Updates are recorded and
   delivered at the next wake.

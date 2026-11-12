@@ -6,6 +6,7 @@
 > loop runs the watcher's observations, and the Orchestrator starts Researcher work with
 > `task.assign`. See [STATUS.md](STATUS.md), `docs/hosting.md` ("Coordinator and pause") and
 > `docs/specs/workspace-orchestration.md` for the current state.
+> **2026-11-12:** the `ui` tools described here were removed; `ui.tell` became `chat_update` (branch `jb/remove-ui-tools`).
 
 Read `00-overview.md`, then the interfaces of entries 2–4. The watcher is a Hermes `no_agent`
 cron job of the Orchestrator profile that runs every minute in the workspace environment. It has

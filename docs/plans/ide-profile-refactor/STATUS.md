@@ -1,5 +1,7 @@
 # Status of the IDE profile rebuild
 
+> **2026-11-12:** the `ui` tools described here were removed; `ui.tell` became `chat_update` (branch `jb/remove-ui-tools`).
+
 Status as of November 12, 2026 (Pacific), checked against `main` at `ec3e811d`. First written
 October 28, 2026 on branch `jb/idd-profile-refactor`, which merged as PR #106 on October 29,
 2026 (Pacific). The plan is `00-overview.md` … `07-skills-soul-setup.md` with the binding
