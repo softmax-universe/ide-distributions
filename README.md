@@ -9,11 +9,13 @@ package.
 | [`orchestrator/`](orchestrator/README.md) | The research lead: the profile the user talks to. Plans Goals and Tasks, answers the Researchers, makes and submits policy Versions. |
 | [`researcher/`](researcher/README.md) | A research worker. Each Session does one Task in the background and speaks only to the Orchestrator. |
 
-The research profiles follow the
+The research profiles were built from the
 [IDE profile refactor design](docs/designs/ide-profile-refactor-2026-10-28-final.html) (open it
-in a browser). The implementation plan, one file per stack entry, is in
-[`docs/plans/ide-profile-refactor/`](docs/plans/ide-profile-refactor/00-overview.md); the
-overview fixes the architecture decisions the design leaves open.
+in a browser; its status note lists where the code has since moved on). The implementation
+plan, one file per stack entry, is in
+[`docs/plans/ide-profile-refactor/`](docs/plans/ide-profile-refactor/00-overview.md); it is
+historical, and its [`STATUS.md`](docs/plans/ide-profile-refactor/STATUS.md) says what landed and
+what is still open.
 
 The rebuild merged on October 29, 2026 (Pacific). What hosting needs from these profiles, and
 what they guarantee, is in [`docs/hosting.md`](docs/hosting.md); the retired profiles' notes

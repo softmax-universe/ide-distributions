@@ -1,5 +1,10 @@
 # Entry 3 — record tools, plugin wiring, briefing, session context, advisory hook
 
+> **Implemented.** Status as of November 12, 2026: built and merged in PR #106 on October 29,
+> 2026 (Pacific). The checkboxes were not kept up to date; the plan is historical. Since then the
+> 13 hardest write actions became their own tools (#188), so the Orchestrator has 24 tools and a
+> Researcher 23. See [STATUS.md](STATUS.md) and `core/README.md` for the current state.
+
 Read `00-overview.md` and the interfaces of `02-store.md` first. After this entry both profiles
 expose their record tools (the platform tools arrive in entry 4 as further `ToolSpec`s in the same
 catalog), the briefing and session-context prompt sections render, the advisory hook annotates

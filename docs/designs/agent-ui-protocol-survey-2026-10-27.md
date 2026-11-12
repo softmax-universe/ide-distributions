@@ -1,5 +1,16 @@
 # Agent ↔ UI protocol survey
 
+> **Research brief, kept for history (status 2026-11-12).** Its main recommendation was
+> followed: no public protocol was adopted, and the rebuild (#106,
+> [ide-profile-refactor-2026-10-28-final.html](ide-profile-refactor-2026-10-28-final.html))
+> defined its own client contract in `core/src/research_core/contract/` (`CONTRACT.md`: session
+> open with declared capabilities, per-turn context, snapshots with `seq`, UI state changed by
+> JSON Patch `ui.patch` events). AG-UI's event names were not kept. Since November 5, 2026,
+> frontends reach a workspace through AIDE 1.0.0, Softmax's own JSON-RPC protocol whose contract
+> lives in metta; `image/aide.py` is the workspace's backend for it and maps each method to
+> calls on that contract's seam and the Hermes gateway (`image/README.md`, "AIDE 1.0.0 backend"). AIDE is not one of the protocols
+> surveyed below. For current behaviour see `image/README.md` and `core/README.md`.
+
 2026-10-27 (PDT). Research brief for the research-profile redesign (Orchestrator + Researchers on Hermes Agent v0.21.6, behind the Softmax bridge).
 
 **What we need.** One contract that the agent backend owns, with three channels: (1) **context in**: a session-open message (client identity, declared UI capabilities, user, game/league) plus small per-turn context; (2) **UI control out**: `ui.*` tools that change a declarative UI state, rendered by each client as far as it can; (3) **state sync**: a snapshot, then an event stream of record changes, UI state changes, and chat/run events, sent to several clients at once.

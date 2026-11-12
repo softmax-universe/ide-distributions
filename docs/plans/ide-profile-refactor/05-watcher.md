@@ -1,5 +1,12 @@
 # Entry 5 — the watcher and dispatcher
 
+> **Implemented, then changed.** Status as of November 12, 2026: built as a cron job and merged
+> in PR #106 on October 29, 2026 (Pacific). The checkboxes were not kept up to date; the plan is
+> historical. Since #146 (November 3, 2026) there is no cron job: `research serve`'s coordinator
+> loop runs the watcher's observations, and the Orchestrator starts Researcher work with
+> `task.assign`. See [STATUS.md](STATUS.md), `docs/hosting.md` ("Coordinator and pause") and
+> `docs/specs/workspace-orchestration.md` for the current state.
+
 Read `00-overview.md`, then the interfaces of entries 2–4. The watcher is a Hermes `no_agent`
 cron job of the Orchestrator profile that runs every minute in the workspace environment. It has
 no model. It resolves waits, checks runs, recovers dead Sessions, delivers messages, merges
