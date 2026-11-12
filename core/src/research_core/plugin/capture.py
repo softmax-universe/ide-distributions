@@ -729,6 +729,7 @@ class GatewayCapture:
             # Compaction can come partway through a turn, after it committed rows under the old ID,
             # and the turn's end reads only the new one.
             self._defer_commits(old_session_id)
+            self._turn_ended.pop(old_session_id, None)  # Nothing reads the old ID again.
         self._writer.capture_operation(
             "compaction",
             "committed",
@@ -775,9 +776,9 @@ class GatewayCapture:
 
         ids = self._ids(session_id)
         db = Path(get_hermes_home()) / "state.db"
-        # Hermes stamps a row when it commits it, so the turn's rows are those since the last
-        # turn's end, up to now. Bounding both ends here means a read the full queue dropped
-        # leaves those rows out, and never hands them to the next turn's span.
+        # Hermes stamps a row when it commits it, so the rows to read are those since the last
+        # read, up to now. Bounding both ends here means a read the full queue dropped leaves
+        # those rows out, and never hands them to the next turn's span.
         after = self._turn_ended.get(session_id, self._started)
         self._turn_ended[session_id] = until = time.time()
         self._writer.defer(partial(self._capture_commits, db, session_id, ids, after, until))

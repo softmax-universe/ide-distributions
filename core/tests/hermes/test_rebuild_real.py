@@ -520,8 +520,7 @@ def test_a_kill_during_a_call_keeps_its_request(hermes_bin, tmp_path):
     assert first["response"] and not second.get("response")
     assert second["request"]["messages"][-1]["role"] == "tool"
     assert not [p for p in report["missing"] if p["kind"] == "call_with_no_attempt"]
-    unended = {"kind": "attempt_with_no_end", "model_attempt_id": second["model_attempt_id"]}
-    assert unended in report["missing"]
+    assert second["model_attempt_id"] in report["unended_attempts"]
 
 
 def test_a_kill_during_the_first_call_keeps_the_users_message(hermes_bin, tmp_path):

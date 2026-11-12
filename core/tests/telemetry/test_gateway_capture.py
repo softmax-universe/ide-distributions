@@ -424,6 +424,7 @@ def test_rows_committed_before_a_compaction_partway_through_a_turn_are_read(
         ("ses_1", "ses_1"),
         ("ses_1", "ses_2"),
     ]
+    assert "ses_1" not in capture._turn_ended
 
 
 def _traced(writer) -> tuple[dict, GatewayCapture]:

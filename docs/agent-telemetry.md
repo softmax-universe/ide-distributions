@@ -60,9 +60,9 @@ each lost nothing with no wait, one run each. A line is searchable 12 to 27 seco
 | Loss | Why it is accepted |
 |---|---|
 | Nothing confirms delivery. A line that never arrives is not noticed, and a stream that cannot be opened stays closed for the life of that process | There is no sender to tell. Rebuild reports what a surviving record refers to |
-| Any exit of the gateway or `research serve`, graceful or not, loses what the memory queue still holds: across 20 turns of a real gateway with tool results of 40,000 characters, 629 captures found at most 4 records queued (median 1), at most 945 KB. A short command has no queue. A process killed during a call keeps the call's request, because it is written before the call, and rebuild names the attempt `attempt_with_no_end` (`test_a_kill_during_a_call_keeps_its_request`, `test_a_kill_during_the_first_call_keeps_the_users_message`) | The queue empties as records arrive, and nothing on the agent's path may wait for it |
+| Any exit of the gateway or `research serve`, graceful or not, loses what the memory queue still holds: across 20 turns of a real gateway with tool results of 40,000 characters, 629 captures found at most 4 records queued (median 1), at most 945 KB. A short command has no queue. A process killed during a call keeps the call's request, because it is written before the call, and rebuild lists the attempt in `unended_attempts` (`test_a_kill_during_a_call_keeps_its_request`, `test_a_kill_during_the_first_call_keeps_the_users_message`) | The queue empties as records arrive, and nothing on the agent's path may wait for it |
 | The Agent falling behind by more than the retained log files would lose lines. Untested | 240 MB over about 15 rotations lost nothing with the Agent keeping up |
-| A full queue drops records, which a stream that has stopped soon causes. The writer's thread logs the count each time it changes. A capture over the 64 MiB byte limit goes in only when nothing is queued, so a request that large captured just after another record, such as its own context parts, is dropped, and rebuild shows `call_with_no_attempt` | A caller must never wait |
+| A full queue drops records, which a stream that has stopped soon causes. The writer's thread logs the count each time it changes. A capture over the 64 MiB byte limit goes in only when nothing is queued, so a request that large captured just after another record, such as its own context parts, is dropped, and rebuild shows `call_with_no_attempt` and, for its reply, `reply_with_no_request` | A caller must never wait |
 | Any process in the workspace can write a line that looks like ours | James: restriction work matters very little here |
 
 ## Read a Session
@@ -92,6 +92,7 @@ each reference's name:
 - `requests`: each model request in wire order, whole, with `response`, `failed` or `unread` (the record
   of how the attempt ended), `partial_responses` (what each broken stream of the attempt had shown),
   `tools` (its tool activity, including each `result`), and `tokens_by_source`.
+- `unended_attempts`: the `model_attempt_id` of each request with no reply, partial reply, failure or `unread` record: a process killed during the call, a cancel (Hermes's interrupt fires no hook), or a call still running. It is not a loss, so it does not change the exit code.
 - `rows`: each committed native row, with `message` as it was first sent and `rewritten_to` if a prune
   later changed it. `message` means "first sent" only when `missing` is empty: if a row's original was
   lost, it shows the first form that survived. A row no request lists never reached a model, such as a
@@ -119,7 +120,6 @@ characters only.
 | `digest_failure` | The joined chunks do not match the digest or size |
 | `row_without_text` | A committed row that no request lists and whose own text is unknown: its commit text or a tool row's result was lost, or two results with no row ID share its call ID |
 | `call_with_no_attempt` | A call started and no attempt was written: its request record was dropped or lost |
-| `attempt_with_no_end` | An attempt's request was written and nothing says how it ended: the process probably died during the call |
 | `reply_with_no_request` | A reply, failure or partial reply names an attempt whose request record is lost |
 
 A missing object blocks each request that needs it, and that request shows `blocked_by`. Nothing is guessed.
@@ -162,6 +162,7 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 | `extra_headers` and `extra_query` are not captured, because they are not part of the request body. | `plugin/capture.py`, `wire_request` |
 | After a restart the first Session ID is lost too. Rebuild follows `parent_session_id` on `compaction` records. | `test_compaction_is_followed_in_both_directions_after_a_restart` |
 | Hermes gives a row ID only to rows committed since its last prune or restart, so a `full` manifest after one names few rows. Text is not lost: rebuild joins by row ID first, and a listing with none through its tool call ID, unless the row's own result has other text. | `test_each_committed_row_equals_state_db` |
+| A listing with no row ID joins the row that last held its tool call ID, so when a later, different row reuses that ID (Kimi does across turns) and is listed with no row ID, the older row can show a false `rewritten_to`. | `agent_telemetry/rebuild.py`, `_rows` |
 | The row Hermes makes to keep a pruned original has no commit record, and neither does a `session_meta` row. The original's text is the first form of the pruned row. | `test_each_committed_row_equals_state_db` |
 | A Session's report does not name its subagents' Sessions, because their records have another Session's ID. Search `service:ide-agent-telemetry @parent_session_id:<id>`, then rebuild each. | `agent_telemetry/rebuild.py`, `_Finder.owned` |
 | An auxiliary call outside a turn has session ID `no-session`, and a log line with no Session tag has none, so a Session's report does not show them. | `plugin/capture.py` |
