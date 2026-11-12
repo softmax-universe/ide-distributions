@@ -40,7 +40,7 @@ def test_open_creates_and_migrates(tmp_path):
     store = db.Store.open(path, kind="coworld")
     try:
         assert path.is_file()
-        assert store.one("PRAGMA user_version")[0] == 4
+        assert store.one("PRAGMA user_version")[0] == 5
         assert store.one("PRAGMA journal_mode")[0] == "wal"
         assert store.one("PRAGMA foreign_keys")[0] == 1
         assert store.one("PRAGMA busy_timeout")[0] == 5000
@@ -144,7 +144,7 @@ def test_open_twice_is_idempotent(tmp_path):
     (path.parent / "README.md").write_text("custom note")
     store = db.Store.open(path, kind="coworld")
     try:
-        assert store.one("PRAGMA user_version")[0] == 4
+        assert store.one("PRAGMA user_version")[0] == 5
         assert store.schema_status().ok
         assert (path.parent / "README.md").read_text() == "custom note"
     finally:
@@ -454,7 +454,7 @@ def test_rebuild_keeps_rows(tmp_path, harness):
     assert report.tables["claims"] == 1
     assert report.tables["settings"] == 1
     assert report.dropped_columns == {"goals": ["x"]}
-    assert report.user_version == 4
+    assert report.user_version == 5
     as_dict = report.to_dict()
     assert as_dict["tables"]["goals"] == 2 and as_dict["dropped_columns"] == {"goals": ["x"]}
     # The original was copied next to the store before anything changed: old shape, old rows.
@@ -469,7 +469,7 @@ def test_rebuild_keeps_rows(tmp_path, harness):
         copy.close()
     with db.Store.open(path, kind="coworld") as store:
         assert store.schema_status().ok
-        assert store.one("PRAGMA user_version")[0] == 4
+        assert store.one("PRAGMA user_version")[0] == 5
         assert store.q("SELECT name FROM sqlite_master WHERE name LIKE 'old\\_%' ESCAPE '\\'") == []
         assert [r["title"] for r in store.q("SELECT title FROM goals ORDER BY id")] == [
             "one",
@@ -642,7 +642,7 @@ def test_an_interrupted_repair_leaves_the_original_intact(tmp_path, harness, mon
         assert "x" in [r[1] for r in other.execute("PRAGMA table_info(goals)")]
         assert other.execute("SELECT title FROM goals").fetchone()[0] == "original"
         assert other.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
-        assert other.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert other.execute("PRAGMA user_version").fetchone()[0] == 5
         assert other.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         names = [r[0] for r in other.execute("SELECT name FROM sqlite_master")]
         assert not any(name.startswith("old_") for name in names)
@@ -688,7 +688,7 @@ def test_a_store_from_a_newer_release_is_refused_and_never_rebuilt(tmp_path, har
     newer_store(path, harness)
     with pytest.raises(SchemaNewer) as excinfo:
         db.Store.open(path, kind="coworld")
-    assert (excinfo.value.user_version, excinfo.value.expected_version) == (99, 4)
+    assert (excinfo.value.user_version, excinfo.value.expected_version) == (99, 5)
     assert "newer release" in str(excinfo.value) and str(tmp_path) not in str(excinfo.value)
     assert not isinstance(excinfo.value, SchemaMismatch)
     with pytest.raises(SchemaNewer):

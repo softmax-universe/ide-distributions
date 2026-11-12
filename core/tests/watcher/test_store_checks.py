@@ -173,7 +173,7 @@ def test_a_newer_coworld_store_is_left_alone_reported_once_and_pauses_the_worksp
         assert event["payload"] == {
             "store": "cow_fake",
             "user_version": 99,
-            "expected_version": 4,
+            "expected_version": 5,
         }
         [notice] = notices.unread(wstore)
         assert "Coworld cow_fake" in notice["text"] and "newer release" in notice["text"]
