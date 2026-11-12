@@ -10,7 +10,7 @@ import research_core.tools.goal  # noqa: F401  (registers the tool)
 import research_core.tools.settings  # noqa: F401
 import research_core.tools.task  # noqa: F401
 from research_core import gitops
-from research_core.store import claims, sessions, settings, versions
+from research_core.store import claims, experiments, sessions, settings, versions
 from research_core.store.actors import Actor
 from research_core.tools import catalog
 from research_core.tools.base import run_tool
@@ -246,11 +246,11 @@ def test_a_task_actions_own_tool_goes_through_the_same_transition(call, goal, co
     claim(call)
     waiting = call(
         "task_wait",
-        {"task": "T-1", "kind": "xp", "detail": "2 requests", "ref": ["xp-1"]},
+        {"task": "T-1", "kind": "process", "detail": "the build", "ref": 4242},
         role="researcher",
         session_id="r1",
     )
-    assert waiting["record"]["waiting_on"]["kind"] == "xp"
+    assert waiting["record"]["waiting_on"]["kind"] == "process"
 
 
 def test_a_user_wait_needs_a_ref_that_can_resolve_it(call, goal, code_repo):
@@ -270,10 +270,10 @@ def test_wait_ask_answer_and_message(call, goal, code_repo):
 
     waiting = as_researcher(
         call,
-        {"action": "wait", "task": "T-1", "kind": "xp", "detail": "2 requests", "ref": ["xp-1"]},
+        {"action": "wait", "task": "T-1", "kind": "process", "detail": "build", "ref": 4242},
     )
-    assert waiting["record"]["waiting_on"]["kind"] == "xp"
-    assert waiting["record"]["waiting_on"]["ref"] == ["xp-1"]
+    assert waiting["record"]["waiting_on"]["kind"] == "process"
+    assert waiting["record"]["waiting_on"]["ref"] == 4242
 
     asked = as_researcher(call, {"action": "ask", "task": "T-1", "question": "Which seeds?"})
     assert asked["record"]["waiting_on"]["kind"] == "question"
@@ -293,6 +293,78 @@ def test_wait_ask_answer_and_message(call, goal, code_repo):
     ]
     # Reading never marks delivery: the watcher does, when it hands the text to a run.
     assert [m["text"] for m in seen["pending_messages"]] == ["Which seeds?"]
+
+
+def task_experiment_with_runs(ctx_factory, states: dict[str, str | None]) -> None:
+    """X-1 for T-1 (held by r1), with one XP run per request id in the given platform state."""
+    ctx, holder = ctx_factory(), Actor.session("r1")
+    versions.create(
+        ctx.store, holder, summary="baseline", commit_sha="0" * 40, branch="main",
+        artifact={"kind": "file", "path": "p", "digest": "0" * 64, "size": 1}, based_on=[],
+    )  # fmt: skip
+    record = experiments.create(
+        ctx.store,
+        holder,
+        summary="does retreating help",
+        task_id=1,
+        hypothesis={
+            "statement": "s because m",
+            "if_true": "t",
+            "if_false": "f",
+            "motivation": "m",
+        },
+        methods={
+            "baseline": "V-1",
+            "procedure": "paired seeds",
+            "metrics": [{"name": "score", "direction": "up", "role": "primary"}],
+            "decision_rule": {"text": "score up", "n_min": 2},
+        },
+    )
+    experiments.start(ctx.store, holder, record["id"])
+    for request_id, state in states.items():
+        run = experiments.add_run(
+            ctx.store, holder, record["id"], kind="xp", platform_request_id=request_id, arm="a"
+        )
+        if state is not None:
+            experiments.update_run(ctx.store, holder, run["id"], state=state)
+
+
+def test_an_xp_wait_without_ref_waits_on_the_tasks_open_requests(
+    call, ctx_factory, goal, code_repo
+):
+    call("task", task_args())
+    claim(call)
+    task_experiment_with_runs(
+        ctx_factory, {"xreq_1": "running", "xreq_2": None, "xreq_3": "completed"}
+    )
+    wait = {"action": "wait", "task": "T-1", "kind": "xp", "detail": "X-1's requests"}
+    waiting = as_researcher(call, wait)
+    assert waiting["record"]["waiting_on"]["ref"] == ["xreq_1", "xreq_2"]
+
+
+def test_an_xp_wait_refuses_request_ids_no_run_records(call, ctx_factory, goal, code_repo):
+    """A list sent as JSON text is one id the platform never issued: the watcher would poll it
+    for good, so the wait is refused and names the ids that work."""
+    call("task", task_args())
+    claim(call)
+    task_experiment_with_runs(ctx_factory, {"xreq_1": "running"})
+    wait = {"action": "wait", "task": "T-1", "kind": "xp", "detail": "X-1's requests"}
+    for bad in ('["xreq_1"]', ["xreq_1", "xreq_9"]):
+        refused = as_researcher(call, wait | {"ref": bad})
+        assert refused["ok"] is False and "no Experiment run records" in refused["error"]
+        assert "omit ref to wait on T-1's open requests (xreq_1)" in refused["error"]
+    assert as_researcher(call, wait | {"ref": "xreq_1"})["record"]["waiting_on"]["ref"] == [
+        "xreq_1"
+    ]
+
+
+def test_an_xp_wait_with_nothing_open_is_refused(call, ctx_factory, goal, code_repo):
+    call("task", task_args())
+    claim(call)
+    task_experiment_with_runs(ctx_factory, {"xreq_1": "completed"})
+    wait = {"action": "wait", "task": "T-1", "kind": "xp", "detail": "X-1's requests"}
+    refused = as_researcher(call, wait)
+    assert refused["ok"] is False and "no open XP requests" in refused["error"]
 
 
 def test_wait_from_a_non_holder_is_refused(call, goal, code_repo):

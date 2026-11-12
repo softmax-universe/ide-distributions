@@ -468,6 +468,8 @@ def test_a_tasks_experiment_is_refused_for_anyone_but_its_holder_before_any_requ
         session_id="r1",
     )
     assert held["ok"] is True, held
+    # The wait takes the Task's open requests by itself, so the model copies no ids.
+    assert held["next"].startswith("task_wait {task, kind: xp, detail: 'XP requests for X-1'}")
 
 
 def test_ask_above_warns_the_orchestrator_and_asks_the_researcher(run, ctx, uploaded):

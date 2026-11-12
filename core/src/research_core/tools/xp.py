@@ -19,7 +19,8 @@ seat is a broken evaluate.
 
 Rules the tool keeps (A4.4): it puts a Task on a wait only when the platform stays down (below);
 a Researcher calls
-``task_wait {kind: xp, ref: [...]}`` and ends its run, or ``task_wait {kind: credits}`` after a
+``task_wait {kind: xp}`` and ends its run (``ref`` defaults to the open requests of the Task's
+Experiments; ``tools/task.py`` ``xp_wait_refs``), or ``task_wait {kind: credits}`` after a
 credits refusal. There is no local credits pre-check: the platform's refusal (402) is the
 refusal, reported with the balance, the held amount and the next refill. The
 ``xp.ask_above_requests_per_experiment`` setting: above it the Orchestrator gets a warning and
@@ -77,7 +78,7 @@ ARMS = ("candidate", "baseline")
 ASK_ABOVE_KEY = "xp.ask_above_requests_per_experiment"
 DEFAULT_EPISODES = 1
 MAX_DEFAULT_SEEDS = 20
-TERMINAL_STATES = ("completed", "failed", "cancelled")
+TERMINAL_STATES = experiments.REQUEST_TERMINAL_STATES
 RUN_KIND = "xp"
 # A3.2: the budget an evaluate command gets before it is left running in the background.
 EVALUATE_BUDGET_S = mixin_module.DEFAULT_BUDGET_S
@@ -477,10 +478,12 @@ def _next_after_request(ctx: ToolContext, record: dict, pending_ids: list[str]) 
             f"every request is finished; xp.status {{experiment: {record['id']}}} stores the rows"
         )
     if ctx.role == "researcher":
+        # A Task's Experiment needs no ref: the wait defaults to the Task's open requests, so a
+        # model never has to copy the ids (Kimi sent them as JSON text, 2026-11).
+        ref = "" if record["task_id"] else f", ref: {json.dumps(pending_ids)}"
         return (
-            f"task_wait {{task, kind: xp, detail: 'XP requests for {record['id']}', ref:"
-            f" {json.dumps(pending_ids)}}} and end your run; the watcher resumes you when they"
-            " finish, then xp.status stores the rows"
+            f"task_wait {{task, kind: xp, detail: 'XP requests for {record['id']}'{ref}}} and end"
+            " your run; the watcher resumes you when they finish, then xp.status stores the rows"
         )
     return (
         f"xp.status {{experiment: {record['id']}}} refreshes the runs and stores the rows once the"
@@ -773,7 +776,7 @@ def _report(record: dict, note: str | None = None) -> dict:
     elif pending:
         report["next"] = (
             f"{len(pending)} requests still run; a Researcher calls task_wait {{task, kind: xp,"
-            " detail, ref} and ends its run, an Orchestrator tries later"
+            " detail} and ends its run, an Orchestrator tries later"
         )
     return report
 

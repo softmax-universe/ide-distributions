@@ -52,6 +52,8 @@ METRIC_ROLES = ("primary", "guardrail", "performance")
 DECISION_RULE_KEYS = ("text", "n_min", "k")
 MEASUREMENT_KEYS = ("metric", "baseline", "candidate", "n", "effect")
 VERDICTS = ("confirmed", "refuted", "inconclusive")
+# A run's platform request states that never change again.
+REQUEST_TERMINAL_STATES = ("completed", "failed", "cancelled")
 SECTIONS = ("hypothesis", "methods", "results")
 SUMMARY_MAX_WORDS = 40
 
@@ -283,6 +285,26 @@ def add_run(
             },
         )
     return _run_record(store, run_id)
+
+
+def open_requests(store: Store, task_id: int) -> list[str]:
+    """The platform request ids of the Task's Experiments' runs that are not yet terminal."""
+    rows = store.q(
+        "SELECT r.platform_request_id, r.state FROM experiment_runs r"
+        " JOIN experiments e ON e.id = r.experiment_id WHERE e.task_id = ? ORDER BY r.id",
+        (task_id,),
+    )
+    return [row[0] for row in rows if row[1] not in REQUEST_TERMINAL_STATES]
+
+
+def recorded_requests(store: Store, request_ids: list[str]) -> set[str]:
+    """Which of ``request_ids`` some Experiment run records."""
+    marks = ", ".join("?" for _ in request_ids)
+    rows = store.q(
+        f"SELECT platform_request_id FROM experiment_runs WHERE platform_request_id IN ({marks})",
+        tuple(request_ids),
+    )
+    return {row[0] for row in rows}
 
 
 def require_run_of(store: Store, run_id: int, experiment_id: int) -> None:
