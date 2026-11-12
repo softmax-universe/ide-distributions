@@ -26,7 +26,8 @@ def run_rebuild(args: argparse.Namespace) -> int:
         print(f"Could not search Datadog: {error}", file=sys.stderr)
         return 2
     json.dump(report, sys.stdout, ensure_ascii=False)
-    return 1 if report["missing"] else 0
+    # Not 1, which an uncaught Python error also exits with.
+    return 3 if report["missing"] else 0
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:

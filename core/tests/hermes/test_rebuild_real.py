@@ -1,6 +1,6 @@
 """The goal of the feature, proven: a Session rebuilt from Datadog's API alone.
 
-A real patched gateway runs a Session with tool calls, a prune and a restart. Every line it and
+A real gateway runs a Session with tool calls, a prune and a restart. Every line it and
 ``research serve`` write to the stream goes to a fake Logs search. The rebuild command's output is
 then compared with two sources it never reads: each request the stub model received, and each row of
 that profile's ``state.db``. Both go through Hermes's scanner first, so "after redaction" is tested

@@ -280,8 +280,8 @@ This is best-effort diagnostics, not a durable audit trail.
 To export through an existing collector, configure `OTEL_EXPORTER_OTLP_ENDPOINT` (base URL)
 or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (full trace URL). Standard exporter timeout, header,
 TLS and batch settings apply to background delivery. Invalid SDK configuration disables
-tracing; invalid remote-exporter configuration preserves console tracing and records
-`telemetry.exporter.disabled`. Resource metadata comes from the standard environment
+tracing; invalid remote-exporter configuration preserves console tracing and records nothing
+of its own. Resource metadata comes from the standard environment
 resource detector plus explicit workspace/service identity; automatic resource-discovery
 plugins do not run on the application path.
 

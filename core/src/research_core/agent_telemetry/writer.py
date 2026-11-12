@@ -232,19 +232,6 @@ class TelemetryWriter(Writer):
                 self._queue.append(job)
             self._ready.notify()
 
-    def flush(self, timeout_s: float) -> bool:
-        """Wait at most ``timeout_s`` for the thread to process what is captured so far. For tests:
-        no caller in the agent's path waits for the writer.
-
-        True proves that the queue was processed up to here, not that anything arrived: a stream
-        that could not be opened, a failed write and a dropped record all still count as processed.
-        """
-        reached = threading.Event()
-        with self._ready:
-            self._queue.append(reached.set)
-            self._ready.notify()
-        return reached.wait(timeout_s)
-
     def _run(self) -> None:
         reported = 0
         while True:
