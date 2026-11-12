@@ -4,7 +4,6 @@ status with download, evaluate and stored rows, a broken evaluate, a backgrounde
 from __future__ import annotations
 
 import json
-import textwrap
 import time
 
 import pytest
@@ -41,22 +40,8 @@ METRICS = [
     {"name": "score", "direction": "up", "role": "primary", "min_effect": 1.0},
     {"name": "errors", "direction": "down", "role": "guardrail", "tolerance": 1.0},
 ]
-# The fixture's evaluate.py takes the results folder on its command line and prints a
-# ``source`` key that ``ingest.rows_from_evaluate_output`` refuses (unknown keys), so the test
-# mixin passes ``$XP_RESULTS`` and pipes the rows through a filter that drops the key.
-EVALUATE_COMMAND = (
-    'python3 mixin/tools/evaluate.py "$XP_RESULTS" | python3 mixin/tools/rows_only.py'
-)
-ROWS_ONLY = textwrap.dedent(
-    """\
-    import json, sys
-    for line in sys.stdin:
-        if line.strip():
-            row = json.loads(line)
-            row.pop("source", None)
-            print(json.dumps(row, sort_keys=True))
-    """
-)
+# The fixture's evaluate.py, which prints every seat of every downloaded episode.
+EVALUATE_COMMAND = 'python3 mixin/tools/evaluate.py "$XP_RESULTS"'
 
 
 def policy_bytes(aggression: int, patience: int) -> bytes:
@@ -91,7 +76,6 @@ def mixin_dir(ctx):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
     set_evaluate_command(code / "mixin", EVALUATE_COMMAND)
-    (code / "mixin" / "tools" / "rows_only.py").write_text(ROWS_ONLY)
     return code / "mixin"
 
 

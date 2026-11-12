@@ -661,7 +661,7 @@ def _finish_evaluate(
         return None
     try:
         rows = rows_from_evaluate_output(
-            _evaluate_output(result.log_path),
+            evaluate_output(result.log_path),
             policy_version=results["version"],
             # The version the platform played; MIXIN.md's is only what the mixin was written for.
             game_version=results.get("coworld_version") or mixin.coworld_version or "unknown",
@@ -732,8 +732,9 @@ def _store_rows(ctx: ToolContext, run: dict, results: dict, validity: str | None
     experiments.update_run(ctx.store, ctx.actor, run["id"], results=results, validity=validity)
 
 
-def _evaluate_output(log_path: Path) -> str:
-    """The log without the ``$ <command>`` line ``run_command`` writes first."""
+def evaluate_output(log_path: Path) -> str:
+    """The log without the ``$ <command>`` line ``run_command`` writes first (the watcher's
+    evaluate check reads it too)."""
     text = log_path.read_text(encoding="utf-8", errors="replace")
     if text.startswith("$ "):
         _, _, text = text.partition("\n")
