@@ -662,8 +662,9 @@ def record(message: NativeMessage, session_id: str) -> Record | None:
     kind = "message"
     if message.display_kind == "failed_turn":
         kind = "failed_turn"
-    # The runtime writes its resume prompt itself, so no admission's context joins it; a message
-    # the user typed with the same words carries its own admission's context.
+    # The runtime writes its resume prompt and its follow-up prompts (``runtime_input``) itself,
+    # so no admission's context joins them; a message the user typed with the same words carries
+    # its own admission's context.
     elif message.runtime_input or (
         message.role == "user"
         and message.client_context is None

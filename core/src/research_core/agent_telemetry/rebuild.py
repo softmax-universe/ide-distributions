@@ -38,8 +38,8 @@ class AmbiguousSession(Exception):
 
 
 class IncompleteSearch(Exception):
-    """Datadog answered a search with a status other than ``done``, such as ``timeout``, so what
-    it returned may be partial."""
+    """Datadog answered a search with a status other than ``done``, such as ``timeout``, or with
+    warnings, so what it returned may be partial."""
 
 
 class LogsSearch:
@@ -75,6 +75,10 @@ class LogsSearch:
             status = meta.get("status")
             if status not in (None, "done"):
                 raise IncompleteSearch(f"the search answered status {status!r}")
+            # Datadog warns, even with status ``done``, when the results may be partial.
+            if warnings := meta.get("warnings"):
+                titles = "; ".join(str(w.get("title") or w.get("code")) for w in warnings)
+                raise IncompleteSearch(f"the search answered with warnings: {titles}")
             for row in answer.get("data") or ():
                 yield row["attributes"]["attributes"]
             page["cursor"] = (meta.get("page") or {}).get("after")
@@ -82,8 +86,13 @@ class LogsSearch:
                 return
 
 
+def _quoted(value: str) -> str:
+    """A phrase in Datadog search syntax: a backslash escapes ``\\`` and ``"`` inside quotes."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _any_of(field: str, values: Iterable[str]) -> str:
-    return f"@{field}:(" + " OR ".join(f'"{value}"' for value in sorted(values)) + ")"
+    return f"@{field}:(" + " OR ".join(_quoted(value) for value in sorted(values)) + ")"
 
 
 def _batches(values: Iterable[str]) -> Iterator[list[str]]:
@@ -223,12 +232,13 @@ def _rebuild_request(finder: _Finder, manifest_digest: str) -> dict[str, Any]:
     chain = []
     digest = manifest_digest
     while (link := finder.json(digest)) is not None:
-        chain.insert(0, link)
+        chain.append(link)
         if link["operation"] != "append":
             break
         digest = link["parent_manifest_digest"]
     if link is None:
         return {"request": None, "blocked_by": [digest]}
+    chain.reverse()
     manifest = chain[-1]
     digests = [listed for part in chain for listed in part["messages"]]
     tool_list = finder.json(manifest.get("tool_list_digest"))
@@ -442,15 +452,15 @@ def _results_of_rows(operations: list[dict]) -> dict:
 
 
 def _unlisted_message(finder: _Finder, row: dict, result: dict | None) -> dict | None:
-    """A row no request lists: its commit holds its own text, and a tool row takes the result
-    recorded for it. ``None`` when that text is lost or was never recorded."""
-    own = _ref(row, "message")
-    if own:
-        return finder.json(own)
+    """A row no request lists. A tool row takes the result recorded for it, which is the text
+    Hermes passed on and can differ from the row's stored text; its commit's text stands in only
+    when there is no such result. Any other row takes its commit's text. ``None`` when that text
+    is lost or was never recorded."""
     text = finder.text(_ref(result, "result")) if result else None
-    if text is None:
-        return None
-    return {"role": "tool", "tool_call_id": row["tool_call_id"], "content": text}
+    if text is not None:
+        return {"role": "tool", "tool_call_id": row["tool_call_id"], "content": text}
+    own = _ref(row, "message")
+    return finder.json(own) if own else None
 
 
 def _rows(finder: _Finder, operations: list[dict], requests: list[dict]) -> list[dict]:

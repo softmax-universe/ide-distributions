@@ -83,7 +83,7 @@ async def deliver(read: ReadChanges, store_path: Path, row: Row) -> None:
     audience = (
         "Report the outcome in this chat."
         if row["kind"] == "chat"
-        else "Decide whether the outcome warrants a user notification."
+        else "Use ui.tell if the outcome warrants a user notification."
     )
 
     with Store.open(store_path, kind="workspace") as store, store.tx(Actor.harness()) as tx:

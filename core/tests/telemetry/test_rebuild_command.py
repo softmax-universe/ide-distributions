@@ -316,8 +316,10 @@ def test_a_restart_sends_a_full_manifest_and_everything_it_lists(
     assert rebuilt == [canonical_bytes(body)] * 2
 
 
+# A quote or a backslash in a value is escaped in the query; unescaped, Datadog answers a 400.
+@pytest.mark.parametrize("admission", ["adm_1", 'adm_"1"\\x'])
 def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
-    writer, stream_file, datadog
+    writer, stream_file, datadog, admission
 ):
     def event(kind: str, **fields) -> None:
         writer.capture_operation(
@@ -325,13 +327,13 @@ def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
             "committed",
             native_event_type=kind,
             session_id="ses_1",
-            admission_id="adm_1",
+            admission_id=admission,
             **fields,
         )
 
     for request_id in ("req_1", "req_2"):
         writer.capture_operation(
-            "admission", "accepted", request_id=request_id, admission_id="adm_1"
+            "admission", "accepted", request_id=request_id, admission_id=admission
         )
     event("client.accepted", otel_trace_id=TRACE)
     event("client.started", run_id="run_1")
@@ -343,8 +345,8 @@ def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
         "committed",
         native_event_type="task.assigned",
         session_id="ses_1",
-        assignment_id="adm_1",
-        admission_id="adm_1",
+        assignment_id=admission,
+        admission_id=admission,
         task_id="T-3",
     )
     # A record with only the message's trace, as a store event in a tool's process has.
@@ -353,7 +355,7 @@ def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
     )
     sent(writer, stream_file, datadog)
     report = rebuild_session(search_of(datadog), "ses_1")
-    admitted = [e for e in report["events"] if e.get("admission_id") == "adm_1"]
+    admitted = [e for e in report["events"] if e.get("admission_id") == admission]
     assert [e["request_id"] for e in admitted if "request_id" in e] == ["req_1", "req_2"]
     kinds = [event.get("native_event_type") for event in admitted]
     assert kinds.count("client.accepted") == 1
@@ -460,6 +462,25 @@ def test_a_search_datadog_did_not_finish_is_could_not_start(writer, stream_file,
     assert "status 'timeout'" in done.stderr and "Traceback" not in done.stderr
 
 
+def test_a_search_datadog_warned_about_is_could_not_start(writer, stream_file, datadog, tmp_path):
+    """Datadog can answer ``done`` with warnings that its results are partial."""
+    two_requests(writer)
+    sent(writer, stream_file, datadog)
+    keys = {"DD_API_KEY": "a", "DD_APP_KEY": "b", "HOME": str(tmp_path)}
+    datadog.warnings = []  # An empty list warns of nothing.
+    assert _command(datadog, "--session", "ses_1", **keys).returncode == 0
+    datadog.warnings = [
+        {
+            "code": "unknown_index",
+            "title": "One or several indexes are missing or invalid",
+            "detail": "indexes: main-old",
+        }
+    ]
+    done = _command(datadog, "--session", "ses_1", **keys)
+    assert done.returncode == 2 and done.stdout == ""
+    assert "indexes are missing or invalid" in done.stderr and "Traceback" not in done.stderr
+
+
 def committed(writer, row, kind="tool", trace="trace_1", **fields):
     writer.capture_operation(
         "message",
@@ -524,6 +545,32 @@ def test_a_guard_halt_rebuilds_the_text_hermes_committed_and_not_the_last_reply(
     assert rows["12"] == halt
     assert rows["10"] == calling
     assert rows["11"] == {"role": "tool", "tool_call_id": "call_1", "content": "it failed"}
+    assert report["missing"] == []
+
+
+def test_an_unlisted_tool_row_shows_the_result_the_model_was_given(writer, stream_file, datadog):
+    """With the request lost, the tool row's commit and its result both survive, and Hermes may have
+    changed the text between them: the result is what the model saw."""
+    asked(writer, "att_1", {"role": "assistant", "tool_calls": [TOOL_CALL]})
+    stored = {"role": "tool", "tool_call_id": "call_1", "content": "raw stored text"}
+    committed(writer, "11", kind="tool", tool_call_id="call_1", content={"message": stored})
+    writer.capture_operation(
+        "tool",
+        "result",
+        session_id="ses_1",
+        otel_trace_id="trace_1",
+        tool_call_id="call_1",
+        content={"result": "the result as captured"},
+    )
+    sent(writer, stream_file, datadog)
+
+    report = rebuild_session(search_of(datadog), "ses_1")
+    [row] = report["rows"]
+    assert row["message"] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "the result as captured",
+    }
     assert report["missing"] == []
 
 

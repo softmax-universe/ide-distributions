@@ -114,7 +114,8 @@ Inference exhaustion is an intentional wait. It retains the queued identity with
 failure attempts. A spent-key wait ends when the normal lease owner installs a different key;
 provider backoff can end at its declared deadline.
 
-A chat message is the one admission that can outlive a run. When its run fails on the budget, a
+A chat message, and a follow-up admitted into a chat (origin `followup`: `xp.request` results
+or a wake's `ui.tell` updates), are the only admissions that can outlive a run. When its run fails on the budget, a
 rate limit or a provider outage (`run_failures.py`), the same `op_id` waits and resumes as a new
 run with a new native key and a continuation prompt, because the client follows the admission.
 This is a new execution, not a replay of the old one. The hold is the only change that may clear

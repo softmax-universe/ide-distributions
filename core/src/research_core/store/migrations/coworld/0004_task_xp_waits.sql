@@ -18,3 +18,7 @@ CREATE TRIGGER task_xp_waits_log_delete AFTER DELETE ON task_xp_waits BEGIN
     INSERT INTO change_log(at,tbl,row_id,op)
     VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'),'task_xp_waits',OLD.rowid,'delete');
 END;
+CREATE TRIGGER task_xp_waits_clear_on_exit AFTER UPDATE OF status ON tasks
+WHEN OLD.status = 'in-progress' AND NEW.status != 'in-progress' BEGIN
+    DELETE FROM task_xp_waits WHERE task_id = OLD.id;
+END;

@@ -34,7 +34,15 @@ class ChangePage(BaseModel):
     next_cursor: str
 
 
-type ReadChanges = Callable[[tuple[str, ...], str | None], Awaitable[ChangePage]]
+class ErrorDetail(BaseModel):
+    code: str
+
+
+class ErrorResponse(BaseModel):
+    detail: ErrorDetail
+
+
+type ReadChanges = Callable[[tuple[str, ...], str | None], Awaitable[ChangePage | None]]
 
 
 @asynccontextmanager
@@ -64,7 +72,7 @@ async def connect(env: Mapping[str, str], ws: Workspace) -> AsyncIterator[ReadCh
         follow_redirects=True,
     ) as client:
 
-        async def read(ids: tuple[str, ...], cursor: str | None) -> ChangePage:
+        async def read(ids: tuple[str, ...], cursor: str | None) -> ChangePage | None:
             params: dict = {
                 "ids": ids,
                 "view": "progress",
@@ -78,6 +86,10 @@ async def connect(env: Mapping[str, str], ws: Workspace) -> AsyncIterator[ReadCh
                 params=params,
                 headers={"Authorization": f"Bearer {identity.player_token(env)}"},
             )
+            if response.status_code == 404:
+                detail = ErrorResponse.model_validate_json(response.content).detail
+                if detail.code == "scope_changed":
+                    return None
             return ChangePage.model_validate_json(response.raise_for_status().content)
 
         yield read
@@ -90,6 +102,8 @@ async def wait_for_terminal(read: ReadChanges, ids: tuple[str, ...]) -> bool:
     backoff = 1
     while True:
         (result,) = await asyncio.gather(read(ids, cursor), return_exceptions=True)
+        if result is None:
+            return False
         if isinstance(result, ChangePage):
             if {batch.id for batch in result.batches} == expected:
                 if all(batch.status in TERMINAL_STATES for batch in result.batches):
@@ -107,8 +121,6 @@ async def wait_for_terminal(read: ReadChanges, ids: tuple[str, ...]) -> bool:
         delay = backoff
         if isinstance(result, httpx.HTTPStatusError):
             status = result.response.status_code
-            if status == 404 and b'"scope_changed"' in result.response.content:
-                return False
             if status in {409, 410} and cursor is not None:
                 cursor = None
                 continue

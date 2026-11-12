@@ -414,6 +414,23 @@ def update_run(
             f"UPDATE experiment_runs SET {assignments}, updated = ? WHERE id = ?",
             (*changes.values(), tx.at, run_id),
         )
+        # The holder can evaluate a batch before the feed watcher attaches.
+        if run["kind"] == "xp" and actor.is_session:
+            for watch in tx.q(
+                "SELECT w.id,w.request_ids FROM task_xp_waits w JOIN tasks t ON t.id=w.task_id"
+                " WHERE w.experiment=? AND t.held_by=?",
+                (xid, actor.id),
+            ):
+                watched_runs = tx.q(
+                    "SELECT r.* FROM experiment_runs r JOIN json_each(?) ids"
+                    " ON r.platform_request_id=ids.value WHERE r.experiment_id=?",
+                    (watch["request_ids"], row["id"]),
+                )
+                watched_ids = {r["platform_request_id"] for r in watched_runs}
+                if watched_ids == set(parse_json(watch["request_ids"])) and all(
+                    not unsettled(_run_from_row(r)) for r in watched_runs
+                ):
+                    tx.execute("DELETE FROM task_xp_waits WHERE id=?", (watch["id"],))
         tx.event(
             "experiment.run",
             xid,

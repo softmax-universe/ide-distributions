@@ -84,7 +84,8 @@ Add `--workspace <id>` if the command says several workspaces hold that ID. `--s
 the Session, first or after compaction. The command needs only `DD_API_KEY` and `DD_APP_KEY`: no
 state.db, volume or workspace API. It exits 0 when nothing was missing, 1 when something was, and 2 when
 it could not start, which includes Datadog refusing the search, not answering, or answering that a search did not
-finish (`meta.status` other than `done`, such as `timeout`), because such an answer can hold part of the results.
+finish (`meta.status` other than `done`, such as `timeout`) or that warns (any `meta.warnings`, even with
+status `done`), because such an answer can hold part of the results.
 
 It prints one JSON object. Each entry is the record as written, with the text of what it refers to under
 each reference's name:
@@ -96,8 +97,9 @@ each reference's name:
 - `rows`: each committed native row, with `message` as it was first sent and `rewritten_to` if a prune
   later changed it. `message` means "first sent" only when `missing` is empty: if a row's original was
   lost, it shows the first form that survived. A row no request lists never reached a model, such as a
-  turn's last reply or the text Hermes's tool guard ends a turn with. It shows the text its commit
-  recorded, and a tool row the result recorded for it.
+  turn's last reply or the text Hermes's tool guard ends a turn with, or the request that listed it was
+  lost. It shows the text its commit recorded, except a tool row, which shows the result recorded for
+  it, as Hermes passed it on, and its commit's text only when there is no such result.
 - `events`: admissions, model calls started, a call that failed before any attempt of it was recorded, store events, approvals, lifecycle, compaction, log lines and everything else. Each
   holds its own IDs, and `CONTRACT.md`, "How to join them", says how they join.
 - `context`: where each piece of a user message came from.
