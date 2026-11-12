@@ -22,6 +22,9 @@ A client reads the current files from the installed profile with `research conte
 2. **UI output and state sync.** The `ui` tool and the watcher write UI state and notices into
    the store; every write is an `events` row. The bridge streams the rows to all attached
    clients as Server-Sent Events, so each client renders what it can and all stay in sync.
+   A background wake cannot write into a chat: its `ui.tell` is recorded in the store, and the
+   coordinator delivers it as a queued `followup` message admission into the user's most recent
+   chat for that Coworld, so it reaches the user as an ordinary assistant turn.
 3. **UI actions and edits back.** Answers to the agent's questions are queued to the Session
    like a message; reactions are feedback for the next turn; user edits go through `store apply`.
 
