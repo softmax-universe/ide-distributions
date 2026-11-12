@@ -1,9 +1,11 @@
 # research-core
 
 The shared package of the Softmax IDE research profiles. Both profile folders (`orchestrator/`,
-`researcher/`) are thin shells; everything they do lives here. The design is
-`docs/designs/ide-profile-refactor-2026-10-28-final.html`; the build plan with the locked
-decisions is `docs/plans/ide-profile-refactor/`.
+`researcher/`) are thin shells; everything they do lives here. It was built from
+`docs/designs/ide-profile-refactor-2026-10-28-final.html` (its status note lists where the code
+has since moved on); the build plan with the locked decisions is
+`docs/plans/ide-profile-refactor/`, historical now, with `STATUS.md` saying what landed and what
+is still open.
 
 ## Two environments
 

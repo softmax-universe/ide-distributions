@@ -1,6 +1,21 @@
 # Image Versions: policies published as container images
 
-**Status: proposal** (October 29, 2026, Pacific). Follow-up to the profile rebuild
+> **Partly implemented (2026-11-12).** #132 (merged November 2, 2026) shipped the core of this
+> design: `ARTIFACT_KINDS = ("file", "image")` (`core/src/research_core/store/versions.py:40`,
+> `core/src/research_core/mixin.py:29`), `upload` dispatching to `upload_image_policy`
+> (`core/src/research_core/tools/upload.py:159`) on the real and fake platforms, the archive kept
+> under `documents/artifacts/<digest>` (`core/src/research_core/tools/version.py:14`), and the
+> BuildKit path (`buildctl` in `image/Dockerfile:8`, `BUILDKIT_HOST` passed through by
+> `core/src/research_core/prepare.py:177`). Not built: the `player_runtime` check in
+> `version.create` (the tool never reads it; only `platform` reports it,
+> `core/src/research_core/tools/platform.py:566`), `artifacts.retain_unuploaded_days` and any
+> pruning of archives, the `version.json` `artifact_type` mapping (the kind comes from the mixin
+> front matter only), and an image lookup in the nightly platform check. Where the code differs:
+> the upload capability check sends one real upload as a probe for both kinds rather than parsing
+> the archive in a dry run (`core/src/research_core/watcher/checks.py:372-410`). For current
+> behaviour see `core/README.md` and `image/README.md` ("buildctl", line 232).
+
+**Original status: proposal** (October 29, 2026, Pacific). Follow-up to the profile rebuild
 (`ide-profile-refactor-2026-10-28-final.html`), which deferred image policies: "`version.create`
 refuses image policies with a clear message until image-policy Versions are designed". James
 decided on October 29 that image support lands in the PR after #106 and that metta's pin to

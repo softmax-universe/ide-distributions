@@ -1,5 +1,13 @@
 # IDE Profile Refactor — implementation plan (overview)
 
+> **Implemented.** Status as of November 12, 2026: this plan was built and merged as PR #106 on
+> October 29, 2026 (Pacific). The task checkboxes in these files were not kept up to date, so an
+> unticked box does not mean unbuilt work. The plan is historical. Since the merge the watcher
+> moved into `research serve` (#146), `play/` was removed (#199), and the image runs Hermes
+> v0.22.6 with no patches (#249, #252). For what landed and what is open, read
+> [STATUS.md](STATUS.md); for how the code works today, read `README.md`, `core/README.md`,
+> `docs/hosting.md` and `image/README.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (or
 > superpowers:executing-plans) to implement this plan task by task. Each stack entry has its own
 > file (`01-…` to `07-…`). Read this overview first, then `08-amendments.md` (binding changes from

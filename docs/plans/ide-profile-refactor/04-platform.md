@@ -1,5 +1,9 @@
 # Entry 4 — platform protocol, real and fake platforms, Versions, upload, XP, submission, intents, mixin front matter, stats, Coworld switch
 
+> **Implemented.** Status as of November 12, 2026: built and merged in PR #106 on October 29,
+> 2026 (Pacific). The checkboxes were not kept up to date; the plan is historical. See
+> [STATUS.md](STATUS.md) and `core/README.md` for the current state.
+
 Read `00-overview.md`, then `02-store.md` and `03-tools-plugin.md` interfaces. This entry gives
 the agents everything that touches the Softmax platform, for file policies only (Q13). All code
 here runs in the workspace environment (executor `workspace`), except the fake platform's state
