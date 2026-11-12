@@ -108,7 +108,8 @@ class FakeDatadog:
 
     ``rate_limit_next`` answers that many searches with a 429, as Datadog words it. ``status`` is
     what each answer's ``meta.status`` says: ``timeout`` when Datadog ran out of time, and with
-    ``None`` an answer has no status.
+    ``None`` an answer has no status. ``warnings`` is what each answer's ``meta.warnings`` says, a
+    list of ``{code, title, detail}``, and with ``None`` an answer has none.
     """
 
     def __init__(self) -> None:
@@ -119,6 +120,7 @@ class FakeDatadog:
         self.rate_limit_next = 0
         self.rate_limited = 0
         self.status = "done"
+        self.warnings: list[dict[str, str]] | None = None
         datadog = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -196,6 +198,8 @@ class FakeDatadog:
         page = matched[start : start + limit]
         after = start + limit
         meta: dict[str, Any] = {} if self.status is None else {"status": self.status}
+        if self.warnings is not None:
+            meta["warnings"] = self.warnings
         if after < len(matched):
             meta["page"] = {"after": str(after)}
         return 200, {"data": [self._row(entry) for entry in page], "meta": meta}, {}
