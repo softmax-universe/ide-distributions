@@ -39,7 +39,15 @@ from research_core.platform.wait import tool_error
 from research_core.store import sessions, tasks, versions
 from research_core.store._common import parse_display_id
 from research_core.tools import _args as a
-from research_core.tools.base import ActionSpec, ToolCall, ToolContext, ToolError, ToolSpec, tool
+from research_core.tools.base import (
+    ActionSpec,
+    ToolCall,
+    ToolContext,
+    ToolError,
+    ToolSpec,
+    player_policy_name,
+    tool,
+)
 from research_core.transitions import report_capability
 
 ORCHESTRATOR = frozenset({"orchestrator"})
@@ -165,7 +173,10 @@ def handle_create(call: ToolCall) -> dict:
             else None
         ),
         image=runtime_image(ctx),
-        policy_name=loaded.artifact.get("policy_name") or default_policy_name(coworld, branch),
+        policy_name=player_policy_name(
+            loaded.artifact.get("policy_name") or default_policy_name(coworld, branch),
+            ctx.player_id(),
+        ),
     )
     gitops.tag(coworld.code, f"v/{parse_display_id(record['id'])[1]}", commit)
     return {
