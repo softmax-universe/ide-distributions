@@ -17,6 +17,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 CONTAINER_SERVICE = "hermes-runtime"
+# Reserved by Datadog's JSON preprocessing: taken off the line's attributes, so Logs search
+# neither matches them as ``@trace_id`` nor returns them (seen on real data on 2026-11-12).
+_RESERVED = ("trace_id", "span_id")
 _TOKEN = re.compile(r'\s*(\(|\)|OR\b|service:[^\s()]+|@[a-z_]+:\(|@[a-z_]+:"[^"]*"|"[^"]*")')
 
 
@@ -27,7 +30,7 @@ def entry_of(line: bytes) -> dict[str, Any]:
     except ValueError:
         parsed = None
     if isinstance(parsed, dict):
-        return parsed
+        return {key: value for key, value in parsed.items() if key not in _RESERVED}
     return {"service": CONTAINER_SERVICE, "message": line.decode("utf-8", "replace").strip()}
 
 

@@ -139,7 +139,7 @@ class _Finder:
         # A retried request names only its admission, and a store event or a workspace tool's
         # record only the trace of the message it served. A record written before records named
         # their trace (retained for 15 days) names its run instead.
-        for field in ("admission_id", "trace_id", "run_id"):
+        for field in ("admission_id", "otel_trace_id", "run_id"):
             values = {r[field] for r in self.records.values() if self.owned(r) and field in r}
             for batch in _batches(values):
                 self._find(_any_of(field, batch))
@@ -384,7 +384,7 @@ def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> li
 def _scope(record: dict[str, Any]) -> str | None:
     """What a tool call ID is unique within: the record's trace, or its run on a record written
     before records named their trace."""
-    return record.get("trace_id") or record.get("run_id")
+    return record.get("otel_trace_id") or record.get("run_id")
 
 
 def _attach_tools(finder: _Finder, operations: list[dict], requests: list[dict]) -> list[dict]:

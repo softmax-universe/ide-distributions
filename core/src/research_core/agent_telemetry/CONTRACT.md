@@ -27,7 +27,8 @@ Every line has:
 | `occurred_at` | UTC with three decimals. Datadog's own timestamp is when it read the line |
 | `sequence` | Capture order inside one `source_instance` |
 | `family` | `operation`, `context` or `content` |
-| `trace_id`, `span_id` | On an operation or context line written inside a span: the OpenTelemetry span it belongs to, as 32 and 16 lowercase hex digits, the names and form Datadog uses to join a log to its trace. A line written outside any span has neither |
+| `trace_id`, `span_id` | On an operation or context line written inside a span: the OpenTelemetry span it belongs to, as 32 and 16 lowercase hex digits, the names and form Datadog uses to join a log to its APM trace. Datadog's JSON log preprocessing takes both off the line's attributes: search them as `trace_id:<hex>`, without `@`, but Logs search returns neither. A line written outside any span has neither |
+| `otel_trace_id` | Beside `trace_id`, the same value, under a name Logs search returns. Every trace link below reads this one |
 
 An `operation` line adds `event_id`, `action`, `stage`, its metadata and `content_refs`:
 
@@ -239,21 +240,27 @@ records nothing.
   (`image/aide.py`) it is the JSON-RPC request ID, and a retry keeps it.
 - **A retry:** another `accepted` record with the same `admission_id`, and no second `client.accepted`. Count acceptance from
   that event.
-- **A message to everything it caused:** `trace_id`. One user message is one trace: the seam's records of its admission
+- **A message to everything it caused:** `otel_trace_id`. One user message is one trace: the seam's records of its admission
   and dispatch, and every gateway turn that works on it, including a turn that resumes a held message, whose
   `invoke_agent` span is a child of the admission's context. A delegated subagent's turn is a child of its parent's turn,
   so its records are in the parent message's trace. `subagent` / `started` names the child Session and its
   `parent_session_id`. A turn with no admission (background work) is a trace of its own.
 - **Records from before traces:** a record written before records named their trace names its Hermes run in `run_id`,
-  and Datadog keeps it for 15 days. The rebuild follows `run_id` as it follows `trace_id`, and a tool call ID is unique
+  and Datadog keeps it for 15 days. The rebuild follows `run_id` as it follows `otel_trace_id`, and a tool call ID is unique
   within the trace, or within the run on such a record.
+- **Records from before `otel_trace_id`:** a record written from 2026-11-10 until records carried `otel_trace_id` has a
+  trace the rebuild cannot read, so it is found only by its other links, and its tool call IDs are scoped to nothing: a
+  call ID reused in another trace of the Session could attach its result to the wrong request. The last of these ages
+  out 15 days after `otel_trace_id` deploys. By then every record from before traces is gone too, and the rebuild's
+  `run_id` fallback can be deleted.
 - **A record to its step:** `span_id` names the model attempt (`chat`), tool call (`execute_tool`) or turn
-  (`invoke_agent`) span it belongs to. A record written before its turn's span starts, at the turn's first model request,
-  has no `trace_id`: an auxiliary call that begins then, such as a title, is one. Order across processes only by these
-  links, never by `sequence`, which compares only within one `source_instance`.
+  (`invoke_agent`) span it belongs to. It is for Datadog's link from a log to its span, and the rebuild does not read it.
+  A record written before its turn's span starts, at the turn's first model request, has no trace or span IDs: an
+  auxiliary call that begins then, such as a title, is one. Order across processes only by the links above, never by
+  `sequence`, which compares only within one `source_instance`.
 - **A worker's successor:** `execution` / `successor`, from `admission_id` to `execution_attempt_id`. A new Session also has
   `parent_session_id` on its `session.started`.
-- **A tool call to what it did:** `trace_id` with `tool_call_id`. A distribution tool's handler gets no call ID from Hermes,
+- **A tool call to what it did:** `otel_trace_id` with `tool_call_id`. A distribution tool's handler gets no call ID from Hermes,
   so `workspace_tool` / `completed` and its store events hold `tool_call_id` only when the turn had one open call of that
   tool. Otherwise they hold the turn's span, and two concurrent calls of one tool are not told apart. A durable command's later records have no `tool_call_id`, so follow `command_id` from
   `transition.requested`. `task.assigned` holds the first attempt's admission as both `assignment_id` and `admission_id`.
