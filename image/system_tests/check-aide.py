@@ -18,11 +18,12 @@ from uuid import uuid4
 
 import yaml
 from aiohttp import ClientSession, WSMsgType, web
-from hermes_state import SessionDB
 
 PLATFORM_PORT, MODEL_PORT = int(sys.argv[1]), int(sys.argv[2])
 WORKSPACE = {"scope": "workspace", "coworld": None, "league": None}
 REPLY = ["The ", "workspace ", "answers."]
+OPENER = "Help me build a better opening strategy for Generals."
+TITLE = "Generals Opening Strategy"
 XP_SCOPE = {"scope": "coworld", "coworld": "cow_fake", "league": "league_fake"}
 XP_START = "Run the prepared experiment."
 XP_NEXT = "Run the prepared experiment with the next seed."
@@ -74,6 +75,7 @@ experiments.start(ctx.store, ctx.actor, record["id"])
 
 async def main() -> None:
     control_sockets, backend, done = asyncio.Queue(), asyncio.Queue(), asyncio.Event()
+    title_model = None
 
     async def lease(request: web.Request) -> web.Response:
         expires = datetime.now(UTC) + timedelta(hours=1)
@@ -157,9 +159,12 @@ async def main() -> None:
             }
         )
         if not body.get("stream"):
-            message = {"role": "assistant", "content": "".join(reply)}
-            if tool_call is not None:
+            if body["model"] == title_model:
+                message = {"role": "assistant", "content": json.dumps({"title": TITLE})}
+            elif tool_call is not None:
                 message = {"role": "assistant", "content": None, "tool_calls": [tool_call]}
+            else:
+                message = {"role": "assistant", "content": "".join(reply)}
             return web.json_response(
                 {
                     "id": "scripted",
@@ -189,6 +194,7 @@ async def main() -> None:
         await web.TCPSite(runner, "127.0.0.1", port).start()
 
     async def exercise() -> None:
+        nonlocal title_model
         control = await control_sockets.get()
         await control.send_json(
             {"stream_id": "status", "envelope": {"id": str(uuid4()), "control": "status"}}
@@ -199,7 +205,11 @@ async def main() -> None:
         # Hermes treats a config base_url under provider openrouter as a mirror (#10622).
         config = Path("/workspace/host/profiles/orchestrator/config.yaml")
         settings = yaml.safe_load(config.read_text())
-        settings["model"]["base_url"] = f"http://127.0.0.1:{MODEL_PORT}/api/v1"
+        mirror = f"http://127.0.0.1:{MODEL_PORT}/api/v1"
+        settings["model"]["base_url"] = mirror
+        title_config = settings["auxiliary"]["title_generation"]
+        title_model = title_config["model"]
+        title_config["base_url"] = mirror
         config.write_text(yaml.safe_dump(settings))
 
         relay = await backend.get()
@@ -237,7 +247,7 @@ async def main() -> None:
         session = (await request("session.open", {"scope": WORKSPACE}))["session"]
         assert session["scope"] == WORKSPACE, session
         sent = {"session_id": session["id"], "scope": WORKSPACE}
-        sent["messages"] = [{"role": "user", "content": "Say something."}]
+        sent["messages"] = [{"role": "user", "content": OPENER}]
         accepted = await request("chat.send", sent)
         request_id = accepted["request_id"]
         assert accepted["accepted"] is True, accepted
@@ -251,17 +261,20 @@ async def main() -> None:
         assert text == "".join(REPLY), notes
         history = await request("chat.history", {"session_id": session["id"], "scope": WORKSPACE})
         roles = [(i["message"]["role"], i["message"]["content"]) for i in history["items"]]
-        assert ("user", "Say something.") in roles and ("assistant", "".join(REPLY)) in roles, roles
+        assert ("user", OPENER) in roles and ("assistant", "".join(REPLY)) in roles, roles
         print(
             "PASS AIDE session.open, chat.send, chunks, chat.finished and chat.history", flush=True
         )
 
-        with SessionDB(config.with_name("state.db")) as native:
-            assert native.set_session_title(session["id"], "Packaged Hermes title")
-        listed = await request("state.list", {"resource": "sessions"})
-        item = next(item for item in listed["items"] if item["id"] == session["id"])
-        assert item["title"] == "Packaged Hermes title", item
-        print("PASS AIDE lists the title stored by Hermes", flush=True)
+        # Hermes upgrades its initial title in the background.
+        async with asyncio.timeout(30):
+            while True:
+                listed = await request("state.list", {"resource": "sessions"})
+                item = next(item for item in listed["items"] if item["id"] == session["id"])
+                if item.get("title") == TITLE:
+                    break
+                await asyncio.sleep(0.5)
+        print("PASS AIDE lists a title generated from the opening turn", flush=True)
 
         # Reads are authoritative: a new backend socket reads what the first one pushed.
         await relay.close()

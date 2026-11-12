@@ -77,6 +77,8 @@ PROTECTED_KEYS: dict[str, Any] = {
     # on Haiku, and the GLM fallback reads no images. Compression and the rest stay on the main
     # model, so they follow its fallback chain. Session search and web extraction call no model
     # in this Hermes.
+    "auxiliary.title_generation.enabled": True,
+    "auxiliary.title_generation.model_upgrade_enabled": True,
     "auxiliary.title_generation.provider": "openrouter",
     "auxiliary.title_generation.model": "anthropic/claude-haiku-5.5",
     "auxiliary.vision.provider": "openrouter",
