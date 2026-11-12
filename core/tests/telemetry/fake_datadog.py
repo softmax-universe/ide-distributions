@@ -22,7 +22,9 @@ CONTAINER_SERVICE = "hermes-runtime"
 _RESERVED = ("trace_id", "span_id")
 # A phrase is in double quotes, where a backslash escapes the next character, as in Datadog.
 _PHRASE = r'"(?:[^"\\]|\\.)*"'
-_TOKEN = re.compile(rf"\s*(\(|\)|OR\b|service:[^\s()]+|@[a-z_]+:\(|@[a-z_]+:{_PHRASE}|{_PHRASE})")
+_TOKEN = re.compile(
+    rf"\s*(\(|\)|OR\b|service:[^\s()]+|-@[a-z_]+:\*|@[a-z_]+:\(|@[a-z_]+:{_PHRASE}|{_PHRASE})"
+)
 
 
 def _unquoted(phrase: str) -> str:
@@ -41,7 +43,8 @@ def entry_of(line: bytes) -> dict[str, Any]:
 
 
 class _Query:
-    """Implicit AND of terms. A term: ``service:x``, ``@f:"v"``, ``@f:("a" OR "b")``, or a group."""
+    """Implicit AND of terms. A term: ``service:x``, ``@f:"v"``, ``@f:("a" OR "b")``, ``-@f:*``,
+    or a group."""
 
     def __init__(self, text: str) -> None:
         self.tokens = self._tokenize(text)
@@ -90,6 +93,9 @@ class _Query:
         if token.startswith("service:"):
             value = token.partition(":")[2]
             return lambda entry: entry.get("service") == value
+        if token.startswith("-@"):  # ``-@f:*``: the entry has no field ``f``.
+            absent = token[2:].partition(":")[0]
+            return lambda entry: absent not in entry
         field, _, value = token[1:].partition(":")
         if value != "(":
             return lambda entry: entry.get(field) == _unquoted(value)
