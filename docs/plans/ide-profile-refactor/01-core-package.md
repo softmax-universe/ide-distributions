@@ -1,5 +1,10 @@
 # Entry 1 — teardown, the shared package, the workspace environment, profile shells, prepare v1, CI
 
+> **Implemented.** Status as of November 12, 2026: built and merged in PR #106 on October 29,
+> 2026 (Pacific). The checkboxes were not kept up to date; the plan is historical. Since then
+> `play/` was removed (#199) and both profiles' models changed (#237; see `config.yaml` in each
+> profile). See [STATUS.md](STATUS.md), `README.md` and `core/README.md` for the current state.
+
 Read `00-overview.md` first. This entry turns the repository into the new shape with no record or
 tool logic yet: after it, `uv run pytest` passes with a handful of structural tests, both profiles
 install into a Hermes home, their plugins load (registering zero tools), and `prepare.py` creates

@@ -394,11 +394,12 @@
 
   <!-- ============ Masthead ============ -->
   <header class="masthead">
-    <span class="eyebrow">Design document · 2026-10-15 · Draft v4.4 for review</span>
+    <span class="eyebrow">Design document · 2026-10-15 · Draft v4.4 · Superseded (status as of 2026-11-12)</span>
     <h1>An orchestrator profile for IDE research on native Hermes</h1>
     <p class="context">One orchestrator and N researchers, coordinated through native Hermes Kanban, delivered from the Metta-AI/ide-distributions repository.</p>
     <p class="context" style="margin-top:8px">Pinned sources: Hermes v0.21.6 (commit 818c13be, the version on the Softmax hosting image), metta <code>main</code> at 639fb19614 (pulled 2026-10-15 13:32 PDT), and ide-mvp <code>main</code> at 15babd49. Aaron's softmax-ide pins Hermes v0.21.7 (71d34bad). This design is not made against that version.</p>
   </header>
+<div class="callout callout-warn"><span class="callout-label">Superseded · November 12, 2026</span>This design was built in the previous <code>orchestrator</code> and <code>researcher</code> profiles (where it differed, see <a href="orchestrator-implementation-notes.md">orchestrator-implementation-notes.md</a>). That code was removed on October 29, 2026 by the profile rebuild (#106), which follows <a href="ide-profile-refactor-2026-10-28-final.html">ide-profile-refactor-2026-10-28-final.html</a>; that design states that it supersedes this one. Coordination no longer uses Hermes Kanban: Goals, Tasks and Claims are records in the workspace's own store, and <code>kanban</code> is a retired config key that profile preparation removes (<code>core/src/research_core/prepare.py:137</code>). Nothing below describes the current code. For that, read <a href="../../README.md">README.md</a>, <a href="../../core/README.md">core/README.md</a> and <a href="../hosting.md">docs/hosting.md</a>. Kept for history.</div>
 
   <!-- ============ Executive summary ============ -->
   <section id="summary">

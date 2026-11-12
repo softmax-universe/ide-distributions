@@ -97,8 +97,8 @@ the lease is only missing). Work resumes on its own once the state clears or lap
 `image/aide.py` also connects every workspace to the platform's AIDE backend socket
 (`/v2/workspaces/{id}/aide/1.0.0/backend`, subprotocol `aide.1.0.0`, the bootstrap credential)
 and answers the [AIDE 1.0.0](https://softmax.com/docs/aide) JSON-RPC methods. It runs beside the
-control connection, gates neither readiness nor sleep, and reconnects forever; no frontend reaches
-it until the platform routes one to it. The contract stays in Metta; this image does not
+control connection, gates neither readiness nor sleep, and reconnects forever; it is the only path
+chat takes into the image (#236). The contract stays in Metta; this image does not
 bundle or validate it, the relay does.
 
 Each method maps to seam and gateway calls. The AIDE request id

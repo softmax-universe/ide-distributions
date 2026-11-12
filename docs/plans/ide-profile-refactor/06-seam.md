@@ -1,5 +1,12 @@
 # Entry 6 — the client seam: context block, notices stream, `research serve`, scripted client, acceptance scenario
 
+> **Implemented.** Status as of November 12, 2026: built and merged in PR #106 on October 29,
+> 2026 (Pacific). The checkboxes were not kept up to date; the plan is historical. Since then
+> clients reach the seam only through the AIDE 1.0.0 backend; the pre-AIDE workspace chat
+> protocol was removed (#236). The seam's contract is
+> `core/src/research_core/contract/CONTRACT.md`; see also [STATUS.md](STATUS.md) and
+> `image/README.md`.
+
 Read `00-overview.md`, then entries 2–5. The seam is the small part of the client contract the
 rest of the design needs: each turn carries the user's message and one typed context block; the
 bridge (or `research serve` locally) stamps the sending client; notices reach clients as `events`

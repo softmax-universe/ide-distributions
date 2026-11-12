@@ -7,8 +7,10 @@ the durable volume, `/tmp`, `/run/workspace/bootstrap.json` (workspace id, platf
 `BUILDKIT_HOST`, snapshots and the relay. This page is the handoff: what the rebuilt distributions
 need, and what they guarantee in return. A host running the profiles without the image does
 itself what this page gives to the image.
-The design is `docs/designs/ide-profile-refactor-2026-10-28-final.html` (Appendix G lists the
-metta changes); the build decisions are in `docs/plans/ide-profile-refactor/00-overview.md`.
+The profiles were built from `docs/designs/ide-profile-refactor-2026-10-28-final.html` (Appendix
+G lists the metta changes; its status note lists where the code has since moved on); the build
+decisions are in `docs/plans/ide-profile-refactor/00-overview.md`, a historical plan whose
+`STATUS.md` says what landed and what is still open.
 
 ## What the image must contain
 

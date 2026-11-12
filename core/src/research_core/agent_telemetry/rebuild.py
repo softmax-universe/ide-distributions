@@ -317,8 +317,9 @@ def _order(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """Oldest process first, then by time inside a process, where there is one clock.
 
     A restart makes a new ``source_instance`` and restarts ``sequence``. Within a process
-    ``sequence`` alone is not wire order: it is the order the hooks ran in, and an auxiliary call,
-    such as a title, runs beside the turn's calls.
+    ``sequence`` alone is not wire order: a record carries the time of what it describes, not of
+    its writing (a request its start, a reply its end, a committed row its own timestamp, read
+    after the turn's end).
     """
     items = list(records)
     starts: dict[str, str] = {}
