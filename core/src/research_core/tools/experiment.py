@@ -316,6 +316,11 @@ def computed_close(call: ToolCall, experiment_id: int) -> dict:
     verdict = decision_rule.evaluate(design, pairs)
     measurements = measurements_from(design, pairs, verdict)
     interpretation = call.get("interpretation") or summarise(verdict, measurements, len(pairs))
+    failed = failed_episodes(record["runs"])  # invalid runs too: a request may fail whole
+    if any(failed.values()):
+        # A crash leaves no row, so the rule never sees it; the record must say so.
+        counts = ", ".join(f"{arm} {n}" for arm, n in sorted(failed.items()))
+        interpretation += f" Episodes the platform failed, not counted: {counts}."
     closed = experiments.close(
         store,
         actor,
@@ -331,9 +336,20 @@ def computed_close(call: ToolCall, experiment_id: int) -> dict:
             "pairs": len(pairs),
             "rows": {"kept": report.kept, "dropped": dropped(report, other_seats)},
             "invalid_runs": excluded,
+            "failed_episodes": failed,
             "reason_codes": verdict.reason_codes,
         },
     }
+
+
+def failed_episodes(runs: list[dict]) -> dict[str, int]:
+    """Episodes the platform failed, per arm (``results.episodes_failed``, which ``xp.status``
+    records). Such an episode produces no results, so it is in no row: a candidate that crashes
+    more often loses nothing in the rule unless this is read."""
+    failed: Counter[str] = Counter()
+    for run in runs:
+        failed[run["arm"]] += (run.get("results") or {}).get("episodes_failed") or 0
+    return dict(failed)
 
 
 def stored_rows(runs: list[dict]) -> list[EpisodeRow]:

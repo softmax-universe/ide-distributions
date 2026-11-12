@@ -525,6 +525,7 @@ def test_status_completes_downloads_evaluates_and_stores_rows(run, ctx, running,
         run_record = by_arm[arm]
         assert run_record["state"] == "completed" and run_record["validity"] == "valid"
         assert run_record["episodes_completed"] == 1
+        assert run_record["results"]["episodes_failed"] == 0
         request_id = run_record["platform_request_id"]
         rows = run_record["results"]["rows"]
         assert len(rows) == 1

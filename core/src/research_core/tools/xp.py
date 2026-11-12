@@ -565,10 +565,12 @@ def _refresh(ctx: ToolContext, record: dict, run: dict) -> dict:
     if request.status in ("failed", "cancelled") and run["validity"] == "valid":
         reason = f": {request.error}" if request.error else ""
         validity = f"invalid: request {request.status}{reason}"
+    # Episodes the platform failed leave no results for evaluate to score, so they would vanish
+    # from the rows unseen; the count lets close report them per arm.
+    results: dict[str, Any] = {"episodes_failed": request.failed_count}
     # Runs recorded before the request's game version was kept get it here.
-    results = None
     if not (run.get("results") or {}).get("coworld_version") and request.coworld_version:
-        results = {"coworld_version": request.coworld_version}
+        results["coworld_version"] = request.coworld_version
     return experiments.update_run(
         ctx.store,
         ctx.actor,

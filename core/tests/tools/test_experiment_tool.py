@@ -254,6 +254,28 @@ def test_update_run(add_run, call, running):
     assert nothing["ok"] is False and "nothing to update" in nothing["error"]
 
 
+def test_computed_close_records_episodes_the_platform_failed(add_run, call, running):
+    """A crashed episode leaves no row; the rule cannot see it, so the record names it."""
+    seeds = range(N_MIN)
+    run_ids = record_runs(
+        add_run,
+        call,
+        {
+            "baseline": [row("V-1", s, 0.50 + (0.01 if s % 2 else -0.01)) for s in seeds],
+            "candidate": [row("V-2", s, 0.60 + (0.01 if s % 2 else -0.01)) for s in seeds],
+        },
+    )
+    update = {"action": "update_run", "run": run_ids[-1], "results": {"episodes_failed": 2}}
+    assert call("experiment", update, role="researcher")["ok"] is True
+    closed = call(
+        "experiment", {"action": "close", "experiment": "X-1", "interpretation": "A clear win."}
+    )
+    assert closed["evaluation"]["failed_episodes"] == {"baseline": 0, "candidate": 2}
+    assert closed["record"]["results"]["interpretation"] == (
+        "A clear win. Episodes the platform failed, not counted: baseline 0, candidate 2."
+    )
+
+
 def test_computed_close_confirms_a_clear_margin(add_run, call, running):
     seeds = range(N_MIN)
     record_runs(
