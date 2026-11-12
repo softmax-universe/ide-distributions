@@ -21,7 +21,7 @@ import datetime
 import hashlib
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -422,17 +422,19 @@ WEB_TYPE = EvidenceType(
 )
 
 
-def _types() -> dict[str, EvidenceType]:
+def _types(env: Mapping[str, str] | None = None) -> dict[str, EvidenceType]:
     """The registry; ``web`` (an unverified research note's source) exists only with IDE_BRAIN=1."""
-    return {**EVIDENCE_TYPES, "web": WEB_TYPE} if brain.enabled() else EVIDENCE_TYPES
+    return {**EVIDENCE_TYPES, "web": WEB_TYPE} if brain.enabled(env) else EVIDENCE_TYPES
 
 
-def check_ref(store: Store, type_name: object, ref: object) -> list[str]:
+def check_ref(
+    store: Store, type_name: object, ref: object, env: Mapping[str, str] | None = None
+) -> list[str]:
     """Every problem with one evidence link: an unknown type, a malformed reference, or a
     referenced record that does not exist. Empty when the link is good."""
-    kind = _types().get(type_name) if isinstance(type_name, str) else None
+    kind = _types(env).get(type_name) if isinstance(type_name, str) else None
     if kind is None:
-        return [_unknown_type(type_name)]
+        return [_unknown_type(type_name, env)]
     problems = kind.validate(ref)  # type: ignore[arg-type]
     if problems and isinstance(ref, str) and ref.startswith(f"{type_name} "):
         # The most common miss (2026-11): the type name copied into the ref, "code path:1-2@sha".
@@ -446,15 +448,17 @@ def check_ref(store: Store, type_name: object, ref: object) -> list[str]:
     return kind.resolve(store, ref)  # type: ignore[arg-type]
 
 
-def inspect_evidence(type_name: str, ref: str, env: InspectEnv) -> dict[str, Any]:
+def inspect_evidence(
+    type_name: str, ref: str, env: InspectEnv, flags: Mapping[str, str] | None = None
+) -> dict[str, Any]:
     """What one evidence link says, by its type's inspector. Never raises.
 
     The answer always has ``type``, ``ref`` and ``summary``; an unknown type, a malformed
     reference, a type without an inspector or an inspector failure is a ``problem``.
     """
-    kind = _types().get(type_name)
+    kind = _types(flags).get(type_name)
     if kind is None:
-        return _result(type_name, ref, ref, problem=_unknown_type(type_name))
+        return _result(type_name, ref, ref, problem=_unknown_type(type_name, flags))
     problems = kind.validate(ref)
     if problems:
         return _result(type_name, ref, ref, problem="; ".join(problems))
@@ -466,6 +470,6 @@ def inspect_evidence(type_name: str, ref: str, env: InspectEnv) -> dict[str, Any
         return _result(type_name, ref, ref, problem=f"{type(error).__name__}: {error}")
 
 
-def _unknown_type(type_name: object) -> str:
-    known = ", ".join(sorted(_types()))
+def _unknown_type(type_name: object, env: Mapping[str, str] | None = None) -> str:
+    known = ", ".join(sorted(_types(env)))
     return f"evidence type {type_name!r} is not registered (known: {known})"

@@ -34,7 +34,7 @@ def _stale_rules(ctx: TickContext, report: dict[str, Any]) -> None:
         ctx.store, "", tags=["rule"], include_retired=False, limit=RULE_LIMIT
     ):
         key = f"brain_stale:{coworld_id}:{found['id']}"
-        stale = brain.is_stale(claims.read(ctx.store, found["id"]), ctx.now)
+        stale = brain.is_stale(claims.read(ctx.store, found["id"], ctx.env), ctx.now)
         if stale and ctx.meta(key) is None:
             notices.add(
                 ctx.wstore,

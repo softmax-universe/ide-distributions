@@ -137,10 +137,10 @@ def test_web_evidence_validates_and_inspects(tmp_path, on):
 # --- (1) briefing ---------------------------------------------------------------------------
 
 
-def _briefing_ctx(tmp_path):
+def _briefing_ctx(tmp_path, **env):
     from tests.plugin.test_briefing import make_ctx as make_tool_ctx
 
-    return make_tool_ctx(tmp_path)
+    return make_tool_ctx(tmp_path, **env)
 
 
 def test_briefing_lists_rules_and_gotchas_only_with_the_flag(tmp_path, monkeypatch):
@@ -153,7 +153,7 @@ def test_briefing_lists_rules_and_gotchas_only_with_the_flag(tmp_path, monkeypat
     monkeypatch.delenv("IDE_BRAIN", raising=False)
     off = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
     assert "Rules and gotchas" not in off and "(rule)" not in off and "C-3: Finding 3" in off
-    monkeypatch.setenv("IDE_BRAIN", "1")
+    ctx.env["IDE_BRAIN"] = "1"
     on_text = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
     assert "C-1 (rule): Finding 1" in on_text and "C-2 (gotcha): Finding 2" in on_text
     assert on_text.index("C-3: Finding 3") < on_text.index("C-1 (rule)")  # beside preferences
@@ -163,8 +163,7 @@ def test_briefing_lists_rules_and_gotchas_only_with_the_flag(tmp_path, monkeypat
 def test_briefing_marks_a_stale_rule(tmp_path, monkeypatch):
     from tests.plugin.test_briefing import NOW
 
-    monkeypatch.setenv("IDE_BRAIN", "1")
-    ctx = _briefing_ctx(tmp_path)
+    ctx = _briefing_ctx(tmp_path, IDE_BRAIN="1")
     _claim(ctx.store, ["rule"], 1)
     late = NOW + timedelta(days=200)
     assert "[stale: unused 90 days]" in briefing.render(ctx, "chat1", role="orchestrator", now=late)
@@ -302,8 +301,7 @@ def test_prepare_script_guard(role, tmp_path, monkeypatch):
 def test_briefing_caps_rules_and_gotchas_and_keeps_preferences(tmp_path, monkeypatch):
     from tests.plugin.test_briefing import NOW
 
-    monkeypatch.setenv("IDE_BRAIN", "1")
-    ctx = _briefing_ctx(tmp_path)
+    ctx = _briefing_ctx(tmp_path, IDE_BRAIN="1")
     for n in range(1, 4):
         _claim(ctx.store, ["preference"], n)
     for n in range(4, 29):
@@ -318,3 +316,87 @@ def test_briefing_caps_rules_and_gotchas_and_keeps_preferences(tmp_path, monkeyp
     shown = section.count("(rule)") + section.count("(gotcha)")
     assert 0 < shown <= 2 * briefing.RULE_CLAIMS_LOADED
     assert "more, search with claim.search" in section
+
+
+# --- the flag comes from the caller's env, not os.environ (multiplexing gateway) -------------
+
+
+def _profile_scope(monkeypatch, scope):
+    import sys
+    import types
+
+    fake = types.ModuleType("agent.secret_scope")
+    fake.current_secret_scope = lambda: scope
+    monkeypatch.setitem(sys.modules, "agent", types.ModuleType("agent"))
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", fake)
+    constants = types.ModuleType("hermes_constants")
+    constants.get_hermes_home = lambda: "/host/profiles/orchestrator"
+    monkeypatch.setitem(sys.modules, "hermes_constants", constants)
+
+
+def test_flag_set_only_in_the_callers_env_turns_the_brain_on(tmp_path, monkeypatch):
+    from tests.plugin.test_briefing import NOW
+
+    monkeypatch.delenv("IDE_BRAIN", raising=False)
+    ctx = _briefing_ctx(tmp_path)
+    ctx.env["IDE_BRAIN"] = "1"  # the profile's .env: in ctx.env, never in os.environ
+    clock = FakeClock()
+    store = _store(tmp_path, clock)
+    assert evidence_types.check_ref(store, "web", WEB["ref"], ctx.env) == []
+    assert "web" in evidence_types._types(ctx.env)
+    claim = claims.write(
+        store,
+        HARNESS,
+        summary="Web note",
+        body="b",
+        tags=["unverified"],
+        evidence=[WEB],
+        env=ctx.env,
+    )
+    clock.advance(86400 * 91)
+    rule = _claim(store, ["rule"], 2)
+    clock.advance(86400 * 91)
+    assert claims.read(store, rule["id"], ctx.env)["stale"] is True
+    assert claims.read(store, claim["id"], ctx.env)["stale"] is False
+    _claim(ctx.store, ["rule"], 1)
+    text = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
+    assert "C-1 (rule): Finding 1" in text
+
+
+def test_flag_in_the_profile_scope_only_turns_the_brain_on(tmp_path, monkeypatch):
+    monkeypatch.delenv("IDE_BRAIN", raising=False)
+    assert not brain.enabled()
+    _profile_scope(monkeypatch, {"IDE_BRAIN": "1"})
+    assert brain.enabled() and not brain.enabled({})
+    store = _store(tmp_path)
+    assert evidence_types.check_ref(store, "web", WEB["ref"]) == []
+    assert "stale" in claims.read(store, _claim(store, ["rule"])["id"])
+    _profile_scope(monkeypatch, {})
+    assert not brain.enabled()
+
+
+def test_flag_off_everywhere_behaves_as_main(tmp_path, monkeypatch):
+    from tests.plugin.test_briefing import NOW
+
+    monkeypatch.delenv("IDE_BRAIN", raising=False)
+    _profile_scope(monkeypatch, {"OTHER": "x"})
+    ctx = _briefing_ctx(tmp_path)
+    store = ctx.store
+    rule = _claim(store, ["rule"], 1)
+    for env in (None, ctx.env, {"IDE_BRAIN": "0"}):
+        assert "stale" not in claims.read(store, rule["id"], env)
+        problems = evidence_types.check_ref(store, "web", WEB["ref"], env)
+        assert problems and "not registered" in problems[0]
+        assert "web" not in evidence_types._types(env)
+    with pytest.raises(StoreError):
+        claims.write(
+            store,
+            HARNESS,
+            summary="w",
+            body="b",
+            tags=["unverified"],
+            evidence=[WEB],
+            env=ctx.env,
+        )
+    text = briefing.render(ctx, "chat1", role="orchestrator", now=NOW)
+    assert "Rules and gotchas" not in text and "(rule)" not in text

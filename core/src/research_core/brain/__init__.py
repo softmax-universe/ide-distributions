@@ -9,7 +9,6 @@ SOUL hook. Stdlib only.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any
@@ -20,7 +19,13 @@ TAGS = ("lesson", "failed", "gotcha", "rule", "win", "unverified")
 
 
 def enabled(env: Mapping[str, str] | None = None) -> bool:
-    return (os.environ if env is None else env).get(FLAG, "") == "1"
+    """The flag, read from ``env``; with no ``env``, from the profile's environment (the routed
+    profile's ``.env`` under a multiplexing gateway keeps it out of ``os.environ``)."""
+    if env is None:
+        from research_core.plugin.executor import profile_env
+
+        env = profile_env()
+    return env.get(FLAG, "") == "1"
 
 
 def last_used(claim: Mapping[str, Any]) -> str | None:

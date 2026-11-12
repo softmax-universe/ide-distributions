@@ -142,7 +142,11 @@ def render(
         _item("Your Task", _session_task, inputs),
         _item("Goals", _goals, inputs),
         _item("User preferences", _preference_claims, inputs),
-        *([_item("Rules and gotchas", _rule_gotcha_claims, inputs)] if brain.enabled() else []),
+        *(
+            [_item("Rules and gotchas", _rule_gotcha_claims, inputs)]
+            if brain.enabled(ctx.env)
+            else []
+        ),
         _item("Goal claims", _goal_claims, inputs),
     ]
     return ctx.scrub(_fit(sections, inputs.now, max_chars))
@@ -508,7 +512,10 @@ def _rule_gotcha_claims(inputs: Inputs) -> Section:
             inputs.store, "", tags=[tag], include_retired=False, limit=RULE_CLAIMS_LOADED
         ):
             note = ""
-            if tag == "rule" and brain.is_stale(claims.read(inputs.store, found["id"]), inputs.now):
+            record = (
+                claims.read(inputs.store, found["id"], inputs.ctx.env) if tag == "rule" else None
+            )
+            if record is not None and brain.is_stale(record, inputs.now):
                 note = " [stale: unused 90 days]"
             entries.append(f"{found['id']} ({tag}): {_clip(found['summary'], SUMMARY_CHARS)}{note}")
     if not entries:
