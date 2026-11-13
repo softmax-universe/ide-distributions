@@ -142,13 +142,11 @@ def bind(
 
 
 def unbind(writer: Writer) -> None:
-    """Stop using ``writer``. Does nothing if another writer has been bound since."""
-    from research_core.store import db
-
+    """Stop using ``writer``. Does nothing if another writer has been bound since. The store keeps
+    calling ``observe_commit``, which does nothing while no writer is bound."""
     global _binding
     if _binding is not None and _binding.writer is writer:
         _binding = None
-        db.observe_commits(None)
 
 
 def bind_command(

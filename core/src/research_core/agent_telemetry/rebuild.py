@@ -28,8 +28,6 @@ PAGE_LIMIT = 5000
 VALUES_PER_SEARCH = 1500
 # Agent content stays in the ``main`` index for 15 days, so nothing older can be there.
 SEARCH_WINDOW_S = 15 * 24 * 3600
-# A record's references that name a manifest, which refers to other objects.
-_MANIFEST_REFERENCES = ("request_manifest",)
 
 
 class AmbiguousSession(Exception):
@@ -194,7 +192,7 @@ class _Finder:
         not the kind it was stored as: the same bytes can be stored first as a tool's text.
         """
         frontier = {
-            (digest, "manifest" if name in _MANIFEST_REFERENCES else None)
+            (digest, "manifest" if name == "request_manifest" else None)
             for digest, name in references
         }
         seen: set[tuple[str, str | None]] = set()
@@ -212,8 +210,9 @@ class _Finder:
     def read(self, digest: str) -> bytes | None:
         if digest not in self.objects:
             data, problems = None, [{"kind": "no_content", "digest": digest}]
-            if self.chunks.get(digest):
-                data, problems = _join_object(digest, self.chunks[digest])
+            # Taken out, so that a joined object is not also held as its chunks.
+            if chunks := self.chunks.pop(digest, None):
+                data, problems = _join_object(digest, chunks)
             self.objects[digest] = data
             if data is None:
                 self.missing[digest] = problems
@@ -606,7 +605,8 @@ def rebuild_session(search: LogsSearch, session_id: str, workspace: str | None =
     unended = [r["model_attempt_id"] for r in requests if not r.keys() & _ATTEMPT_ENDS]
     return {
         "session_id": session_id,
-        "workspace_id": next(iter(finder.workspaces), None),
+        # None when Datadog had nothing, even for a workspace named with ``--workspace``.
+        "workspace_id": next(iter(finder.workspaces), None) if finder.records else None,
         "session_ids": sorted(finder.session_ids),
         "requests": requests,
         "unended_attempts": unended,

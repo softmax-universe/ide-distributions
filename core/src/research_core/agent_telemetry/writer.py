@@ -261,4 +261,4 @@ class TelemetryWriter(Writer):
                 except Exception as error:  # The writer's thread outlives any one job.
                     logger.warning("telemetry: a deferred job failed (%s)", type(error).__name__)
             # Let go of a request of many megabytes now, not after the next wait.
-            item = blob = None
+            item = blob = payload = None

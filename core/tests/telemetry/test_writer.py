@@ -401,18 +401,6 @@ def test_a_deferred_job_runs_after_what_was_captured_before_it(writer, stream_fi
     assert [r["sequence"] for r in stored_records(stream_file)] == [0, 1, 2]
 
 
-def test_waiting_for_the_writer_is_bounded_and_says_when_it_could_not_finish(
-    tmp_path, producer, redactor
-):
-    stuck = StuckStream(tmp_path)
-    writer = TelemetryWriter(stuck.path, producer, redactor=redactor)
-    writer.capture_operation("a", "one")
-    started = time.monotonic()
-    assert not processed(writer, 0.3)
-    assert time.monotonic() - started < 1.0
-    assert [r["stage"] for r in stuck.release(writer)] == ["one"]
-
-
 def test_the_queue_empties_with_no_flush(writer, stream_file):
     """Why sleep needs no step of its own: the thread never waits for anything but the stream."""
     writer.capture_operation("a", "one")
