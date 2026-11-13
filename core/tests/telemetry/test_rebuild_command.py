@@ -241,6 +241,25 @@ def test_tokens_are_shared_by_characters(writer, stream_file, datadog):
     assert all("estimated_tokens" not in row for row in second["tokens_by_source"])
 
 
+def test_prompt_sections_count_only_in_the_first_system_message(writer, stream_file, datadog):
+    """The sections' offsets point into the first message. A later system message, such as a
+    note Hermes adds, is unattributed system text."""
+    later = {"role": "system", "content": "A later note"}
+    writer.capture_request(
+        request_body([{"role": "user", "content": "Go"}, later]),
+        prompt_sections=[PromptSection("soul", "You are a researcher.")],
+        session_id="ses_1",
+        provider="moonshot",
+        model_attempt_id="att_1",
+    )
+    sent(writer, stream_file, datadog)
+    [request] = rebuild_session(search_of(datadog), "ses_1")["requests"]
+    chars = {row["source"]: row["chars"] for row in request["tokens_by_source"]}
+    assert chars["soul"] == len("You are a researcher.")
+    unattributed = len(SYSTEM) - len("You are a researcher.") + len(later["content"])
+    assert chars["system_unattributed"] == unattributed
+
+
 def test_paging_and_a_rate_limit(writer, stream_file, datadog):
     bodies = two_requests(writer)
     # More than one 5000-line page, written in steps the writer's 4096-item queue can hold.
@@ -428,6 +447,22 @@ def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
     assert runs == ["run_1", "run_2"]
     assert next(e for e in admitted if "assignment_id" in e)["task_id"] == "T-3"
     assert any(e.get("command") == "ls" for e in report["events"])
+
+
+def test_an_admission_named_only_by_a_record_its_trace_found_is_followed(
+    writer, stream_file, datadog
+):
+    """The Session's records name only the trace. A seam record in that trace names the admission,
+    and a retry of it names nothing else, so it is found only by searching that admission."""
+    writer.capture_operation("turn", "started", session_id="ses_1", otel_trace_id=TRACE)
+    writer.capture_operation("admission", "bound", otel_trace_id=TRACE, admission_id="adm_9")
+    writer.capture_operation("admission", "accepted", request_id="req_2", admission_id="adm_9")
+    sent(writer, stream_file, datadog)
+
+    report = rebuild_session(search_of(datadog), "ses_1")
+    stages = [(e["action"], e["stage"]) for e in report["events"]]
+    assert stages == [("turn", "started"), ("admission", "bound"), ("admission", "accepted")]
+    assert report["missing"] == []
 
 
 def test_a_retained_record_from_before_traces_still_joins_by_its_run(writer, stream_file, datadog):
