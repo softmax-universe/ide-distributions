@@ -429,41 +429,47 @@ def _validate_every_aide_frame(monkeypatch):
 
 def test_aide_contract_validator_rejects_invalid_frames():
     contract = _aide_contract()
+    valid_note = {
+        "jsonrpc": "2.0",
+        "method": "state.changed",
+        "params": {
+            "resource": "sessions",
+            "epoch": "2026-04-01T00:00:00.000Z",
+            "previous_revision": 0,
+            "revision": 1,
+            "change": "upsert",
+            "item": {
+                "id": "s1",
+                "parent_session_id": None,
+                "started_at": "2026-04-01T00:00:00Z",
+                "ended_at": None,
+                "active_request_ids": [],
+                "pending": [],
+                "scope": WORKSPACE,
+                "requests": [],
+            },
+        },
+    }
+    contract.validate_notification(valid_note)
     with pytest.raises(ValidationError):
         contract.validate_notification(
-            {
-                "jsonrpc": "2.0",
-                "method": "state.changed",
-                "params": {
-                    "resource": "sessions",
-                    "epoch": "e1",
-                    "revision": 1,
-                    "change": "updated",
-                    "item": {
-                        "id": "s1",
-                        "scope": WORKSPACE,
-                        "status": "active",
-                        "active_request_ids": [],
-                        "pending": [],
-                        "created_at": "2026-04-01T00:00:00Z",
-                        "updated_at": "2026-04-01T00:00:00Z",
-                    },
-                    "extra_field": True,
-                },
-            }
+            valid_note | {"params": valid_note["params"] | {"extra_field": True}}
         )
+
+    valid_result = {
+        "jsonrpc": "2.0",
+        "id": str(uuid4()),
+        "result": {
+            "accepted": True,
+            "session_id": "s1",
+            "request_id": str(uuid4()),
+        },
+    }
+    contract.validate_result("chat.send", valid_result)
     with pytest.raises(ValidationError):
         contract.validate_result(
             "chat.send",
-            {
-                "jsonrpc": "2.0",
-                "id": str(uuid4()),
-                "result": {
-                    "accepted": False,
-                    "session_id": "s1",
-                    "request_id": str(uuid4()),
-                },
-            },
+            valid_result | {"result": valid_result["result"] | {"accepted": False}},
         )
 
 
@@ -2125,3 +2131,202 @@ def test_relay_failures_reconnect_without_touching_the_control_connection(monkey
             control.cancel()
 
     asyncio.run(main())
+
+
+def test_state_changed_precedes_chat_finished(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        request_id = str(uuid4())
+        params = {"session_id": session_id, "messages": say("hi"), "scope": WORKSPACE}
+        await call(backend, "chat.send", params, request_id=request_id)
+        await until(lambda: backend.socket.notes("chat.finished"))
+        methods_and_params = [
+            (f["message"]["method"], f["message"]["params"])
+            for f in backend.socket.frames
+            if f["frontend_id"] == str(FRONTEND) and "method" in f["message"]
+        ]
+        finished_idx = next(
+            i for i, (m, _) in enumerate(methods_and_params) if m == "chat.finished"
+        )
+        preceding_session_updates = [
+            p
+            for m, p in methods_and_params[:finished_idx]
+            if m == "state.changed" and p["resource"] == "sessions"
+        ]
+        assert preceding_session_updates
+        last_before_finished = preceding_session_updates[-1]["item"]
+        assert request_id not in last_before_finished["active_request_ids"]
+        embedded = {r["request_id"]: r for r in last_before_finished["requests"]}
+        assert embedded[request_id]["status"] == "completed"
+
+    run(system, scenario)
+
+
+def test_epoch_survives_restart_and_changes_on_store_reset(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend, scope=LEAGUE)
+        goals.create(ctx.store, HARNESS, title="Win league", end_state="first", reason="asked")
+        task = tasks.create(
+            ctx.store,
+            HARNESS,
+            type="maintenance",
+            title="Tune policy",
+            description="desc",
+        )
+        w_epoch = ctx.wstore.get_meta("created")
+        c_epoch = ctx.store.get_meta("created")
+        assert w_epoch and c_epoch
+
+        s_list = (await call(backend, "state.list", {"resource": "sessions"}))["result"]
+        r_list = (
+            await call(
+                backend,
+                "state.list",
+                {"resource": "requests", "session_id": session_id, "scope": LEAGUE},
+            )
+        )["result"]
+        t_list = (await call(backend, "state.list", {"resource": "tasks", "scope": LEAGUE}))[
+            "result"
+        ]
+        g_list = (await call(backend, "state.list", {"resource": "goals", "scope": LEAGUE}))[
+            "result"
+        ]
+        assert s_list["epoch"] == r_list["epoch"] == w_epoch
+        assert t_list["epoch"] == g_list["epoch"] == c_epoch
+
+        restarted = await backend.restart()
+        s_after = (await call(restarted, "state.list", {"resource": "sessions"}))["result"]
+        t_after = (await call(restarted, "state.list", {"resource": "tasks", "scope": LEAGUE}))[
+            "result"
+        ]
+        assert s_after["epoch"] == w_epoch
+        assert t_after["epoch"] == c_epoch
+
+        # Simulate a store reset changing the store's created epoch.
+        ctx.wstore.set_meta("created", "2026-05-01T00:00:00.000Z")
+        ctx.wstore.conn.commit()
+        ctx.store.set_meta("created", "2026-05-02T00:00:00.000Z")
+        ctx.store.conn.commit()
+        s_reset = (
+            await call(
+                restarted,
+                "state.get",
+                {"resource": "sessions", "id": session_id, "scope": LEAGUE},
+            )
+        )["result"]
+        t_reset = (
+            await call(
+                restarted,
+                "state.get",
+                {
+                    "resource": "tasks",
+                    "id": f"{COWORLD_ID}:{task['id']}",
+                    "scope": LEAGUE,
+                },
+            )
+        )["result"]
+        assert s_reset["epoch"] == "2026-05-01T00:00:00.000Z"
+        assert t_reset["epoch"] == "2026-05-02T00:00:00.000Z"
+
+    run(system, scenario)
+
+
+def test_tasks_and_goals_carry_monotonic_item_revisions(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend, scope=LEAGUE)
+        s_get = (
+            await call(
+                backend,
+                "state.get",
+                {"resource": "sessions", "id": session_id, "scope": LEAGUE},
+            )
+        )["result"]
+        assert "revision" not in s_get["item"]
+        assert s_get["revision"] >= ctx.wstore.last_seq()
+
+        goal = goals.create(ctx.store, HARNESS, title="Goal v1", end_state="end", reason="asked")
+        task = tasks.create(
+            ctx.store,
+            HARNESS,
+            type="maintenance",
+            title="Task v1",
+            description="desc",
+        )
+        t_list = (await call(backend, "state.list", {"resource": "tasks", "scope": LEAGUE}))[
+            "result"
+        ]
+        g_list = (await call(backend, "state.list", {"resource": "goals", "scope": LEAGUE}))[
+            "result"
+        ]
+        t_rev_1 = t_list["items"][0]["revision"]
+        g_rev_1 = g_list["items"][0]["revision"]
+        assert t_rev_1 > g_rev_1 >= 1
+
+        tasks.update(ctx.store, HARNESS, task["id"], title="Task v2")
+        await until(lambda: backend.socket.notes("state.changed"))
+        t_pushed = [n for n in backend.socket.notes("state.changed") if n["resource"] == "tasks"][
+            -1
+        ]
+        assert t_pushed["item"]["revision"] > t_rev_1
+        assert t_pushed["item"]["revision"] == t_pushed["revision"]
+
+        g_get = (
+            await call(
+                backend,
+                "state.get",
+                {
+                    "resource": "goals",
+                    "id": f"{COWORLD_ID}:{goal['id']}",
+                    "scope": LEAGUE,
+                },
+            )
+        )["result"]
+        assert g_get["item"]["revision"] == g_rev_1
+
+    run(system, scenario)
+
+
+def test_concurrent_changed_calls_preserve_revision_order(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        real_pending = backend.pending
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+        calls = 0
+
+        async def gated_pending(sid, requests):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                first_entered.set()
+                await release_first.wait()
+            return await real_pending(sid, requests)
+
+        backend.pending = gated_pending
+        first_task = asyncio.create_task(backend.changed(session_id))
+        await first_entered.wait()
+        # Start a second changed() while the first is paused inside pending(); then create a
+        # queued request before releasing the first call so the second call's snapshot sees it.
+        second_task = asyncio.create_task(backend.changed(session_id))
+        settings.update(ctx.wstore, HARNESS, "paused", True, cites="hold")
+        req_id = admissions.enqueue(
+            ctx.wstore,
+            HARNESS,
+            key="c-order",
+            session_id=session_id,
+            profile="orchestrator",
+            text="queued",
+            origin="client",
+        )
+        release_first.set()
+        await asyncio.gather(first_task, second_task)
+
+        session_notes = [
+            n for n in backend.socket.notes("state.changed") if n["resource"] == "sessions"
+        ]
+        assert len(session_notes) >= 2
+        revs = [n["revision"] for n in session_notes]
+        assert revs == sorted(revs) and len(set(revs)) == len(revs)
+        assert req_id in session_notes[-1]["item"]["active_request_ids"]
+
+    run(system, scenario)

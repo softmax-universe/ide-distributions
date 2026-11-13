@@ -270,6 +270,7 @@ class Records(BaseModel):
 
 
 class Snapshot(BaseModel):
+    epoch: str
     seq: int
     records: Records
 
@@ -289,6 +290,7 @@ class TaskRow(BaseModel):
     for_human: str
     held_by: str | None
     waiting_on: Waiting | None
+    revision: int
 
 
 class GoalRow(BaseModel):
@@ -298,6 +300,7 @@ class GoalRow(BaseModel):
     end_state: str
     status: str
     where_it_stands: str
+    revision: int
 
 
 class BoardRecords(BaseModel):
@@ -306,6 +309,7 @@ class BoardRecords(BaseModel):
 
 
 class Board(BaseModel):
+    epoch: str
     seq: int
     records: BoardRecords
 
@@ -490,6 +494,7 @@ class Goal(Wire):
     end_state: str
     status: str
     summary: str
+    revision: int
 
 
 class Task(Wire):
@@ -503,6 +508,7 @@ class Task(Wire):
     status: str
     outcome: str | None
     waiting_on: Waiting | None
+    revision: int
 
 
 class Event(Wire):
@@ -843,6 +849,7 @@ class Backend:
         self.epoch, self.revision = str(uuid4()), 0
         self.socket: ClientConnection | None = None
         self.subscribers: dict[str, Subscription] = {}
+        self.session_locks: dict[str, asyncio.Lock] = {}
         self.boards: dict[str, BoardFeed] = {}
         self.requests: dict[str, str] = {}  # admission op id -> session id
         self.wakes: dict[str, asyncio.Event] = {}
@@ -887,6 +894,7 @@ class Backend:
                 params={"store": "workspace", "requests": "1", **params},
             )
         )
+        self.epoch = snapshot.epoch
         if not self.start.done():
             self.start.set_result(snapshot.seq)
         for request in snapshot.records.requests:
@@ -1032,7 +1040,7 @@ class Backend:
 
     async def board(
         self, coworld: str, resource: str, item_id: str | None = None
-    ) -> tuple[int, list[BaseModel]]:
+    ) -> tuple[str, int, list[BaseModel]]:
         params = {"store": "coworld", "coworld": coworld, "board": resource}
         if item_id is not None:
             params["item"] = item_id
@@ -1040,51 +1048,61 @@ class Backend:
             await self.call(self.seam, "GET", "/snapshot", params=params)
         )
         if resource == "goals":
-            return board.seq, [
-                Goal(
+            return (
+                board.epoch,
+                board.seq,
+                [
+                    Goal(
+                        id=f"{coworld}:{row.id}",
+                        scope_id=coworld,
+                        title=row.title,
+                        description=row.description,
+                        end_state=row.end_state,
+                        status=row.status,
+                        summary=row.where_it_stands,
+                        revision=row.revision,
+                    )
+                    for row in board.records.goals
+                ],
+            )
+        return (
+            board.epoch,
+            board.seq,
+            [
+                Task(
                     id=f"{coworld}:{row.id}",
                     scope_id=coworld,
+                    goal_id=None if row.goal_id is None else f"{coworld}:G-{row.goal_id}",
+                    session_ids=[row.held_by] if row.held_by else [],
                     title=row.title,
                     description=row.description,
-                    end_state=row.end_state,
-                    status=row.status,
-                    summary=row.where_it_stands,
+                    summary=row.result or row.for_human,
+                    status=TASK_STATUSES[row.status],
+                    outcome=row.outcome,
+                    waiting_on=row.waiting_on,
+                    revision=row.revision,
                 )
-                for row in board.records.goals
-            ]
-        return board.seq, [
-            Task(
-                id=f"{coworld}:{row.id}",
-                scope_id=coworld,
-                goal_id=None if row.goal_id is None else f"{coworld}:G-{row.goal_id}",
-                session_ids=[row.held_by] if row.held_by else [],
-                title=row.title,
-                description=row.description,
-                summary=row.result or row.for_human,
-                status=TASK_STATUSES[row.status],
-                outcome=row.outcome,
-                waiting_on=row.waiting_on,
-            )
-            for row in board.records.tasks
-        ]
+                for row in board.records.tasks
+            ],
+        )
 
     async def subscribe_board(
         self, frontend_id: UUID, coworld: str, resource: str
-    ) -> tuple[int, list[BaseModel]]:
+    ) -> tuple[str, int, list[BaseModel]]:
         """Install the list cursor before the feed can pass it."""
         feed = self.boards.setdefault(coworld, BoardFeed())
         reader = (frontend_id, resource)
         feed.readers.setdefault(reader, None)
         try:
             async with feed.lock:
-                revision, rows = await self.board(coworld, resource)
+                epoch, revision, rows = await self.board(coworld, resource)
                 if reader in feed.readers:  # the frontend can close during the snapshot
                     feed.readers[reader] = revision
                     if feed.watcher is None:
                         feed.watcher = self.work.create_task(
                             self.watch_board(coworld, feed, revision)
                         )
-                return revision, rows
+                return epoch, revision, rows
         finally:
             if reader in feed.readers and feed.readers[reader] is None:
                 del feed.readers[reader]
@@ -1127,7 +1145,7 @@ class Backend:
             }
             if not readers:
                 return
-            _, items = await self.board(coworld, resource, event.subject)
+            epoch, _, items = await self.board(coworld, resource, event.subject)
             socket = self.socket
             if socket is None:
                 return
@@ -1152,7 +1170,7 @@ class Backend:
                     "method": "state.changed",
                     "params": {
                         "resource": resource,
-                        "epoch": "coworld",
+                        "epoch": epoch,
                         "revision": event.seq,
                         "previous_revision": previous,
                         **change,
@@ -1201,21 +1219,22 @@ class Backend:
             await self.send(self.socket, frontend_id, message)
 
     async def changed(self, session_id: str) -> None:
-        if session_id not in self.subscribers or not self.subscribers[session_id].frontends:
-            return
-        snapshot = await self.scoped(self.subscribers[session_id].scope, session_id=session_id)
-        (row,) = snapshot.records.sessions
-        session = await self.project(row, snapshot.records.requests)
-        self.revision += 1
-        change = {
-            "resource": "sessions",
-            "epoch": self.epoch,
-            "previous_revision": self.revision - 1,
-            "revision": self.revision,
-            "change": "upsert",
-            "item": session.model_dump(mode="json"),
-        }
-        await self.notify(session_id, "state.changed", change)
+        async with self.session_locks.setdefault(session_id, asyncio.Lock()):
+            if session_id not in self.subscribers or not self.subscribers[session_id].frontends:
+                return
+            snapshot = await self.scoped(self.subscribers[session_id].scope, session_id=session_id)
+            (row,) = snapshot.records.sessions
+            session = await self.project(row, snapshot.records.requests)
+            self.revision = max(self.revision + 1, snapshot.seq)
+            change = {
+                "resource": "sessions",
+                "epoch": snapshot.epoch,
+                "previous_revision": self.revision - 1,
+                "revision": self.revision,
+                "change": "upsert",
+                "item": session.model_dump(mode="json"),
+            }
+            await self.notify(session_id, "state.changed", change)
 
     async def watch(self) -> None:
         """Recover every open event log's consumer, then follow the workspace store's events from
@@ -1246,14 +1265,14 @@ class Backend:
                                 and event.payload["kind"] == "message"
                             ) or event.kind == "execution.queued":
                                 await self.recover()
-                            if event.subject in self.wakes:
-                                self.wakes[event.subject].set()
                             if event.kind.startswith("session."):
                                 await self.changed(event.subject)
                             elif (
                                 event.kind.startswith("client.") and event.subject in self.requests
                             ):
                                 await self.changed(self.requests[event.subject])
+                            if event.subject in self.wakes:
+                                self.wakes[event.subject].set()
             except httpx.TransportError:  # the seam stream dropped; resume after the last event
                 log.info("Seam event stream dropped; resuming after %s", after)
             await asyncio.sleep(1)
@@ -1499,6 +1518,7 @@ class Backend:
                     )
                     await self.record(request, None, [(outcome, None)])
                     self.finished.add(request_id)
+                    await self.changed(session_id)
                     finished = {
                         "session_id": session_id,
                         "request_id": request_id,
@@ -1710,19 +1730,19 @@ class Backend:
         return {"requested": target.status in ACTIVE}
 
     async def list_state(self, frontend_id: UUID, request_id: str, params: StateList) -> dict:
-        epoch = {"sessions": self.epoch, "requests": "workspace"}.get(params.resource, "coworld")
         if params.resource == "requests":
             if params.session_id is None or params.scope is None:
                 raise Refusal("invalid", "Requests are listed per session and scope")
             await self.touch(params.session_id, params.scope, frontend_id)
             snapshot = await self.scoped(params.scope, session_id=params.session_id)
-            revision = snapshot.seq
+            epoch, revision = snapshot.epoch, snapshot.seq
             rows = [chat_request(r, params.scope) for r in reversed(snapshot.records.requests)]
         elif params.session_id is not None:
             raise Refusal("invalid", "session_id selects requests only")
         elif params.resource == "sessions":
             snapshot = await self.snapshot()
-            revision = self.revision
+            self.revision = max(self.revision, snapshot.seq)
+            epoch, revision = snapshot.epoch, self.revision
             rows = [
                 row
                 for row in snapshot.records.sessions
@@ -1735,9 +1755,11 @@ class Backend:
             if coworld is None:
                 raise Refusal("unsupported", "Tasks and goals are listed per Coworld")
             if params.cursor is None:
-                revision, rows = await self.subscribe_board(frontend_id, coworld, params.resource)
+                epoch, revision, rows = await self.subscribe_board(
+                    frontend_id, coworld, params.resource
+                )
             else:
-                revision, rows = await self.board(coworld, params.resource)
+                epoch, revision, rows = await self.board(coworld, params.resource)
         selection = params.model_dump_json(include={"resource", "scope_id", "scope", "session_id"})
         key = hashlib.sha256(selection.encode()).hexdigest()[:16]
         offset = 0
@@ -1761,12 +1783,16 @@ class Backend:
         }
 
     async def get_state(self, frontend_id: UUID, request_id: str, params: StateGet) -> dict:
-        epoch = {"sessions": self.epoch, "requests": "workspace"}.get(params.resource, "coworld")
         if params.resource == "sessions":
             await self.touch(params.id, params.scope, frontend_id)
             snapshot = await self.scoped(params.scope, session_id=params.id)
             (row,) = snapshot.records.sessions
-            item, revision = await self.project(row, snapshot.records.requests), self.revision
+            self.revision = max(self.revision, snapshot.seq)
+            epoch, item, revision = (
+                snapshot.epoch,
+                await self.project(row, snapshot.records.requests),
+                self.revision,
+            )
             await self.title_sessions([item], snapshot.records.requests)
         elif params.resource == "requests":
             found = await self.scoped(params.scope, request_id=params.id)
@@ -1779,11 +1805,11 @@ class Backend:
                 item.messages = [row.input]
                 if len(item.model_dump_json().encode()) > MAX_BYTES - 1024:
                     item.messages, item.message_omitted = None, True
-            revision = row.revision
+            epoch, revision = snapshot.epoch, row.revision
         else:
             if params.scope.coworld is None:
                 raise Refusal("unsupported", "Tasks and goals belong to a Coworld")
-            revision, items = await self.board(params.scope.coworld, params.resource)
+            epoch, revision, items = await self.board(params.scope.coworld, params.resource)
             found = [item for item in items if item.id == params.id]
             if not found:
                 raise Refusal("not_found", f"No such {params.resource[:-1]}")
@@ -1795,7 +1821,7 @@ class Backend:
         coworld = params.scope.coworld
         if coworld is None or not params.task_id.startswith(f"{coworld}:"):
             raise Refusal("forbidden", "The task belongs to another scope")
-        _, tasks = await self.board(coworld, "tasks")
+        _, _, tasks = await self.board(coworld, "tasks")
         found = [task for task in tasks if task.id == params.task_id]
         if not found:
             raise Refusal("not_found", "No such task")

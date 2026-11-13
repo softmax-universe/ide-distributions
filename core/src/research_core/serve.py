@@ -1106,6 +1106,7 @@ class SeamServer:
                         )
                     return {
                         "store": "workspace",
+                        "epoch": stores.wstore.get_meta("created"),
                         "seq": stores.wstore.last_seq(),
                         "records": records,
                     }
@@ -1119,22 +1120,38 @@ class SeamServer:
         if resource not in specs:
             raise Refused(HTTPStatus.BAD_REQUEST, "Board resource must be tasks or goals")
         spec = specs[resource]
+        prefix = f"{spec.prefix}-"
         with self.stores(coworld_id) as stores:
             coworlds.read(stores.wstore, coworld_id)
             store = self.store_for(stores, "coworld")
             with store.read_tx():
+                revision_sql = (
+                    "COALESCE((SELECT MAX(seq) FROM events WHERE subject = ? || id), 0) AS revision"
+                )
                 if item_id is None:
-                    rows = store.q(f"SELECT * FROM {spec.table} ORDER BY rowid")
+                    rows = store.q(
+                        f"SELECT *, {revision_sql} FROM {spec.table} ORDER BY rowid",
+                        (prefix,),
+                    )
                 else:
                     kind, number = parse_display_id(item_id)
                     if kind != resource[:-1]:
                         raise Refused(
                             HTTPStatus.BAD_REQUEST, "Item ID does not match the board resource"
                         )
-                    rows = store.q(f"SELECT * FROM {spec.table} WHERE id = ?", (number,))
+                    rows = store.q(
+                        f"SELECT *, {revision_sql} FROM {spec.table} WHERE id = ?",
+                        (prefix, number),
+                    )
                 return {
+                    "epoch": store.get_meta("created"),
                     "seq": store.last_seq(),
-                    "records": {resource: [record_from_row(spec, row) for row in rows]},
+                    "records": {
+                        resource: [
+                            record_from_row(spec, row) | {"revision": row["revision"]}
+                            for row in rows
+                        ]
+                    },
                 }
 
     def run_status(self, run_id: str) -> dict:
