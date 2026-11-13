@@ -143,6 +143,7 @@ _created = _f("created", "timestamp", "When the record was created, to the micro
 _created_by = _f("created_by", "actor", "The session, user or harness that created it.")
 _updated = _f("updated", "timestamp", "When the record last changed.")
 
+GOAL_KINDS = ("outcome", "ongoing")
 GOAL_STATUSES = ("active", "parked", "completed", "abandoned")
 TASK_TYPES = ("research", "improvement", "ideation", "maintenance")
 TASK_STATUSES = ("proposed", "unclaimed", "in-progress", "complete", "abandoned")
@@ -175,6 +176,7 @@ GOAL = _spec(
     [
         _f("id", "id", "The Goal's id, shown as G-<n>."),
         _f("title", "text", "Short name of the outcome.", required=True),
+        _f("kind", "enum", "An outcome or an ongoing commitment.", enum=GOAL_KINDS),
         _f(
             "end_state",
             "text",

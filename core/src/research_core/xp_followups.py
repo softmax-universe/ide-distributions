@@ -100,14 +100,9 @@ async def deliver(read: ReadChanges, store_path: Path, row: Row) -> None:
             text=(
                 f"The watched experience requests for {experiment} {reason}. "
                 "This is an automatic follow-up. Read the experiment and use xp.status "
-                "to check the actual results, including failed or missing results. "
-                "If evaluation is still running, use its resume token to finish it. "
-                "Read the active directives and the experiment's Goal, if it has one. "
-                "If the user asked you to keep improving and the Goal is still active, check its "
-                "open Tasks and experiments. If none is advancing the next evidence-backed step, "
-                "start it, assign it, or record a Task with its actual blocker. Stay within the "
-                "user's scope and ask only for decisions they reserved or only they can make. "
-                f"{audience} Say what actually started, was queued, or is blocked."
+                f"to check the actual results, including failed or missing results. {audience} "
+                "If evaluation is still running, use its resume "
+                "token to finish it before reporting. Follow the user's earlier instructions."
             ),
         )
         tx.execute("UPDATE xp_followups SET admission_id=? WHERE id=?", (op_id, row["id"]))

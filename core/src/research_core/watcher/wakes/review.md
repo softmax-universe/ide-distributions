@@ -29,10 +29,6 @@ Do this, then end the run:
    conflicts or fails its checks comes back to you as a management wake. A submission candidate
    you just accepted waits for that merge, then a `submission.candidate` wake decides it; a user's
    earlier request to submit is carried out, never gated.
-4. Read the active directives and the Task's Goal. If the user asked you to keep improving
-   and the Goal is still active, check its open Tasks and experiments. If none is advancing
-   the next evidence-backed step, start it, assign it, or record a Task with its actual blocker.
-   Stay within the user's scope and ask only for decisions they reserved or only they can make.
-5. Report the outcome and what actually started, was queued, or is blocked, with record
-   references. Use an `outcome` `chat_update` when the user asked for this work, including when
-   it merged. Use `merge` for a routine merge and `progress` for other routine updates.
+4. Report the outcome in one or two sentences with the record references: an `outcome`
+   `chat_update` when the user asked for this work, including when it merged. Use `merge` for a
+   routine merge and `progress` for other routine updates.

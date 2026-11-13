@@ -28,6 +28,7 @@ from research_core.store.errors import NotFound, StoreError
 from research_core.store.registry import (
     EXPERIMENT_STATUSES,
     GOAL,
+    GOAL_KINDS,
     GOAL_STATUSES,
     TASK_STATUSES,
     record_from_row,
@@ -44,6 +45,7 @@ TITLE_MAX_CHARS = 200
 # which is never rewritten; every other field replaces its value.
 UPDATABLE_FIELDS = (
     "title",
+    "kind",
     "end_state",
     "reason",
     "description",
@@ -75,6 +77,8 @@ def _check_fields(problems: list[str], fields: dict[str, Any]) -> None:
     for name in _REQUIRED_TEXT:
         if name in fields:
             require(problems, _is_text(fields[name]), f"{name} is required")
+    if "kind" in fields:
+        require(problems, fields["kind"] in GOAL_KINDS, "kind must be outcome or ongoing")
     if "title" in fields and isinstance(fields["title"], str):
         require(
             problems,
@@ -103,6 +107,7 @@ def create(
     title: str,
     end_state: str,
     reason: str,
+    kind: str = "outcome",
     description: str = "",
     judgement: str | None = None,
     tags: Sequence[str] = (),
@@ -113,6 +118,7 @@ def create(
         problems,
         {
             "title": title,
+            "kind": kind,
             "end_state": end_state,
             "reason": reason,
             "description": description,
@@ -125,7 +131,7 @@ def create(
     with store.tx(actor) as tx:
         cursor = tx.execute(
             "INSERT INTO goals(title, end_state, reason, status, judgement, tags, description,"
-            " created, created_by, updated) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
+            " created, created_by, updated, kind) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)",
             (
                 title,
                 end_state,
@@ -136,6 +142,7 @@ def create(
                 tx.at,
                 str(actor),
                 tx.at,
+                kind,
             ),
         )
         goal_id = cursor.lastrowid
@@ -243,7 +250,7 @@ def list(store: Store, status: str | None = None) -> list[dict[str, Any]]:
 
 
 def needs_ideation(store: Store) -> list[int]:
-    """Ids of active Goals with no open Task and no Task waiting on the user.
+    """Ids of active Goals with no open Task, running standalone Experiment or user wait.
 
     The management wake creates or accepts an ideation Task for each (design §8 wake table).
     """
@@ -253,9 +260,26 @@ def needs_ideation(store: Store) -> list[int]:
         "   AND t.status IN ('proposed', 'unclaimed', 'in-progress'))"
         " AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.goal_id = g.id"
         "   AND json_extract(t.waiting_on, '$.kind') = 'user')"
+        " AND NOT EXISTS (SELECT 1 FROM experiments x WHERE x.goal_id = g.id"
+        "   AND x.task_id IS NULL AND x.status = 'running')"
         " ORDER BY g.id"
     )
     return [row["id"] for row in rows]
+
+
+def ideation_revision(store: Store, goal_id: int) -> int:
+    """The latest lifecycle event that can create a new gap in an ongoing Goal's work."""
+    return store.one(
+        "SELECT COALESCE(MAX(seq), 0) FROM ("
+        " SELECT MAX(e.seq) AS seq FROM tasks t JOIN events e ON e.subject='T-' || t.id"
+        " WHERE t.goal_id=? AND e.kind IN ('task.completed','task.failed','task.abandoned')"
+        " UNION ALL SELECT MAX(e.seq) FROM experiments x JOIN events e ON e.subject='X-' || x.id"
+        " WHERE x.goal_id=? AND x.task_id IS NULL"
+        " AND e.kind IN ('experiment.closed','experiment.abandoned')"
+        " UNION ALL SELECT MAX(seq) FROM events WHERE subject=?"
+        " AND kind IN ('goal.created','goal.status'))",
+        (goal_id, goal_id, display_id("G", goal_id)),
+    )[0]
 
 
 def progress_since_round(store: Store, goal_id: int, round: int) -> bool:
