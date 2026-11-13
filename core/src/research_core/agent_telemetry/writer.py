@@ -39,13 +39,6 @@ MAX_QUEUED_OBSERVATIONS = 4096
 MAX_QUEUED_BYTES = 64 * 1024 * 1024
 
 
-def _charged_bytes(blob: bytes) -> int:
-    """What a capture counts for against the byte limit. One over the limit, which goes out only
-    when nothing is queued, counts for nothing: its reply comes microseconds later, often before
-    the thread has taken it, and would find the queue full."""
-    return 0 if len(blob) > MAX_QUEUED_BYTES else len(blob)
-
-
 class Writer:
     """The capture API. With a ``redactor`` this is the gateway's writer and it takes text too.
     Without one, text captures are dropped and any other string goes through the Softmax token
@@ -214,12 +207,12 @@ class TelemetryWriter(Writer):
             if (
                 blob is None
                 or len(self._queue) >= MAX_QUEUED_OBSERVATIONS
-                or (self._queue and self._queued_bytes + len(blob) > MAX_QUEUED_BYTES)
+                or self._queued_bytes + len(blob) > MAX_QUEUED_BYTES
             ):
                 self._dropped += 1
             else:
                 self._queue.append((kind, occurred, blob))
-                self._queued_bytes += _charged_bytes(blob)
+                self._queued_bytes += len(blob)
             self._ready.notify()
 
     def defer(self, job: Callable[[], None]) -> None:
@@ -241,7 +234,7 @@ class TelemetryWriter(Writer):
                 dropped = self._dropped
                 item = self._queue.popleft() if self._queue else None
                 if isinstance(item, tuple):
-                    self._queued_bytes -= _charged_bytes(item[2])
+                    self._queued_bytes -= len(item[2])
             if dropped != reported:
                 reported = dropped
                 logger.warning("telemetry: %d records dropped so far", dropped)

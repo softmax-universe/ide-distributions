@@ -24,9 +24,6 @@ from research_core.agent_telemetry.encoder import message_text
 from research_core.agent_telemetry.records import EMPTY_DIGEST, format_time
 
 SEARCH_PATH = "/api/v2/logs/events/search"
-# Datadog's largest page: 5000 answered 200 and 5001 a 400, "Limit can't be more than 5000",
-# on 2026-11-12.
-PAGE_LIMIT = 5000
 # The token broker's ``POST /proxy`` refuses an upstream answer over 2,097,152 bytes. A row Datadog
 # returns is the line's fields plus about 2,000 bytes of envelope (1,937 to 2,057 measured on
 # 2026-11-13), and Datadog writes ``&``, ``<`` and ``>`` as six-byte escapes. A 4,096-byte line with
@@ -50,84 +47,15 @@ class IncompleteSearch(Exception):
     warnings, so what it returned may be partial."""
 
 
-class LogsSearchBase:
-    """Logs search over the Standard indexes. It waits out a 429 for as long as Datadog says.
-    ``LogsSearch`` and ``BrokerLogsSearch`` say how a search is sent.
+class BrokerLogsSearch:
+    """Logs search over the Standard indexes, through the Softmax token broker's ``POST /proxy``,
+    which adds the ``datadog.content.read`` keys itself and never hands them out. Metta's
+    ``docs/specs/0156-broker-http-proxy.md`` defines the request and the answer. It waits out a
+    429 for as long as Datadog says.
 
     The time window is fixed when this is made, one per rebuild, and every search and page uses
     it: Datadog warns that a relative window such as ``now-15d`` can miss results across pages.
     """
-
-    page_limit: int
-
-    def __init__(self, sleep: Callable[[float], None]) -> None:
-        self._sleep = sleep
-        now = time.time()
-        self._window = {"from": format_time(now - SEARCH_WINDOW_S), "to": format_time(now)}
-
-    def _send(self, body: dict[str, Any]) -> dict[str, Any]:
-        """One search. Datadog's error answer raises ``HTTPError``."""
-        raise NotImplementedError
-
-    def _post(self, body: dict[str, Any]) -> dict[str, Any]:
-        while True:
-            try:
-                return self._send(body)
-            except urllib.error.HTTPError as error:
-                if error.code != 429:
-                    raise
-                self._sleep(max(1.0, float(error.headers.get("X-RateLimit-Reset") or 1)))
-
-    def entries(self, query: str) -> Iterator[dict[str, Any]]:
-        """Each log entry's own fields, which Datadog nests under ``attributes.attributes``."""
-        filters = {"query": query, **self._window, "storage_tier": "indexes"}
-        page: dict[str, Any] = {"limit": self.page_limit}
-        while True:
-            answer = self._post({"filter": filters, "page": page, "sort": "timestamp"})
-            meta = answer.get("meta") or {}
-            status = meta.get("status")
-            if status not in (None, "done"):
-                raise IncompleteSearch(f"the search answered status {status!r}")
-            # Datadog warns, even with status ``done``, when the results may be partial.
-            if warnings := meta.get("warnings"):
-                titles = "; ".join(str(w.get("title") or w.get("code")) for w in warnings)
-                raise IncompleteSearch(f"the search answered with warnings: {titles}")
-            for row in answer.get("data") or ():
-                yield row["attributes"]["attributes"]
-            page["cursor"] = (meta.get("page") or {}).get("after")
-            if not page["cursor"]:
-                return
-
-
-class LogsSearch(LogsSearchBase):
-    """The search sent to Datadog with its two keys."""
-
-    page_limit = PAGE_LIMIT
-
-    def __init__(
-        self, url: str, api_key: str, app_key: str, sleep: Callable[[float], None] = time.sleep
-    ) -> None:
-        super().__init__(sleep)
-        self._url = url.rstrip("/") + SEARCH_PATH
-        self._keys = {"DD-API-KEY": api_key, "DD-APPLICATION-KEY": app_key}
-
-    def _send(self, body: dict[str, Any]) -> dict[str, Any]:
-        headers = {"Content-Type": "application/json", **self._keys}
-        request = urllib.request.Request(self._url, json.dumps(body).encode(), headers)
-        with urllib.request.urlopen(request, timeout=120) as response:
-            return json.load(response)
-
-
-class BrokerLogsSearch(LogsSearchBase):
-    """The same search through the Softmax token broker's ``POST /proxy``, which adds the
-    ``datadog.content.read`` keys itself and never hands them out. Metta's
-    ``docs/specs/0156-broker-http-proxy.md`` defines the request and the answer.
-
-    The broker answers Datadog's own error, a 429 too, as a 200 that names ``upstream_status``.
-    That raises the ``HTTPError`` Datadog would have, so ``_post`` treats both transports alike.
-    """
-
-    page_limit = PROXY_PAGE_LIMIT
 
     def __init__(
         self,
@@ -137,7 +65,9 @@ class BrokerLogsSearch(LogsSearchBase):
         session_id: str,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        super().__init__(sleep)
+        self._sleep = sleep
+        now = time.time()
+        self._window = {"from": format_time(now - SEARCH_WINDOW_S), "to": format_time(now)}
         self._url = broker_url.rstrip("/") + "/proxy"
         # A hosted session's agent proxy adds the token to what it sends to the broker.
         self._headers = {"Content-Type": "application/json"}
@@ -153,6 +83,8 @@ class BrokerLogsSearch(LogsSearchBase):
         }
 
     def _send(self, body: dict[str, Any]) -> dict[str, Any]:
+        """One search. The broker answers Datadog's own error, a 429 too, as a 200 that names
+        ``upstream_status``, and that raises the ``HTTPError`` Datadog would have."""
         payload = {
             **self._request,
             "body_b64": base64.b64encode(json.dumps(body).encode()).decode(),
@@ -174,6 +106,35 @@ class BrokerLogsSearch(LogsSearchBase):
                 io.BytesIO(data),
             )
         return json.loads(data)
+
+    def _post(self, body: dict[str, Any]) -> dict[str, Any]:
+        while True:
+            try:
+                return self._send(body)
+            except urllib.error.HTTPError as error:
+                if error.code != 429:
+                    raise
+                self._sleep(max(1.0, float(error.headers.get("X-RateLimit-Reset") or 1)))
+
+    def entries(self, query: str) -> Iterator[dict[str, Any]]:
+        """Each log entry's own fields, which Datadog nests under ``attributes.attributes``."""
+        filters = {"query": query, **self._window, "storage_tier": "indexes"}
+        page: dict[str, Any] = {"limit": PROXY_PAGE_LIMIT}
+        while True:
+            answer = self._post({"filter": filters, "page": page, "sort": "timestamp"})
+            meta = answer.get("meta") or {}
+            status = meta.get("status")
+            if status not in (None, "done"):
+                raise IncompleteSearch(f"the search answered status {status!r}")
+            # Datadog warns, even with status ``done``, when the results may be partial.
+            if warnings := meta.get("warnings"):
+                titles = "; ".join(str(w.get("title") or w.get("code")) for w in warnings)
+                raise IncompleteSearch(f"the search answered with warnings: {titles}")
+            for row in answer.get("data") or ():
+                yield row["attributes"]["attributes"]
+            page["cursor"] = (meta.get("page") or {}).get("after")
+            if not page["cursor"]:
+                return
 
 
 def _quoted(value: str) -> str:
@@ -208,7 +169,7 @@ class _Finder:
     """What has been found so far: records by ``event_id``, chunks by digest and index. These keys
     are what drops duplicates. ``missing`` holds what could not be read, by digest."""
 
-    def __init__(self, search: LogsSearchBase, session_id: str, workspace: str | None) -> None:
+    def __init__(self, search: BrokerLogsSearch, session_id: str, workspace: str | None) -> None:
         self.search = search
         self.session_ids = {session_id}
         self.workspaces = {workspace} if workspace else set()
@@ -667,7 +628,9 @@ def _rows(finder: _Finder, operations: list[dict], requests: list[dict]) -> list
     return rows
 
 
-def rebuild_session(search: LogsSearchBase, session_id: str, workspace: str | None = None) -> dict:
+def rebuild_session(
+    search: BrokerLogsSearch, session_id: str, workspace: str | None = None
+) -> dict:
     """The whole report. Raises ``AmbiguousSession`` when no one workspace can be chosen."""
     finder = _Finder(search, session_id, workspace)
     finder.find_session()

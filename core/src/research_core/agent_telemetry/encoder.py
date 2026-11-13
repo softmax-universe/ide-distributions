@@ -31,8 +31,6 @@ from research_core.agent_telemetry.stream import LogStream
 
 logger = logging.getLogger(__name__)
 
-UNKNOWN = "unknown"
-
 
 @dataclass(frozen=True)
 class PromptSection:
@@ -351,7 +349,7 @@ class RecordEncoder:
                 "session_id": payload["session_id"],
                 "model_attempt_id": payload["model_attempt_id"],
                 "provider": payload["provider"],
-                "model": model if isinstance(model, str) else UNKNOWN,
+                "model": model if isinstance(model, str) else "unknown",
             }
         )
         body = self._request_head(payload, objects)

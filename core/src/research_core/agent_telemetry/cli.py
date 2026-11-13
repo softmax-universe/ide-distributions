@@ -24,33 +24,19 @@ def _broker_token() -> str | None:
     return None
 
 
-def _search(args: argparse.Namespace):
-    """Datadog's keys when both are set, or else the token broker when this machine has a token."""
-    from research_core.agent_telemetry import rebuild
-
-    keys = [os.environ.get("DD_API_KEY"), os.environ.get("DD_APP_KEY")]
-    if all(keys):
-        return rebuild.LogsSearch(args.datadog_url, keys[0], keys[1])
-    if token := _broker_token():
-        return rebuild.BrokerLogsSearch(
-            os.environ.get("TOKEN_BROKER_URL") or BROKER_URL,
-            token,
-            args.reason or f"telemetry rebuild of Session {args.session}",
-            os.environ.get("TOKEN_BROKER_SESSION_ID") or uuid.uuid4().hex,
-        )
-    return None
-
-
 def run_rebuild(args: argparse.Namespace) -> int:
     from research_core.agent_telemetry import rebuild
 
-    search = _search(args)
-    if search is None:
-        print(
-            "Needs a token broker token or DD_API_KEY and DD_APP_KEY: see docs/agent-telemetry.md",
-            file=sys.stderr,
-        )
+    token = _broker_token()
+    if token is None:
+        print("Needs a token broker token: see docs/agent-telemetry.md", file=sys.stderr)
         return 2
+    search = rebuild.BrokerLogsSearch(
+        os.environ.get("TOKEN_BROKER_URL") or BROKER_URL,
+        token,
+        args.reason or f"telemetry rebuild of Session {args.session}",
+        os.environ.get("TOKEN_BROKER_SESSION_ID") or uuid.uuid4().hex,
+    )
     try:
         report = rebuild.rebuild_session(search, args.session, args.workspace)
     except rebuild.AmbiguousSession as error:
@@ -73,12 +59,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     commands = parser.add_subparsers(dest="telemetry_command", required=True)
     rebuild = commands.add_parser(
         "rebuild",
-        help="Print a Session rebuilt from Datadog alone as JSON (through the token broker, or "
-        "with DD_API_KEY and DD_APP_KEY)",
+        help="Print a Session rebuilt from Datadog alone as JSON (through the token broker)",
     )
     rebuild.add_argument("--session", required=True, help="A Session ID, first or after compaction")
     rebuild.add_argument("--workspace", help="Needed only when several workspaces hold the ID")
-    rebuild.add_argument("--datadog-url", default="https://api.datadoghq.com")
     rebuild.add_argument(
         "--reason",
         help="Why, for the token broker's audit log (default: telemetry rebuild of Session <id>)",

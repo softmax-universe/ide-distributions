@@ -24,7 +24,7 @@ from opentelemetry import trace
 
 from research_core import attachments, layout, transitions
 from research_core.agent_telemetry import observed
-from research_core.agent_telemetry.rebuild import LogsSearch, rebuild_session
+from research_core.agent_telemetry.rebuild import rebuild_session
 from research_core.agent_telemetry.stream import STREAM_VARIABLE
 from research_core.coordinator import Coordinator
 from research_core.messages import UserMessage
@@ -336,7 +336,7 @@ def test_refusals_are_recorded_and_reach_rebuild(seam):
 
     datadog = FakeDatadog()
     datadog.take_lines(raw_lines(Path(os.environ[STREAM_VARIABLE])))
-    report = rebuild_session(LogsSearch(datadog.url, "a", "b"), session_id)
+    report = rebuild_session(datadog.search(), session_id)
     datadog.close()
     stages = [event["stage"] for event in report["events"] if event.get("admission_id") == invalid]
     assert stages == ["refused"]

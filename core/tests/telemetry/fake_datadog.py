@@ -221,6 +221,22 @@ class FakeDatadog:
             meta["page"] = {"after": str(after)}
         return 200, {"data": [self._row(entry) for entry in page], "meta": meta}, {}
 
+    def broker_url(self) -> str:
+        """The URL of this search's token broker, started on first use."""
+        if not self.brokers:
+            self.serve_broker()
+        host, port = self.brokers[0].server_address[:2]
+        return f"http://{host}:{port}"
+
+    def search(self, sleep: Any = None) -> Any:
+        """The rebuild's search, through this search's token broker."""
+        from research_core.agent_telemetry.rebuild import BrokerLogsSearch
+
+        waits = {"sleep": sleep} if sleep else {}
+        return BrokerLogsSearch(
+            self.broker_url(), "tbk_test", "a test rebuild", "session-1", **waits
+        )
+
     def serve_broker(self) -> str:
         """Start the token broker's ``POST /proxy`` in front of this search, as metta's spec 0156
         and the broker on 2026-11-13 define it, and give its URL. It takes the token ``tbk_test``

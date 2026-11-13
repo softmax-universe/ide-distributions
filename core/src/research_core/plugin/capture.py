@@ -767,8 +767,9 @@ class GatewayCapture:
 
             ids = self._ids(session_id)
             db = Path(get_hermes_home()) / "state.db"
-            # Hermes stamps a row when it commits it, so the turn's rows are those since the last
-            # turn's end, up to now. Bounding both ends here means a read the full queue dropped
+            # A row's timestamp is when Hermes created the message (``stamp_message_timestamp``),
+            # not when it committed it, so the turn's rows are those created since the last turn's
+            # end, up to now. Bounding both ends here means a read the full queue dropped
             # leaves those rows out, and never hands them to the next turn's span.
             after = self._turn_ended.get(session_id, self._started)
             self._turn_ended[session_id] = until = time.time()
