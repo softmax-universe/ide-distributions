@@ -510,14 +510,11 @@ def test_complete_with_outcome_failed(call, goal, code_repo):
     assert missing["ok"] is False and "failure" in missing["error"]
 
 
-def test_ideation_completion_needs_two_to_five_proposals(call, goal, code_repo):
+def test_ideation_completion_accepts_one_proposal(call, goal, code_repo):
     call("task", task_args(type="ideation", title="Ideas"))
     claim(call)
     as_researcher(call, task_args(action="propose", title="Idea one"))
-    refused = as_researcher(call, complete_args(proposed_tasks=["T-2"], result="one idea"))
-    assert refused["ok"] is False and "at least 2" in refused["error"]
-    as_researcher(call, task_args(action="propose", title="Idea two"))
-    done = as_researcher(call, complete_args(proposed_tasks=["T-2", "T-3"], result="two ideas"))
+    done = as_researcher(call, complete_args(proposed_tasks=["T-2"], result="one idea"))
     assert done["ok"] is True, done
 
 

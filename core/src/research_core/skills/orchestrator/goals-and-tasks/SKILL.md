@@ -24,7 +24,7 @@ A read-only question needs no Goal. A request that takes more than a turn does.
 - `research`: learn something; delivers claims or `none: <reason>`; no policy code.
 - `improvement`: one change, one Experiment from hypothesis to verdict; delivers claims, the
   Experiment, the Versions and a submission answer.
-- `ideation`: two to five proposed Tasks grounded in the Goal's claims; at most one open per Goal.
+- `ideation`: one to five viable proposed Tasks grounded in the Goal's claims, or an explicit empty result; at most one open per Goal.
 - `maintenance`: a committed change (a repair, a mixin fix, a toolchain pin) and a summary; never
   a Version. Repairs are `priority: high`. A maintenance Task may have no Goal; every other type
   needs one.
@@ -48,10 +48,10 @@ proposed. A Researcher's question arrives the same way: `task.answer
 
 ## Ideation and parking
 
-A Goal with no open Task and nothing waiting on the user gets an ideation Task from a management
-wake. When completed ideation Tasks with no progress since reach `ideation.park_after_rounds`, a wake tells you to park the Goal with `goal_set_status` and tell the user what was
-tried and what would unpark it. Progress is a Task under the Goal succeeding (other than ideation),
-a claim tagged with its id, or a Version from its Tasks or Experiments.
+A Goal without open work gets an ideation wake. An ongoing Goal parks on an explicit empty
+result. New evidence on a Goal-tagged claim or a linked Experiment verdict can resume it.
+Outcome Goals use the `ideation.park_after_rounds` limit. When asked to park, record why and
+tell the user what would help.
 
 ## Directives and settings
 

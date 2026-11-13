@@ -36,9 +36,10 @@ from research_core.store.registry import (
 
 if TYPE_CHECKING:
     from research_core.store.actors import Actor
-    from research_core.store.db import Store
+    from research_core.store.db import Store, Tx
 
 WORKSPACE_MAINTENANCE_TITLE = "workspace maintenance"
+IDEATION_PENDING = "ideation_pending:"
 OPEN_TASK_STATUSES = ("proposed", "unclaimed", "in-progress")
 TITLE_MAX_CHARS = 200
 # What ``update`` accepts. ``update_for_human`` appends a dated note to ``updates_for_human``,
@@ -209,12 +210,61 @@ def set_status(
                 problems.append(f"{shown} is {current}; it cannot become {status}")
         if problems:
             raise StoreError(problems)
-        tx.execute(
-            "UPDATE goals SET status = ?, status_reason = ?, updated = ? WHERE id = ?",
-            (status, status_reason, tx.at, goal_id),
-        )
-        tx.event("goal.status", shown, {"from": current, "to": status, "reason": status_reason})
+        _write_status(tx, goal_id, current, status, status_reason)
     return read(store, goal_id)
+
+
+def _write_status(
+    tx: Tx, goal_id: int, current: str, status: str, reason: str, **details: Any
+) -> int:
+    tx.execute(
+        "UPDATE goals SET status = ?, status_reason = ?, updated = ? WHERE id = ?",
+        (status, reason, tx.at, goal_id),
+    )
+    return tx.event(
+        "goal.status",
+        display_id("G", goal_id),
+        {"from": current, "to": status, "reason": reason, **details},
+    )
+
+
+def park_after_ideation(tx: Tx, goal_id: int, task_id: str, reason: str) -> None:
+    """Park an ongoing Goal when its completed ideation Task found no viable work."""
+    if goal_id not in needs_ideation(tx.store):
+        return
+    if tx.one("SELECT kind FROM goals WHERE id=?", (goal_id,))["kind"] == "ongoing":
+        _write_status(tx, goal_id, "active", "parked", reason, empty_ideation=task_id)
+
+
+def resume_for_evidence(tx: Tx, goal_id: int, evidence: str) -> None:
+    """Reopen a Goal parked for lack of ideas when new evidence for that Goal is recorded."""
+    row = tx.one("SELECT kind, status, title FROM goals WHERE id=?", (goal_id,))
+    if row is None or row["kind"] != "ongoing" or row["status"] != "parked":
+        return
+    shown = display_id("G", goal_id)
+    parked = tx.one(
+        "SELECT json_extract(payload, '$.empty_ideation') FROM events"
+        " WHERE subject=? AND kind='goal.status' ORDER BY seq DESC LIMIT 1",
+        (shown,),
+    )
+    if parked is None or parked[0] is None:
+        return
+    revision = _write_status(
+        tx, goal_id, "parked", "active", f"New evidence from {evidence}", evidence=evidence
+    )
+    if goal_id in needs_ideation(tx.store):
+        queue_ideation(tx, shown, row["title"], str(revision), evidence=evidence)
+
+
+def queue_ideation(
+    tx: Tx, goal: str, title: str, revision: str, *, evidence: str | None = None
+) -> None:
+    """Record a wake and its deduplication marker in the same transaction."""
+    payload = {"goal": goal, "title": title}
+    if evidence is not None:
+        payload["evidence"] = evidence
+    tx.event("goal.needs_ideation", goal, payload)
+    tx.store.set_meta(f"{IDEATION_PENDING}{goal}", revision)
 
 
 def read(store: Store, goal_id: int | None) -> dict[str, Any]:

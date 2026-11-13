@@ -94,6 +94,8 @@ def write(
             _display(number),
             {"summary": summary, "tags": tags, "evidence": len(items)},
         )
+        if items:
+            _resume_evidence_goals(tx, tags, number)
         record = read(store, number)
     record["new_tags"] = hints
     return record
@@ -169,7 +171,7 @@ def add_evidence(
     """
     number = _number(claim_id)
     with store.tx(actor) as tx:
-        _row(store, number)
+        row = _row(store, number)
         problems: list[str] = []
         link = {"type": type, "ref": ref, "stance": stance, "note": note}
         items = _check_evidence(store, [link], problems, citing=number, label="", env=env)
@@ -177,7 +179,16 @@ def add_evidence(
             raise StoreError(problems)
         evidence_id = _insert_evidence(tx, number, items[0])
         tx.event("claim.updated", _display(number), {"evidence": {**items[0], "id": evidence_id}})
+        _resume_evidence_goals(tx, parse_json(row["tags"]), number)
         return read(store, number)
+
+
+def _resume_evidence_goals(tx: Tx, tags: Sequence[str], claim_id: int) -> None:
+    from research_core.store.goals import resume_for_evidence
+
+    for tag in tags:
+        if re.fullmatch(r"G-[1-9][0-9]*", tag):
+            resume_for_evidence(tx, int(tag[2:]), _display(claim_id))
 
 
 def retire(
@@ -240,6 +251,8 @@ def retire(
                 "evidence": items[0] if items else None,
             },
         )
+        if items:
+            _resume_evidence_goals(tx, parse_json(row["tags"]), number)
         return read(store, number)
 
 

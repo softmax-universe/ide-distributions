@@ -25,14 +25,16 @@ priority, depends_on, experiment}`.
   first; `maintenance` for a fix; never `ideation` from an ideation Task.
 - `depends_on` when one must finish first.
 
-An ideation Task delivers two to five proposals: `task_complete {task, proposed_tasks: ["T-7", "T-8"], result, merge: "no", merge_reason}`
+An ideation Task delivers one to five viable proposals. Use
+`task_complete {task, proposed_tasks: ["T-7"], result, merge: "no", merge_reason}`
 with the ids `task_propose` returned. Ground every proposal in the Goal's claims and in what was
 tried: `claim.search {tags: ["G-n"], include_retired: true}` lists its claims (add `query` to
 narrow), `experiment.search {goal: "G-n"}` lists its Experiments, including
 the refuted and inconclusive Experiments too, then `platform.standings` and
 `platform.active_policies {league, exclude_player: true}` for what the league looks like now.
 Game-specific levers: see `code/mixin/skills/<coworld>-diagnosis/SKILL.md` and `code/mixin/skills/<coworld>-ab/SKILL.md` or the mixin docs.
-Rank them: the first proposal is the one you would run.
+Rank them with the first proposal you would run. If none is viable, pass
+`proposed_tasks: "none: <reason>"` and explain what new evidence would help.
 
 Outside an ideation Task, propose when the work shows a follow-up worth a Task of its own (a
 second lever, a surprising opponent behaviour): one or two at most, named in your `result`.
