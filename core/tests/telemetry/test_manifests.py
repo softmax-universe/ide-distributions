@@ -207,6 +207,20 @@ def test_each_request_redacts_only_what_is_new(stream_file, producer):
     assert rebuild_request(last["content_digest"], objects_of(records)) == request
 
 
+def test_text_repeated_in_one_request_is_redacted_once(stream_file, producer):
+    redactor = CountingRedactor()
+    writer = TelemetryWriter(stream_file, producer, redactor=redactor)
+    repeated = {"role": "user", "content": "y" * 50_000}
+    request = {"model": MODEL, "messages": [repeated, repeated, repeated]}
+    writer.capture_request(request, **attempt(0))
+    assert processed(writer, 5.0)
+    assert 50_000 <= sum(redactor.scanned) < 100_000
+
+    records = stored_records(stream_file)
+    [manifest] = [r for r in records if r.get("content_kind") == "request_manifest"]
+    assert rebuild_request(manifest["content_digest"], objects_of(records)) == request
+
+
 def test_every_manifest_describes_its_own_request(writer, stream_file):
     system = {"role": "system", "content": "s"}
     user = {"role": "user", "content": "u"}

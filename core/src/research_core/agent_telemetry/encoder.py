@@ -96,7 +96,8 @@ class _Objects:
         key = hashlib.sha256(
             json.dumps(raw, sort_keys=True, separators=(",", ":")).encode("ascii")
         ).digest()
-        digest = self._known.get(key) or self.add(make())
+        # Text seen earlier in this request, or sent before, is not redacted again.
+        digest = self.seen.get(key) or self._known.get(key) or self.add(make())
         self.seen[key] = digest
         return digest
 

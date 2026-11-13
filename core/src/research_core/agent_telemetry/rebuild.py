@@ -171,11 +171,21 @@ class _Finder:
         # A retried request names only its admission, and a store event or a workspace tool's
         # record only the trace of the message it served. A record written before records named
         # their trace (retained for 15 days) names its run instead. A record with a Session ID
-        # was found above if it is this Session's, and ``owned`` drops it otherwise.
-        for field in ("admission_id", "otel_trace_id", "run_id"):
-            values = {r[field] for r in self.records.values() if self.owned(r) and field in r}
-            for batch in _batches(values):
-                self._find(f"{_any_of(field, batch)} -@session_id:*")
+        # was found above if it is this Session's, and ``owned`` drops it otherwise. A record
+        # found by one link can name another, so the searches repeat until none finds a new value.
+        links = ("admission_id", "otel_trace_id", "run_id")
+        linked: dict[str, set[str]] = {field: set() for field in links}
+        while True:
+            found = False
+            for field in links:
+                values = {r[field] for r in self.records.values() if self.owned(r) and field in r}
+                new = values - linked[field]
+                linked[field] |= new
+                found = found or bool(new)
+                for batch in _batches(new):
+                    self._find(f"{_any_of(field, batch)} -@session_id:*")
+            if not found:
+                return
 
     def owned(self, record: dict[str, Any]) -> bool:
         """A record with another Session's ID came here by a link, and is not this Session's."""
@@ -309,13 +319,14 @@ def _source_chars(finder: _Finder, manifest: dict, request: dict, places: dict) 
         chars[rest] += len(text) - taken
 
     sections = finder.json(manifest.get("prompt_sections_digest")) or {}
-    for message in request["messages"]:
+    for position, message in enumerate(request["messages"]):
         text = message_text(message) or ""
         role = message.get("role")
         if role == "system":
+            # The sections point into the first message alone, the one the manifest describes.
             spans = [
                 (section["name"], section["byte_offset"], section["byte_length"])
-                for section in sections.get("sections", ())
+                for section in (sections.get("sections", ()) if position == 0 else ())
             ]
             add_spans(text, spans, "system_unattributed")
         elif role == "user":
