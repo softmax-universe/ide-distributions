@@ -252,6 +252,7 @@ def make_pre_llm_call(
                     session_id=session_id,
                     profile=env.get("HERMES_PROFILE_NAME") or "orchestrator",
                     kind="chat",
+                    client=sessions.UNKNOWN_CLIENT,
                 )
             parts: list[tuple[str, str]] = []
             import json

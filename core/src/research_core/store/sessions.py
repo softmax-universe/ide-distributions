@@ -31,6 +31,25 @@ SPEC = RECORDS["session"]
 KINDS = ("chat", "task", "wake")
 # The stop reason of a chat or wake run that ``research workspace sleep`` stopped.
 SLEEP_STOP = "workspace:sleep"
+# Clients that put a human in front of the IDE chat, as (client id, client kind). Only a Session
+# one of these opened may write the cogent's identity: the Cogent runtime's Coworld play sessions
+# and unregistered sessions registered by a hook carry other people's lines as user rows.
+# ("ide-next", "web") is the softmax.com web IDE (softmax repo, request-workspace.tsx opens it so).
+HUMAN_CHAT_CLIENTS = (
+    ("aide", "ide"),
+    ("softmax", "web"),
+    ("ui", "web-ide"),
+    ("ide-next", "web"),
+)
+# What a hook records for a Session it registers without a /session-open: no human client.
+UNKNOWN_CLIENT = {"id": "unknown", "kind": "unknown"}
+
+
+def opened_by_human_chat(session: dict[str, Any] | None) -> bool:
+    """Whether ``session`` was opened by a human IDE chat client. Fails closed: no session, no
+    recorded client or any other client is refused."""
+    client = (session or {}).get("client")
+    return isinstance(client, dict) and (client.get("id"), client.get("kind")) in HUMAN_CHAT_CLIENTS
 
 
 def register(
@@ -47,6 +66,7 @@ def register(
     parent: str | None = None,
     session_context: dict[str, Any] | None = None,
     client_capabilities: dict[str, Any] | list[Any] | None = None,
+    client: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     with store.tx(actor) as tx:
         return register_in_transaction(
@@ -61,6 +81,7 @@ def register(
             parent=parent,
             session_context=session_context,
             client_capabilities=client_capabilities,
+            client=client,
         )
 
 
@@ -77,6 +98,7 @@ def register_in_transaction(
     parent: str | None = None,
     session_context: dict[str, Any] | None = None,
     client_capabilities: dict[str, Any] | list[Any] | None = None,
+    client: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Upsert a Session; ``session.started`` on insert. The record carries ``created``."""
     _require_workspace(tx.store)
@@ -100,8 +122,10 @@ def register_in_transaction(
         client_capabilities is None or isinstance(client_capabilities, dict | list),
         "client_capabilities is a JSON object or list, or None",
     )
+    require(problems, client is None or isinstance(client, dict), "client is a JSON object or None")
     if problems:
         raise StoreError(problems)
+    client_json = None if client is None else json_field(client)
     context = None if session_context is None else json_field(session_context)
     capabilities = None if client_capabilities is None else json_field(client_capabilities)
     existing = tx.one(
@@ -119,8 +143,8 @@ def register_in_transaction(
     if created:
         tx.execute(
             "INSERT INTO sessions(id, profile, kind, coworld_id, task_id, goal_id, event,"
-            " parent, started, last_seen, session_context, client_capabilities)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " parent, started, last_seen, session_context, client_capabilities, client)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id,
                 profile,
@@ -134,6 +158,7 @@ def register_in_transaction(
                 tx.at,
                 context,
                 capabilities,
+                client_json,
             ),
         )
         tx.event(
@@ -156,6 +181,7 @@ def register_in_transaction(
             " event = COALESCE(?, event), parent = COALESCE(?, parent),"
             " session_context = COALESCE(?, session_context),"
             " client_capabilities = COALESCE(?, client_capabilities),"
+            " client = COALESCE(client, ?),"
             " ended = NULL, last_seen = ? WHERE id = ?",
             (
                 profile,
@@ -167,6 +193,7 @@ def register_in_transaction(
                 parent,
                 context,
                 capabilities,
+                client_json,
                 tx.at,
                 session_id,
             ),

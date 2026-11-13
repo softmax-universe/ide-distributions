@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from research_core import coworld_setup, environment_guide, gitops
 from research_core.store import capabilities
 from research_core.store._common import now_iso, parse_iso
-from research_core.store.errors import SchemaMismatch
+from research_core.store.errors import SchemaMismatch, StoreError
 from research_core.tools import _args as a
 from research_core.tools.base import ActionSpec, ToolCall, ToolError, ToolSpec
 from research_core.transitions import durable_tool
@@ -61,7 +61,62 @@ def handle(call: ToolCall) -> dict:
         return list_capabilities(ctx, check=bool(call.get("check")))
     if call.action == "environment_guide":
         return {"guide": environment_guide.render(ctx)}
+    if call.action == "identity":
+        return identity_action(call)
     raise AssertionError(call.action)
+
+
+def identity_action(call: ToolCall) -> dict[str, Any]:
+    """Read the cogent's identity, or write it under the write-once rules of store.identity."""
+    from research_core.store import identity, sessions
+
+    ctx = call.ctx
+    name, cites = call.get("name"), call.get("cites")
+    met, confirm, offered = call.get("met_user"), call.get("confirm"), call.get("offer_made")
+    wrote = False
+    writing = bool(name is not None or confirm or met or offered)
+    hermes_home = ctx.env.get("HERMES_HOME")
+    state_db = Path(hermes_home).expanduser() / "state.db" if hermes_home else None
+    try:
+        if writing:
+            # Only a registered session may write (fail closed), and a wake has no user in it:
+            # its one write is the setup wake's uncited choose of the first name.
+            session_id = ctx.hermes_session_id()
+            session = sessions.read(ctx.wstore, session_id) if session_id else None
+            if session is None:
+                raise StoreError(["this session is not registered; identity writes are refused"])
+            if not sessions.opened_by_human_chat(session) and session["kind"] != "wake":
+                raise StoreError(
+                    [
+                        "identity writes are allowed only in a chat the user opened from the IDE; "
+                        "this session was opened by another client"
+                    ]
+                )
+            if session["kind"] == "wake" and (cites or confirm or met or offered or name is None):
+                raise StoreError(["no user is present in a wake; do this in a chat with them"])
+        if cites and (confirm or met or name is not None):
+            cites = identity.verify_cite(
+                ctx.wstore,
+                cites,
+                state_db,
+                "you are acting on",
+                calling_session=ctx.hermes_session_id() or "",
+            )
+        if name is not None and not cites and not confirm:
+            wrote = True
+            identity.choose(ctx.wstore, ctx.actor, name)
+        elif name is not None or confirm:
+            wrote = True
+            identity.confirm(ctx.wstore, ctx.actor, cites=cites, name=name)
+        if met:
+            wrote = True
+            identity.mark_met(ctx.wstore, ctx.actor, cites=cites)
+        if offered:
+            wrote = True
+            identity.mark_offered(ctx.wstore, ctx.actor)
+    except StoreError as error:
+        raise ToolError(str(error)) from None
+    return {"identity": identity.read(ctx.wstore), "wrote": wrote}
 
 
 # --- change_complete --------------------------------------------------------------------------
@@ -109,6 +164,7 @@ def complete_change(ctx: ToolContext, worktree: Any, commit: Any, summary: str) 
             profile=str(ctx.env.get("HERMES_PROFILE_NAME") or ctx.role),
             kind="chat",
             coworld_id=coworld.coworld_id,
+            client=sessions.UNKNOWN_CLIENT,
         )
     task = tasks.create(
         ctx.store,
@@ -415,6 +471,27 @@ SPEC = durable_tool(
                 "capabilities",
                 "List capabilities; check: true asks the watcher to run the checks next tick.",
                 {"check": a.boolean("Mark the checks due (they run within a minute).")},
+            ),
+            ActionSpec(
+                "identity",
+                "Read the cogent's own name and whether it has met the user. name alone "
+                "(setup only) is refused once a name exists; name or confirm with cites (the "
+                "user's own chat message as session:<id>/<message id>#<sha256 of its content>, "
+                "checked against the stored transcript; never a record id or a wake) is the "
+                "user's one rewrite, "
+                "then locked, and also names a cogent that has none; met_user with cites records "
+                "the first get-to-know-you chat; offer_made records the one rename offer.",
+                {
+                    "name": a.string("Your own short name, one line."),
+                    "confirm": a.boolean("The user kept the name you have (needs cites)."),
+                    "met_user": a.boolean("Record that you have met the user (needs cites)."),
+                    "offer_made": a.boolean("Record that you made the one rename offer."),
+                    "cites": a.string(
+                        "The user's message: session:<id>/<message id>#<sha256 of its content>."
+                    ),
+                },
+                (),
+                ORCHESTRATOR,
             ),
             ActionSpec("environment_guide", "Where you are, what is writable, credentials, CLIs."),
         ),

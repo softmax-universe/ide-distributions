@@ -216,8 +216,50 @@ SETTINGS: dict[str, SettingSpec] = {
             "sends them all to notices.",
             enum=CHAT_UPDATE_CATEGORIES,
         ),
+        _s(
+            "identity.name",
+            "text",
+            None,
+            "workspace",
+            "the identity module",
+            "The cogent's own name, one for the whole workspace. Written once at setup, never "
+            "through settings.update; the workspace tool's identity action is its only writer.",
+            nullable=True,
+        ),
+        _s(
+            "identity.name_confirmed",
+            "bool",
+            False,
+            "workspace",
+            "the identity module",
+            "True once the user has confirmed or renamed the name: the one allowed rewrite.",
+        ),
+        _s(
+            "identity.met_user",
+            "bool",
+            False,
+            "workspace",
+            "the identity module",
+            "True once the cogent has had its first get-to-know-you chat with the user.",
+        ),
+        _s(
+            "identity.offer_made",
+            "bool",
+            False,
+            "workspace",
+            "the identity module",
+            "True once the one rename offer was shown to the user, so it is not made again.",
+        ),
     )
 }
+
+# Written only by store/identity.py, which enforces write-once.
+IDENTITY_KEYS = (
+    "identity.name",
+    "identity.name_confirmed",
+    "identity.met_user",
+    "identity.offer_made",
+)
 
 
 def spec(key: str) -> SettingSpec:
@@ -251,6 +293,8 @@ def update(store: Store, actor: Actor, key: str, value: Any, *, cites: str) -> d
     """
     found = spec(key)
     problems: list[str] = []
+    if key in IDENTITY_KEYS:
+        problems.append(f"{key} is written only by the workspace tool's identity action")
     if found.scope != store.kind:
         problems.append(f"{key} is a {found.scope} setting; this is the {store.kind} store")
     problems.extend(validate_value(found, value))

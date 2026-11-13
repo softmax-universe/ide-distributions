@@ -187,3 +187,15 @@ def test_context_block_prints_the_guide_and_the_agent_profile():
     )
     assert "(guide skill: client-web-ide)" in text
     assert "agent profile:" in text and "Ada" in text
+
+
+def test_a_session_the_hook_registers_has_an_unknown_client_and_cannot_write_identity(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("IDE_WORKSPACE", str(tmp_path))
+    ctx = make_ctx(tmp_path)
+    hook = turn.make_pre_llm_call("orchestrator")
+    hook(session_id="gateway1", user_message="hello", is_first_turn=True)
+    row = sessions.read(ctx.wstore, "gateway1")
+    assert row["kind"] == "chat" and row["client"] == {"id": "unknown", "kind": "unknown"}
+    assert not sessions.opened_by_human_chat(row)

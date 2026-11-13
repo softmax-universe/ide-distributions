@@ -187,6 +187,7 @@ def test_session_open_registers_a_chat_session_with_its_context(seam, monkeypatc
         "mode": {"name": "research"},
     }
     assert row["client_capabilities"] == {"views": ["replay"], "panels": ["markdown"]}
+    assert row["client"] == {"id": "ide-1", "kind": "ide"}
     assert created.wait(3)
     assert session_id in seam.hermes.sessions
     assert seam.hermes.session_messages(session_id, profile="orchestrator") == []
@@ -722,6 +723,45 @@ def test_client_session_identity_is_retained_on_open_replay(seam):
     }
     assert seam.client._post("/session-open", body)["session_id"] == "coplay-existing-chat"
     assert seam.client._post("/session-open", body)["session_id"] == "coplay-existing-chat"
+
+
+def test_session_open_records_the_client_and_only_the_ide_chat_client_may_write_identity(seam):
+    from uuid import uuid4
+
+    from research_core.store import sessions
+
+    opened = {}
+    for name, client in (
+        ("ide", {"id": "aide", "kind": "ide"}),
+        ("game", {"id": "orb-minecraft", "kind": "web", "guide": "x"}),
+        ("web", {"id": "ide-next", "kind": "web"}),
+    ):
+        body = {"op_id": str(uuid4()), "session_id": f"s-{name}", "client": client}
+        opened[name] = seam.client._post("/session-open", body)["session_id"]
+    ide = sessions.read(seam.wstore, opened["ide"])
+    game = sessions.read(seam.wstore, opened["game"])
+    assert ide["client"] == {"id": "aide", "kind": "ide"}
+    assert game["client"] == {"id": "orb-minecraft", "kind": "web"}
+    assert sessions.opened_by_human_chat(ide)
+    assert not sessions.opened_by_human_chat(game)
+    assert sessions.opened_by_human_chat(sessions.read(seam.wstore, opened["web"]))
+
+
+def test_session_open_with_an_undeclared_client_records_unknown(seam):
+    from uuid import uuid4
+
+    from research_core.store import sessions
+
+    body = {
+        "op_id": str(uuid4()),
+        "session_id": "s-undeclared",
+        "client": {"id": "aide", "kind": "ide"},
+        "client_declared": False,
+    }
+    session_id = seam.client._post("/session-open", body)["session_id"]
+    row = sessions.read(seam.wstore, session_id)
+    assert row["client"] == sessions.UNKNOWN_CLIENT
+    assert not sessions.opened_by_human_chat(row)
 
 
 def test_user_text_cannot_supply_the_client_context(seam):

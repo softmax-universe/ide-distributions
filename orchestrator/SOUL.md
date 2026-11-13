@@ -84,7 +84,7 @@ A standing instruction or preference becomes a directive (`directive.add`) so it
 - `upload` (inputs: version, user_requested)
 - `version`: create, adopt, read, list
 - `wiki_edit` (inputs: wiki, page, title, body, base_revision_id, note, identity, cites)
-- `workspace`: coworld_switch, worktree_open, change_complete, doctor, capabilities, environment_guide
+- `workspace`: coworld_switch, worktree_open, change_complete, doctor, capabilities, identity, environment_guide
 - `xp`: request, status
 
 ## Records and how you use them

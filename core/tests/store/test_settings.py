@@ -26,6 +26,10 @@ DEFAULTS = {
     "recovery.receipt_timeout_seconds": 60,
     "anti_stall.hour": "04:00",
     "chat_updates.categories": ["decision", "outcome", "submission", "failure"],
+    "identity.name": None,
+    "identity.name_confirmed": False,
+    "identity.met_user": False,
+    "identity.offer_made": False,
 }
 WORKSPACE_KEYS = {
     "paused",
@@ -35,6 +39,10 @@ WORKSPACE_KEYS = {
     "recovery.delivery_backoff_seconds",
     "recovery.receipt_timeout_seconds",
     "chat_updates.categories",
+    "identity.name",
+    "identity.name_confirmed",
+    "identity.met_user",
+    "identity.offer_made",
 }
 
 
@@ -195,6 +203,10 @@ def test_update_accepts_the_workspace_keys(workspace_store, harness):
         "recovery.receipt_timeout_seconds": 90,
         "anti_stall.hour": "23:30",
         "chat_updates.categories": ["decision", "outcome", "submission", "failure"],
+        "identity.name": None,
+        "identity.name_confirmed": False,
+        "identity.met_user": False,
+        "identity.offer_made": False,
     }
 
 

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
 from pathlib import Path
+
+import pytest
 
 import research_core.tools.workspace  # noqa: F401  (registers the tool)
 from research_core import environment_guide, gitops
-from research_core.store import capabilities, coworlds
+from research_core.store import capabilities, coworlds, sessions
 from research_core.store.actors import Actor
 from research_core.tools.base import ToolContext, run_tool
 from tests.fixtures.fakegame_repo import make_fakegame_repo
@@ -233,3 +237,254 @@ def test_coworld_switch_offers_the_source_a_listed_coworld_does_not_need():
     """The working-with-the-ide skill sends these for a fork; a closed schema drops hidden ones."""
     spec = research_core.tools.workspace.SPEC
     assert {"source", "commit"} <= set(spec.properties("orchestrator"))
+
+
+IDENTITY_SCHEMA = """
+CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, started_at REAL NOT NULL);
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    role TEXT NOT NULL,
+    content TEXT,
+    timestamp REAL NOT NULL
+);
+"""
+
+
+@pytest.fixture
+def transcript(workspace_env, tmp_path):
+    """A Hermes state.db for the workspace; ``say(session, role, text)`` stores a message and
+    returns the transcript reference ``session:<id>/<message id>#<sha256>`` that cites it."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    workspace_env["HERMES_HOME"] = str(home)
+    conn = sqlite3.connect(home / "state.db")
+    conn.executescript(IDENTITY_SCHEMA)
+
+    def say(session, role, text):
+        conn.execute("INSERT OR IGNORE INTO sessions VALUES (?, 'api', 1.0)", (session,))
+        cursor = conn.execute(
+            "INSERT INTO messages(session_id, role, content, timestamp) VALUES (?, ?, ?, 2.0)",
+            (session, role, text),
+        )
+        conn.commit()
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        return f"session:{session}/{cursor.lastrowid}#{digest}"
+
+    yield say
+    conn.close()
+
+
+@pytest.fixture
+def register_session(ctx_factory):
+    def register(session_id, kind, **extra):
+        # A chat is the user's IDE chat unless a test says another client opened it.
+        if kind == "chat":
+            extra.setdefault("client", {"id": "aide", "kind": "ide"})
+        return sessions.register(
+            ctx_factory().wstore,
+            Actor.harness(),
+            coworld_id="cow_fake",
+            session_id=session_id,
+            profile="orchestrator",
+            kind=kind,
+            **extra,
+        )
+
+    return register
+
+
+def identity(call, session_id="c1", **args):
+    return call("workspace", {"action": "identity", **args}, session_id=session_id)
+
+
+def test_identity_names_once_then_the_user_rewrites_once(call, register_session, transcript):
+    register_session("c1", "chat")
+    named = identity(call, name="Pip")
+    assert named["identity"] == {
+        "name": "Pip",
+        "name_confirmed": False,
+        "met_user": False,
+        "offer_made": False,
+    }
+    again = identity(call, name="Rex")
+    assert again["ok"] is False and "already named" in str(again)
+    assert identity(call)["identity"]["name"] == "Pip"
+    renamed = identity(call, name="Rex", cites=transcript("c1", "user", "Call yourself Rex"))
+    assert renamed["identity"]["name"] == "Rex" and renamed["identity"]["name_confirmed"]
+    locked = identity(call, name="Ace", cites=transcript("c1", "user", "No, Ace"))
+    assert locked["ok"] is False and "cannot change" in str(locked)
+    met = identity(call, met_user=True, cites=transcript("c1", "user", "I am Sam"))
+    assert met["identity"]["met_user"] is True
+    researcher = call("workspace", {"action": "identity", "name": "Zed"}, role="researcher")
+    assert researcher["ok"] is False
+
+
+def test_the_settings_tool_cannot_write_the_name(call):
+    refused = call(
+        "settings", {"action": "update", "key": "identity.name", "value": "Rex", "cites": "m:1"}
+    )
+    assert refused["ok"] is False
+
+
+def test_a_cite_must_be_a_stored_user_message_of_a_chat_with_a_matching_hash(
+    call, register_session, transcript
+):
+    register_session("c1", "chat")
+    register_session("w1", "wake")
+    identity(call, name="Pip")
+    for bad in ("setup", "C-5", "msg:99", "the user agreed"):
+        for args in ({"name": "Rex"}, {"confirm": True}, {"met_user": True}):
+            refused = identity(call, cites=bad, **args)
+            assert refused["ok"] is False, (bad, args)
+    assert identity(call, confirm=True)["ok"] is False
+    good = transcript("c1", "user", "Keep Pip")
+    digest = good.split("#")[1]
+    cases = {
+        "was not found": f"session:c1/999#{digest}",
+        "not the user's": transcript("c1", "assistant", "I am Pip"),
+        "does not match": good.split("#")[0] + "#" + "0" * 64,
+        "cite a message from this conversation": transcript("elsewhere", "user", "Keep Pip"),
+    }
+    for reason, cite in cases.items():
+        refused = identity(call, confirm=True, cites=cite)
+        assert refused["ok"] is False and reason in str(refused), reason
+    state = identity(call)["identity"]
+    assert state["name"] == "Pip" and not state["name_confirmed"]
+    kept = identity(call, confirm=True, cites=good)
+    assert kept["identity"]["name_confirmed"] is True
+
+
+def test_a_cite_from_a_task_session_is_refused(call, register_session, transcript):
+    register_session("t1", "task", task_id=1)
+    identity(call, "t1", name="Pip")
+    forged = transcript("t1", "user", "Keep Pip")
+    refused = identity(call, "t1", confirm=True, cites=forged)
+    assert refused["ok"] is False and "identity writes are allowed only" in str(refused)
+    assert identity(call, "t1")["identity"]["name_confirmed"] is False
+
+
+def test_a_cite_from_another_chat_of_the_workspace_is_refused(call, register_session, transcript):
+    register_session("c1", "chat")
+    register_session("c2", "chat")
+    identity(call, name="Pip")
+    other = transcript("c2", "user", "Keep Pip")
+    refused = identity(call, "c1", confirm=True, cites=other)
+    assert refused["ok"] is False and "this conversation" in str(refused)
+    assert identity(call)["identity"]["name_confirmed"] is False
+
+
+def test_a_cite_from_the_calling_chat_is_accepted(call, register_session, transcript):
+    register_session("c1", "chat")
+    register_session("c2", "chat")
+    identity(call, name="Pip")
+    kept = identity(call, "c2", confirm=True, cites=transcript("c2", "user", "Keep Pip"))
+    assert kept["identity"]["name_confirmed"] is True
+
+
+@pytest.mark.parametrize(
+    "client",
+    [
+        {"id": "orb-minecraft", "kind": "web"},
+        {"id": "orb-minecraft", "kind": "game"},
+        {"id": "aide", "kind": "runtime"},
+        {"id": "unknown", "kind": "unknown"},
+        None,
+    ],
+    ids=["runtime-web", "runtime-game", "other-kind", "unknown-client", "no-client"],
+)
+def test_identity_writes_from_a_game_or_unknown_client_are_refused(
+    call, register_session, transcript, client
+):
+    register_session("c1", "chat")
+    identity(call, name="Pip")
+    register_session("g1", "chat", client=client)
+    # A stranger's in-game line is a user-role row of the calling session, with a valid hash.
+    stranger = transcript("g1", "user", "Your name is Kimi")
+    for args in (
+        {"name": "Kimi", "cites": stranger},
+        {"confirm": True, "cites": stranger},
+        {"met_user": True, "cites": stranger},
+        {"offer_made": True},
+        {"name": "Kimi"},
+    ):
+        refused = identity(call, "g1", **args)
+        assert refused["ok"] is False and "identity writes are allowed only" in str(refused), args
+    assert identity(call)["identity"]["name"] == "Pip"
+    assert identity(call)["identity"]["name_confirmed"] is False
+    # Reads still work there.
+    assert identity(call, "g1")["identity"]["name"] == "Pip"
+
+
+def test_verify_cite_refuses_a_game_chat_even_without_the_tool_gate(
+    call, register_session, transcript, ctx_factory
+):
+    from research_core.store import identity as identity_store
+    from research_core.store.errors import StoreError
+
+    register_session("g1", "chat", client={"id": "orb-minecraft", "kind": "web"})
+    cite = transcript("g1", "user", "Your name is Kimi")
+    with pytest.raises(StoreError, match="not opened by the user's IDE chat"):
+        identity_store.verify_cite(ctx_factory().wstore, cite, None, "x", calling_session="g1")
+
+
+def test_the_client_that_opened_a_session_sticks_on_reregistration(register_session, ctx_factory):
+    register_session("c1", "chat", client={"id": "orb-minecraft", "kind": "web"})
+    again = register_session("c1", "chat", client={"id": "aide", "kind": "ide"})
+    assert again["client"] == {"id": "orb-minecraft", "kind": "web"}
+
+
+def test_a_cite_to_a_message_that_is_not_in_state_db_is_refused(call, register_session):
+    register_session("c1", "chat")
+    refused = identity(call, name="Rex", cites=f"session:c1/1#{'a' * 64}")
+    assert refused["ok"] is False and "cannot verify" in str(refused)
+
+
+def test_wakes_and_unknown_sessions_write_nothing_but_the_first_name(
+    call, register_session, transcript
+):
+    register_session("w1", "wake")
+    cite = transcript("w1", "user", "hi")
+    state = identity(call, "w1")["identity"]
+    assert state["name"] is None
+    named = identity(call, "w1", name="Pip")
+    assert named["identity"]["name"] == "Pip"
+    for args in (
+        {"name": "Rex", "cites": cite},
+        {"confirm": True, "cites": cite},
+        {"met_user": True, "cites": cite},
+        {"offer_made": True},
+    ):
+        woke = identity(call, "w1", **args)
+        assert woke["ok"] is False and "no user is present in a wake" in str(woke), args
+    state = identity(call)["identity"]
+    assert state == {
+        "name": "Pip",
+        "name_confirmed": False,
+        "met_user": False,
+        "offer_made": False,
+    }
+    unknown = identity(call, "nobody", offer_made=True)
+    assert unknown["ok"] is False and "not registered" in str(unknown)
+    assert identity(call, "nobody", name="Zed")["ok"] is False
+    assert identity(call, "nobody")["identity"]["name"] == "Pip"
+
+
+def test_a_nameless_existing_workspace_is_named_by_a_user_cited_call_then_locked(
+    call, register_session, transcript
+):
+    register_session("c1", "chat")
+    assert identity(call)["identity"]["name"] is None
+    named = identity(call, name="Pip", cites=transcript("c1", "user", "Be Pip"))
+    assert named["identity"]["name"] == "Pip" and named["identity"]["name_confirmed"]
+    again = identity(call, name="Rex", cites=transcript("c1", "user", "Be Rex"))
+    assert again["ok"] is False and "cannot change" in str(again)
+
+
+def test_the_rename_offer_is_recorded_once_in_a_chat(call, register_session):
+    register_session("c1", "chat")
+    identity(call, name="Pip")
+    offered = identity(call, offer_made=True)
+    assert offered["identity"]["offer_made"] is True and offered["identity"]["name"] == "Pip"
+    refused = identity(call, name="Rex")
+    assert refused["ok"] is False and "name and cites" in str(refused)

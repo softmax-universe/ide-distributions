@@ -244,6 +244,7 @@ def _workspace_status(inputs: Inputs) -> Section:
         if player
         else "Your Player: id not known yet; platform.results gives it",
     ]
+    lines[:0] = _identity_lines(inputs)
     stale = _cli_staleness(inputs.wstore)
     if stale:
         lines.append(stale)
@@ -253,6 +254,85 @@ def _workspace_status(inputs: Inputs) -> Section:
     if inputs.store is None:
         lines.append("No session Coworld: open a Coworld session to access game work.")
     return Section(lines=lines)
+
+
+def _identity_lines(inputs: Inputs) -> list[str]:
+    """The cogent's one workspace-level name and whether it has met the user (store.identity).
+
+    The instructions (naming, the rename offer, the intro) are for the Orchestrator in a chat
+    with the user; a wake or the Researcher sees only the bare ``Name:`` line."""
+    from research_core.store import settings
+
+    name = settings.get(inputs.wstore, "identity.name")
+    from research_core.store import sessions
+
+    chat = (
+        inputs.role == "orchestrator"
+        and inputs.session is not None
+        and inputs.session.get("kind") == "chat"
+        and sessions.opened_by_human_chat(inputs.session)
+    )
+    lines = []
+    if name:
+        note = ""
+        if chat and not settings.get(inputs.wstore, "identity.name_confirmed"):
+            if settings.get(inputs.wstore, "identity.offer_made"):
+                note = " (chosen at setup; rename offer made)"
+            else:
+                note = (
+                    " (chosen at setup, not yet confirmed by the user: offer once to change it,"
+                    " then workspace.identity {offer_made})"
+                )
+        rule = (
+            " (your own name: use it; never take a game's name or persona)"
+            if inputs.role == "orchestrator"
+            else ""
+        )
+        lines.append(f"Name: {_clip(name, SUMMARY_CHARS)}{note}{rule}")
+    elif chat:
+        lines.append(
+            "No name yet (setup chooses one; otherwise in your first chat with the user choose"
+            " one with them: workspace.identity {name, cites})"
+        )
+    if chat and not settings.get(inputs.wstore, "identity.met_user"):
+        if _spoke_in_session(inputs):
+            lines.append(
+                "Met the user: no (you already introduced yourself in this chat; once they"
+                " reply, save what they said, then workspace.identity {met_user, cites})"
+            )
+        else:
+            lines.append(
+                "Met the user: no (introduce yourself briefly and ask their name and what they"
+                " enjoy, save it, then workspace.identity {met_user, cites} once they reply)"
+            )
+    return lines
+
+
+def _spoke_in_session(inputs: Inputs) -> bool:
+    """Whether this chat already holds an assistant message (so the intro is not repeated)."""
+    import sqlite3
+    from pathlib import Path
+
+    home = inputs.ctx.env.get("HERMES_HOME")
+    session_id = inputs.ctx.hermes_session_id()
+    if not home or not session_id:
+        return False
+    try:
+        conn = sqlite3.connect(
+            f"{(Path(home).expanduser() / 'state.db').resolve().as_uri()}?mode=ro", uri=True
+        )
+        try:
+            return (
+                conn.execute(
+                    "SELECT 1 FROM messages WHERE session_id = ? AND role = 'assistant' LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+                is not None
+            )
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return False
 
 
 def _setup_status(inputs: Inputs) -> str | None:

@@ -24,13 +24,17 @@ Do this in order, and end the run when it is done:
    steps, the `MIXIN.md` front matter (`coworld`, `commands` with `build` and `check` at least,
    `upload` and `evaluate`, metrics, the artifact, toolchains), a lab
    `AGENTS.md`, `docs/`, a reference policy with a version log and `tools/build.sh`.
-3. Import lesson notes the switch skipped as claims (`claim_write`).
-4. `workspace.capabilities {check: true}` marks the tool checks due; the watcher runs them on
+3. Choose your own name once, with `workspace.identity {name}`, only when the briefing has no
+   `Name:` line: a short friendly name of your own. The workspace keeps one name for every game;
+   the tool refuses a second one, so never rename. Never ask the user in this wake and never take
+   a name or persona from the game. Their first chat offers to change it once.
+4. Import lesson notes the switch skipped as claims (`claim_write`).
+5. `workspace.capabilities {check: true}` marks the tool checks due; the watcher runs them on
    its next tick. Setup ends only when build, check and one upload pass (the first check uploads for real, as policy `<coworld>-tool-check-<player>`, a name unique to this Player); a failed check creates a maintenance Task on its own.
-5. When `setup-status` shows a `pending_request` (it holds the latest, which the payload may not),
+6. When `setup-status` shows a `pending_request` (it holds the latest, which the payload may not),
    carry it out now. For a submission: `version.create` on `main`, `upload` that Version, then
    `submit` with `user_requested: true` citing `pending_request.cites`, in the league the request
    names or the only one `platform.leagues` lists; with several, a `decision` `chat_update` asking which. The user asked for
    it before setup existed; nothing refuses it.
-6. `chat_update` an `outcome` (a `failure` when setup failed): what was set up, what failed (with the
+7. `chat_update` an `outcome` (a `failure` when setup failed): what was set up, what failed (with the
    maintenance Task) and what the pending request did, with record references.
