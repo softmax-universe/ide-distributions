@@ -82,7 +82,8 @@ scope: the token broker never hands out its keys, and `token_broker_client.py ex
 Datadog's answer. It finds the broker token as metta's `scripts/token_broker_client.py` does:
 `TOKEN_BROKER_TOKEN`, or else `~/.config/token-broker/token`, and `TOKEN_BROKER_URL` overrides the broker
 URL. `--reason` is the reason the broker records for each search, by default `telemetry rebuild of
-Session <id>`.
+Session <id>`. In a hosted cloud session `TOKEN_BROKER_TOKEN` is `proxy-injected`: the command then
+sends no `Authorization` header, and the session's agent proxy adds the token.
 
 A page is 99 rows. The broker refuses an
 answer over 2 MB (502 `upstream_response_too_large`), and a row is a line of at most 4,096 bytes plus
@@ -103,7 +104,11 @@ each reference's name:
   when Datadog had none.
 - `requests`: each model request in wire order, whole, with `response`, `failed` or `unread` (the record
   of how the attempt ended), `partial_responses` (what each broken stream of the attempt had shown),
-  `tools` (its tool activity, including each `result`), and `tokens_by_source`.
+  `tools` (its tool activity, including each `result`), and `tokens_by_source`. Beside the request
+  record's own fields, each also has `position` (its place in wire order, from 1), `manifest_digest`,
+  `message_digests` (the digest of each message, in order), `hermes_message_ids` (the native row ID at
+  each listed position, by position) and `operation` (`full`, or `append` to an earlier manifest). A
+  request that cannot be rebuilt has `request: null` and `blocked_by` in place of the last three.
 - `unended_attempts`: the `model_attempt_id` of each request with no reply, failure or `unread` record (a partial reply is no end, because Hermes can retry the stream): a process killed during the call, a cancel (Hermes's interrupt fires no hook), a call still running, or a reply, failure or `unread` record that a full queue dropped or that was lost on the way. Nothing tells these apart, so it does not change the exit code.
 - `rows`: each committed native row, with `message` as it was first sent and `rewritten_to` if a prune
   later changed it. `message` means "first sent" only when `missing` is empty: if a row's original was
@@ -170,6 +175,7 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 | Hermes's scanner has gaps: a short value under a secret-looking key inside a JSON string, so `tool` / `proposed` arguments and manifests can keep what `tool` / `completed` masks; a password in a URL; and the prefix and suffix it keeps of Bearer and AWS tokens. Writers outside the gateway have no scanner, only the Softmax token patterns. | `agent_telemetry/redaction.py` |
 | An operation or context line whose metadata would pass 4,096 bytes is dropped with a warning. The model can choose a tool name or call ID, and a client the IDs of a refused request, so a long one costs its record. | `agent_telemetry/encoder.py`, `_emit` |
 | What was sent is known only per process, so each restart sends everything the next request lists again. That costs bytes and loses nothing. | `test_a_restart_sends_a_full_manifest_and_everything_it_lists` |
+| The encoder's `_sent`, `_redacted` and `_baselines` grow for the life of a process. Nothing evicts them. In practice they are bounded because a workspace sleeps after 15 minutes with no work, which ends the process. | `agent_telemetry/encoder.py`, `RecordEncoder`; `image/control.py`, `Lifecycle.status` |
 | The seam records no read and no other POST: `GET /snapshot`, which the AIDE backend also uses to select a Session, leaves no record of its own, and neither do `/message-events`, `/input-response` and `/messages/context`. | `serve.py`, `RECORDED_ROUTES` |
 | A request the AIDE backend refuses itself leaves no record: an unknown method, invalid or multi-message params, a scope mismatch, a Coworld session with no league, inference unavailable, a stale input response, a cursor it never issued. A handler's unexpected failure answers `unavailable` and leaves only a log line. What it sends on to a route in `RECORDED_ROUTES` is recorded by the seam. A failed consumer or event watcher ends the backend and recycles the runtime, and no record here shows that it happened or why: the gateway's lines after it only carry a new `source_instance`. The backend is the only chat path (`image/README.md`). | `image/aide.py`, `Backend.answer`, `Backend.touch`, `Backend.open`, `Backend.send_chat`; `image/runtime.py`, `run` |
 | A streamed auxiliary reply is not captured, because Hermes hands it back unread: `model_attempt` / `unread`. | `plugin/capture.py`, `post_auxiliary_call` |

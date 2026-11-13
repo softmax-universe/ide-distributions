@@ -239,6 +239,22 @@ def test_a_committed_message_already_in_a_request_is_not_scanned_again(stream_fi
     assert committed["content_refs"][0]["digest"] == json.loads(manifest)["messages"][0]
 
 
+def test_a_string_sent_as_json_and_then_as_text_keeps_two_objects(writer, stream_file):
+    """A tool listed as the bare string ``"read_file"`` is stored as JSON, quotes and all. A tool
+    result with the same text is stored as text, and must not take the JSON object's digest."""
+    request = {
+        "model": MODEL,
+        "messages": [{"role": "user", "content": "u"}],
+        "tools": ["read_file"],
+    }
+    writer.capture_request(request, **attempt(1))
+    writer.capture_operation("tool", "result", session_id="ses_1", content={"result": "read_file"})
+    assert processed(writer, 5.0)
+    records = stored_records(stream_file)
+    [result] = [r for r in records if r.get("action") == "tool"]
+    assert objects_of(records)[result["content_refs"][0]["digest"]] == b"read_file"
+
+
 def test_every_manifest_describes_its_own_request(writer, stream_file):
     system = {"role": "system", "content": "s"}
     user = {"role": "user", "content": "u"}

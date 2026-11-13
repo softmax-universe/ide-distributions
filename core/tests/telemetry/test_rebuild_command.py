@@ -304,6 +304,19 @@ def test_an_upstream_error_through_the_token_broker_raises_as_datadogs_own(datad
     assert b"more than 5000" in raised.value.read()
 
 
+def test_a_proxy_injected_token_sends_no_authorization_of_its_own(writer, stream_file, datadog):
+    """A hosted session holds only ``proxy-injected``, and its agent proxy adds the token."""
+    bodies = two_requests(writer)
+    sent(writer, stream_file, datadog)
+    injected = BrokerLogsSearch(datadog.broker_url(), "proxy-injected", "a test", "session-1")
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        rebuild_session(injected, "ses_1")
+    assert raised.value.code == 401  # Nothing in front of this fake adds the token.
+    datadog.agent_proxy_adds_token = True
+    report = rebuild_session(injected, "ses_1")
+    assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
+
+
 @pytest.mark.parametrize("asked", ["ses_A", "ses_B"])
 def test_a_lost_compaction_record_does_not_hide_part_of_the_session(
     writer, stream_file, datadog, asked
