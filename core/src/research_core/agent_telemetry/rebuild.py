@@ -11,7 +11,7 @@ import json
 import time
 import urllib.error
 import urllib.request
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
@@ -19,7 +19,9 @@ from research_core.agent_telemetry.encoder import message_text
 from research_core.agent_telemetry.records import EMPTY_DIGEST, format_time
 
 SEARCH_PATH = "/api/v2/logs/events/search"
-PAGE_LIMIT = 1000  # Datadog's largest page.
+# Datadog's largest page: 5000 answered 200 and 5001 a 400, "Limit can't be more than 5000",
+# on 2026-11-12.
+PAGE_LIMIT = 5000
 # 200 digests make a 14,000-character query. Datadog answered one of 140,000 on 2026-11-04.
 VALUES_PER_SEARCH = 200
 # Agent content stays in the ``main`` index for 15 days, so nothing older can be there.
@@ -538,12 +540,17 @@ def rebuild_session(search: LogsSearch, session_id: str, workspace: str | None =
     requests = _build_requests(finder, operations, places)
     unattached = _attach_tools(finder, operations, requests)
     rows = _rows(finder, operations, requests)
-    attempted = {request.get("api_request_id") for request in requests}
-    for record in operations:
-        call = record.get("api_request_id")
-        if (record["action"], record["stage"]) == ("model_request", "started"):
-            if call not in attempted:
-                finder.missing[call] = [{"kind": "call_with_no_attempt", "api_request_id": call}]
+    # Hermes retries a call under its one ``api_request_id`` and starts each attempt with its own
+    # ``model_request`` / ``started``, so a call is short when it has fewer attempts than starts.
+    started = Counter(
+        record.get("api_request_id")
+        for record in operations
+        if (record["action"], record["stage"]) == ("model_request", "started")
+    )
+    attempted = Counter(request.get("api_request_id") for request in requests)
+    for call, starts in started.items():
+        if attempted[call] < starts:
+            finder.missing[call] = [{"kind": "call_with_no_attempt", "api_request_id": call}]
     events = [
         _with_text(finder, record)
         for record in operations

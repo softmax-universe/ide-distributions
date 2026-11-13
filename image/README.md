@@ -266,8 +266,8 @@ Application logs and SDK self-diagnostics use Python's standard bounded `QueueHa
 which only enqueues. Console handlers write one JSON object per record (`telemetry.JsonLines`):
 `status` is the level, which Datadog takes as the log's status instead of reading every stderr
 line as an error, and a traceback stays inside its record's `message`. The gateway's own stderr
-handler switches when the plugin registers and runs its text through Hermes's scanner; other
-processes mask Softmax tokens. Production logging
+handler switches when the plugin registers and runs its text, and each string field a caller
+adds, through Hermes's scanner; other processes mask Softmax tokens. Production logging
 failure handling (`logging.raiseExceptions=false`) drops records if that queue is full.
 The image sets `PYTHONUNBUFFERED=1` for both interpreters, so a blocked background write
 cannot hold the standard stream's buffered-writer lock during interpreter exit.

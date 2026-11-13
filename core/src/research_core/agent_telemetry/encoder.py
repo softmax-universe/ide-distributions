@@ -18,7 +18,7 @@ import hashlib
 import json
 import logging
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -210,15 +210,15 @@ class RecordEncoder:
         self._next_sequence += 1
         return self._next_sequence - 1
 
-    def _content_rows(self, objects: _Objects, occurred_at: str) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
+    def _write_content(self, objects: _Objects, occurred_at: str) -> None:
+        """Write each object not sent yet, a line at a time as it is made. A caller writes content
+        before the line that names it, so that a line never names what is yet to come, and marks
+        the objects sent after that line."""
         for digest, obj in objects.made.items():
             if digest not in self._sent:
-                rows.extend(rec.content_records(obj, self._base(occurred_at)))
-        return rows
+                self._emit(rec.content_records(obj, self._base(occurred_at)))
 
-    def _emit(self, rows: list[dict[str, Any]], objects: _Objects) -> None:
-        """Write each line. Content comes first, so that a line never names what is yet to come."""
+    def _emit(self, rows: Iterable[dict[str, Any]]) -> None:
         for row in rows:
             line = rec.line_bytes(row)
             if len(line) <= rec.MAX_LINE_BYTES:
@@ -226,7 +226,6 @@ class RecordEncoder:
             else:
                 # Chunking keeps a body inside the limit, so this is metadata too large: a bug.
                 logger.warning("telemetry: dropped a %s line of %d bytes", row["family"], len(line))
-        self._sent.update(objects.made)
 
     def _base(self, occurred_at: str) -> dict[str, Any]:
         return rec.envelope(self._producer, self._redaction_version, occurred_at, self._sequence())
@@ -247,12 +246,12 @@ class RecordEncoder:
             )
             for name, value in payload["content"].items()
         }
-        rows = self._content_rows(objects, occurred_at)
+        self._write_content(objects, occurred_at)
         fields = self._metadata(payload["fields"])
         event_id, action, stage = str(uuid.uuid4()), payload["action"], payload["stage"]
         base = self._base(occurred_at)
-        rows.append(rec.operation_record(base, event_id, action, stage, fields, refs))
-        self._emit(rows, objects)
+        self._emit([rec.operation_record(base, event_id, action, stage, fields, refs)])
+        self._sent.update(objects.made)
 
     def _write_context_parts(self, payload: Mapping[str, Any], occurred_at: str) -> None:
         """Say where each part sits in the redacted target. A reader counts what no part covers.
@@ -272,7 +271,7 @@ class RecordEncoder:
             event_id = str(uuid.uuid4())
             base = self._base(occurred_at)
             rows.append(rec.context_record(base, event_id, source_type, self._metadata(fields)))
-        self._emit(rows, _Objects())
+        self._emit(rows)
 
     # Redacting content into objects.
 
@@ -385,12 +384,11 @@ class RecordEncoder:
         objects.add(manifest)
 
         operation_fields = {**self._metadata(fields), **ids}
-        rows = self._content_rows(objects, occurred_at)
+        self._write_content(objects, occurred_at)
         event_id = str(uuid.uuid4())
         refs = {"request_manifest": manifest.digest}
         base = self._base(occurred_at)
-        rows.append(
-            rec.operation_record(base, event_id, "model_attempt", "request", operation_fields, refs)
-        )
-        self._emit(rows, objects)
+        operation = "model_attempt", "request", operation_fields, refs
+        self._emit([rec.operation_record(base, event_id, *operation)])
+        self._sent.update(objects.made)
         self._baselines[baseline_key] = _Baseline(digests, manifest.digest, row_ids, objects.seen)

@@ -198,7 +198,7 @@ class FakeDatadog:
                 return 429, {"errors": ["Too many requests"]}, {"X-RateLimit-Reset": "1"}
             entries = list(self.entries)
         limit = body["page"]["limit"]
-        if limit > 1000 or body["filter"].get("storage_tier") != "indexes":
+        if limit > 5000 or body["filter"].get("storage_tier") != "indexes":
             return 400, {"errors": ["bad page limit or storage tier"]}, {}
         window = (body["filter"].get("from"), body["filter"].get("to"))
         if not all(isinstance(bound, str) and _INSTANT.fullmatch(bound) for bound in window):

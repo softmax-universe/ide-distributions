@@ -236,7 +236,7 @@ def _event_fields(
         value = payload.get(key)
         if isinstance(value, int) and not isinstance(value, bool) and name != "lease_epoch":
             value = str(value)
-        if value:
+        if value or (name == "lease_epoch" and value == 0):  # A lease epoch can be 0.
             fields[name] = value
     for key in allowed.details:
         if isinstance(payload.get(key), bool | int | float):
