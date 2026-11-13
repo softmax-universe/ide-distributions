@@ -12,6 +12,7 @@ relay reports ``frontend.closed``.
 """
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import logging
@@ -53,6 +54,8 @@ CONTROLS = frozenset({"approval.request", "approval.settled", "clarify.request",
 COMMANDS = frozenset(
     {"session.open", "session.page", "chat.send", "chat.cancel", "task.cancel", "input.respond"}
 )
+# Each answer() runs in its own task, so COMMITTING is per request; it marks the point after
+# which the outcome of a state-changing command is unknown.
 COMMITTING: ContextVar[bool] = ContextVar("committing", default=False)
 RECENT_TERMINAL = 10  # terminal requests a Session embeds beside its open ones
 EMBEDDED_ACTIVE = 1000  # open requests a Session embeds at most
@@ -339,6 +342,7 @@ class NativeMessage(BaseModel):
     tool_call_id: str | None = None
     display_kind: str | None = None
     runtime_input: bool = False
+    request_id: str | None = None
     client_context: dict[str, JsonValue] | None = None
     reasoning: str | None = None
     reasoning_content: str | None = None
@@ -685,6 +689,7 @@ def record(message: NativeMessage, session_id: str) -> Record | None:
     return Record(
         id=str(message.id),
         session_id=session_id,
+        request_id=message.request_id,
         sequence=message.id,
         message=body,
         kind=kind,
@@ -854,6 +859,8 @@ class Backend:
         self.socket: ClientConnection | None = None
         self.subscribers: dict[str, Subscription] = {}
         self.session_locks: dict[str, asyncio.Lock] = {}
+        self.publish_locks: dict[str, asyncio.Lock] = {}
+        self.published_after: dict[str, int] = {}
         self.boards: dict[str, BoardFeed] = {}
         self.requests: dict[str, str] = {}  # admission op id -> session id
         self.wakes: dict[str, asyncio.Event] = {}
@@ -1252,6 +1259,7 @@ class Backend:
             snapshot = await self.scoped(self.subscribers[session_id].scope, session_id=session_id)
             (row,) = snapshot.records.sessions
             session = await self.project(row, snapshot.records.requests)
+            await self.title_sessions([session], snapshot.records.requests)
             previous = self.revision
             self.revision = max(previous + 1, snapshot.seq)
             change = {
@@ -1307,22 +1315,42 @@ class Backend:
 
     async def publish(self, request_id: str, session_id: str, after: int) -> int:
         """Announce native messages newer than ``after``; return the newest announced id."""
-        fresh: list[NativeMessage] = []
-        offset = 0
-        while True:
-            page = await self.messages(session_id, 100, offset)
-            newer = [m for m in page if m.id > after]
-            fresh = list(reversed(newer)) + fresh
-            if len(newer) < 100:
-                break
-            offset += 100
-        for native in fresh:
-            visible = record(native, session_id)
-            if visible is not None:
-                visible.request_id = request_id
-                await self.notify(session_id, "chat.message", visible)
-            after = native.id
-        return after
+        async with self.publish_locks.setdefault(session_id, asyncio.Lock()):
+            after = max(after, self.published_after.get(session_id, 0))
+            fresh: list[NativeMessage] = []
+            offset = 0
+            while True:
+                page = await self.messages(session_id, 100, offset)
+                newer = [m for m in page if m.id > after]
+                fresh = list(reversed(newer)) + fresh
+                if len(newer) < 100:
+                    break
+                offset += 100
+            steered: set[str] | None = None
+            for native in fresh:
+                if (
+                    native.request_id is not None
+                    and native.request_id != request_id
+                    and not native.runtime_input
+                ):
+                    if steered is None:
+                        snapshot = await self.snapshot(session_id=session_id)
+                        mine = [r for r in snapshot.records.requests if r.op_id == request_id]
+                        my_runs = {r.run_id for req in mine for r in req.runs}
+                        steered = {
+                            r.op_id
+                            for r in snapshot.records.requests
+                            if any(run.steered and run.run_id in my_runs for run in r.runs)
+                        }
+                    if native.request_id not in steered:
+                        break
+                visible = record(native, session_id)
+                if visible is not None:
+                    visible.request_id = native.request_id or request_id
+                    await self.notify(session_id, "chat.message", visible)
+                after = native.id
+            self.published_after[session_id] = max(self.published_after.get(session_id, 0), after)
+            return after
 
     async def record(
         self, request: Admission, run_id: str | None, placed: list[tuple[ChatEvent, int | None]]
@@ -1515,8 +1543,11 @@ class Backend:
             attempts[request.logged.attempt] = Progress.resumed(request.logged)
             ran = [run.run_id for run in request.runs]
             done.update(ran[: ran.index(request.logged.run_id)])
-        newest = await self.messages(session_id, 1, 0)
-        after = newest[0].id if newest else 0
+        if session_id in self.published_after:
+            after = self.published_after[session_id]
+        else:
+            newest = await self.messages(session_id, 1, 0)
+            after = newest[0].id if newest else 0
         try:
             while True:
                 wake.clear()
@@ -1567,7 +1598,9 @@ class Backend:
             return
         self.requests[request_id] = session_id
         self.wakes[request_id] = asyncio.Event()
-        consumer = self.work.create_task(self.consume(request_id, session_id, scope))
+        consumer = self.work.create_task(
+            self.consume(request_id, session_id, scope), context=contextvars.Context()
+        )
         self.consumers[request_id] = consumer
         consumer.add_done_callback(lambda _: self.consumers.pop(request_id))
 
@@ -1606,6 +1639,7 @@ class Backend:
         snapshot = await self.scoped(params.scope, session_id=opened.session_id)
         (row,) = snapshot.records.sessions
         session = await self.project(row, snapshot.records.requests)
+        await self.title_sessions([session], snapshot.records.requests)
         return {"session": session.model_dump(mode="json")}
 
     async def session_page(self, frontend_id: UUID, request_id: str, params: SessionPage) -> dict:
@@ -1639,6 +1673,7 @@ class Backend:
             if target is None:
                 raise Refusal("not_found", "No such session for the viewed Coworld")
             session = await self.project(target, snapshot.records.requests)
+            await self.title_sessions([session], snapshot.records.requests)
             return {"kind": "switched", "session": session.model_dump(mode="json")}
 
         activity = {}

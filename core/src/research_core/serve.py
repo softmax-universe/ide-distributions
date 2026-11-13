@@ -915,43 +915,65 @@ class SeamServer:
     def message_context(self, body: dict) -> dict:
         """Join application metadata by native row identity, never by parsing message text."""
         session_id = _text(body, "session_id")
-        with self.stores() as stores:
-            admissions_by_message = {
-                row["native_message_id"]: (
-                    json.loads(row["payload"])["context"],
-                    json.loads(row["request"])["message"]["content"],
-                )
-                for row in stores.wstore.q(
-                    "SELECT native_message_id,payload,request FROM client_admissions"
-                    " WHERE session_id=? AND native_message_id IS NOT NULL AND origin='client'",
-                    (session_id,),
-                )
-            }
-            followup_messages = {
-                row["native_message_id"]
-                for row in stores.wstore.q(
-                    "SELECT native_message_id FROM client_admissions"
-                    " WHERE session_id=? AND origin='followup'",
-                    (session_id,),
-                )
-            }
-            return {
-                "data": [
+        with self.stores() as stores, stores.wstore.read_tx():
+            admissions_by_message: dict[int, tuple[Any, Any]] = {}
+            followup_messages: set[int] = set()
+            direct_requests: dict[int, str] = {}
+            for row in stores.wstore.q(
+                "SELECT op_id,native_message_id,origin,payload,request FROM client_admissions"
+                " WHERE session_id=? AND native_message_id IS NOT NULL",
+                (session_id,),
+            ):
+                native_id = row["native_message_id"]
+                direct_requests[native_id] = row["op_id"]
+                if row["origin"] == "client":
+                    admissions_by_message[native_id] = (
+                        json.loads(row["payload"])["context"],
+                        json.loads(row["request"])["message"]["content"],
+                    )
+                elif row["origin"] == "followup":
+                    followup_messages.add(native_id)
+            call_requests: dict[str, str] = {}
+            for row in stores.wstore.q(
+                "SELECT re.request_id,json_extract(re.event,'$.call_id') AS call_id"
+                " FROM request_events re"
+                " JOIN client_admissions ca ON ca.op_id=re.request_id"
+                " WHERE ca.session_id=? AND re.kind IN ('tool.started','tool.completed')",
+                (session_id,),
+            ):
+                call_id = row["call_id"]
+                if isinstance(call_id, str):
+                    call_requests[call_id] = row["request_id"]
+            data = []
+            for message in body["data"]:
+                msg_id = message.get("id")
+                req_id = direct_requests.get(msg_id)
+                if req_id is None:
+                    tool_call_id = message.get("tool_call_id")
+                    if isinstance(tool_call_id, str):
+                        req_id = call_requests.get(tool_call_id)
+                if req_id is None and isinstance(message.get("tool_calls"), list):
+                    for tc in message["tool_calls"]:
+                        if isinstance(tc, dict) and isinstance(tc.get("id"), str):
+                            if tc["id"] in call_requests:
+                                req_id = call_requests[tc["id"]]
+                                break
+                data.append(
                     {
                         **message,
                         **(
-                            {"content": admissions_by_message[message["id"]][1]}
-                            if message["id"] in admissions_by_message
+                            {"content": admissions_by_message[msg_id][1]}
+                            if msg_id in admissions_by_message
                             else {}
                         ),
-                        **({"runtime_input": True} if message["id"] in followup_messages else {}),
-                        "client_context": admissions_by_message[message["id"]][0]
-                        if message["id"] in admissions_by_message
+                        **({"runtime_input": True} if msg_id in followup_messages else {}),
+                        **({"request_id": req_id} if req_id is not None else {}),
+                        "client_context": admissions_by_message[msg_id][0]
+                        if msg_id in admissions_by_message
                         else None,
                     }
-                    for message in body["data"]
-                ]
-            }
+                )
+            return {"data": data}
 
     def message_event(self, body: dict) -> dict:
         """Append one AIDE event to a message's log; the runtime pushes it only after this."""
@@ -980,23 +1002,30 @@ class SeamServer:
             )
             if row is None:
                 raise Refused(HTTPStatus.NOT_FOUND, "Unknown message admission")
-            if row["dispatch_started"] and row["delivery_mode"] == "steer":
-                # Its run is another admission's: stopping it would end that request too.
-                raise Refused(HTTPStatus.CONFLICT, "The message was merged into a live run")
-            if row["status"] in {"queued", "running"}:
+            active = row["status"] in {"queued", "running"}
+            run_id = row["run_id"] or row["target_run_id"]
+            if active:
                 with stores.wstore.tx(_actor(body.get("actor"))) as tx:
                     tx.execute(
                         "UPDATE client_admissions SET cancel_requested=1 WHERE op_id=?", (op_id,)
                     )
+                    if row["delivery_mode"] == "steer" and row["dispatch_started"] and run_id:
+                        # Stopping the shared run cancels both the follow-up and its host.
+                        tx.execute(
+                            "UPDATE client_admissions SET cancel_requested=1"
+                            " WHERE run_id=? AND status IN ('queued','running')",
+                            (run_id,),
+                        )
                     if not row["dispatch_started"]:
                         tx.execute(
-                            "UPDATE client_admissions SET status='cancelled' WHERE op_id=?",
+                            "UPDATE client_admissions SET status='cancelled',resume_after=NULL"
+                            " WHERE op_id=?",
                             (op_id,),
                         )
                     tx.event("client.cancel_requested", op_id, {})
-            if row["run_id"]:
-                self.hermes.stop(row["run_id"], profile=self.profile)
-            return {"op_id": op_id, "stop_requested": True}
+                if run_id:
+                    self.hermes.stop(run_id, profile=self.profile)
+            return {"op_id": op_id, "stop_requested": active}
 
     def input_response(self, op_id: str) -> dict:
         """The input response a client applied under ``op_id``, or ``request: null``."""
@@ -1047,7 +1076,7 @@ class SeamServer:
                 HTTPStatus.NOT_FOUND, f"{op} refused", code="not_found", problems=error.problems
             ) from None
         except StoreError as error:
-            if op == "tasks.abandon" and any("only an open Task" in p for p in error.problems):
+            if op == "tasks.abandon" and "only an open Task" in str(error):
                 return {"ok": True, "op": op, "store": "coworld", "record": None, "seq": 0}
             raise Refused(
                 HTTPStatus.BAD_REQUEST, f"{op} refused", problems=error.problems

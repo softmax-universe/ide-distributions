@@ -1197,10 +1197,6 @@ def test_a_steered_follow_up_logs_only_its_outcome_and_leaves_the_host_run_alone
         await call(backend, "chat.send", params | {"messages": say("also")}, request_id=follow_up)
         (run_id,) = hermes.runs
         await until(lambda: hermes.steered.get(run_id) == ["also"])
-        # The follow-up rides the earlier request's run: cancelling it must not stop that run.
-        cancel = {"session_id": session_id, "request_id": follow_up, "scope": WORKSPACE}
-        assert code(await call(backend, "chat.cancel", cancel)) == "conflict"
-        assert "stop" not in [name for name, _ in hermes.calls]
         wrapped = (
             "[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered "
             "once at this position; not tool output and not a new delivery when replayed "
@@ -2533,5 +2529,276 @@ def test_seam_500_returns_internal_error_without_traceback(system, monkeypatch):
         assert cmd_reply["error"]["data"]["outcome"] == "unknown"
         assert cmd_reply["error"]["message"] == "Internal error"
         assert "secret commit detail" not in cmd_reply["error"]["message"]
+
+    run(system, scenario)
+
+
+def test_session_title_preserved_across_open_page_and_state_changed(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        open_id = str(uuid4())
+        target_open = await call(backend, "session.open", {"scope": LEAGUE}, request_id=open_id)
+        target_id = target_open["result"]["session"]["id"]
+        assert target_open["result"]["session"].get("title") is None
+
+        gateway.titles[target_id] = "Named in Hermes"
+        send_id = str(uuid4())
+        await call(
+            backend,
+            "chat.send",
+            {"session_id": target_id, "messages": say("hi"), "scope": LEAGUE},
+            request_id=send_id,
+        )
+        await until(lambda: backend.socket.notes("chat.finished"))
+        changed_titles = [
+            note["item"].get("title")
+            for note in backend.socket.notes("state.changed")
+            if note["resource"] == "sessions" and note["item"]["id"] == target_id
+        ]
+        assert changed_titles[-1] == "Named in Hermes"
+
+        other_coworld = "coworld-other"
+        other_scope = {"scope": "coworld", "coworld": other_coworld, "league": "league_other"}
+        other_id = await opened(backend, other_scope)
+        switched = await call(
+            backend,
+            "session.page",
+            {
+                "session_id": other_id,
+                "scope": other_scope,
+                "page": LEAGUE,
+                "related_uploads": [],
+                "target_session_id": target_id,
+            },
+        )
+        assert switched["result"]["kind"] == "switched"
+        assert switched["result"]["session"]["title"] == "Named in Hermes"
+
+        restarted = await backend.restart()
+        reopened = await call(restarted, "session.open", {"scope": LEAGUE}, request_id=open_id)
+        assert reopened["result"]["session"]["id"] == target_id
+        assert reopened["result"]["session"]["title"] == "Named in Hermes"
+
+    run(system, scenario)
+
+
+def test_chat_history_includes_request_id_matching_live_events_and_publish_isolation(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        first = str(uuid4())
+        second = str(uuid4())
+
+        def two_turns(run_id: str) -> list[dict]:
+            if len(hermes.runs) == 1:
+                tool_call = {
+                    "id": "call_first",
+                    "type": "function",
+                    "function": {"name": "ls", "arguments": "{}"},
+                }
+                return [
+                    {"event": "run.started"},
+                    {
+                        "event": "tool.started",
+                        "tool": "ls",
+                        "preview": "ls",
+                        "tool_call_id": "call_first",
+                        "say": [{"role": "assistant", "content": None, "tool_calls": [tool_call]}],
+                    },
+                    {
+                        "event": "tool.completed",
+                        "tool": "ls",
+                        "tool_call_id": "call_first",
+                        "say": [{"role": "tool", "content": "files", "tool_call_id": "call_first"}],
+                    },
+                    {
+                        "event": "run.completed",
+                        "say": [{"role": "assistant", "content": "Done"}],
+                    },
+                ]
+            return [
+                {"event": "run.started"},
+                {"gate": True},
+                {"event": "run.completed", "say": [{"role": "assistant", "content": "Second"}]},
+            ]
+
+        gateway.script = two_turns
+        await call(
+            backend,
+            "chat.send",
+            {"session_id": session_id, "messages": say("first question"), "scope": WORKSPACE},
+            request_id=first,
+        )
+        await until(lambda: hermes.runs)
+        gateway.say(session_id, role="user", content="first question")
+        first_user_id = gateway.transcripts[session_id][-1]["id"]
+        with ctx.wstore.tx(HARNESS) as tx:
+            tx.execute(
+                "UPDATE client_admissions SET native_message_id=? WHERE op_id=?",
+                (first_user_id, first),
+            )
+        await until(lambda: backend.socket.notes("chat.finished"))
+
+        # Insert a native user message belonging to a second non-steered admission, and verify
+        # calling publish() for ``first`` stops before leaking it under ``first``.
+        await call(
+            backend,
+            "chat.send",
+            {"session_id": session_id, "messages": say("second question"), "scope": WORKSPACE},
+            request_id=second,
+        )
+        await until(lambda: len(hermes.runs) == 2)
+        gateway.say(session_id, role="user", content="second question")
+        second_user_id = gateway.transcripts[session_id][-1]["id"]
+        with ctx.wstore.tx(HARNESS) as tx:
+            tx.execute(
+                "UPDATE client_admissions SET native_message_id=? WHERE op_id=?",
+                (second_user_id, second),
+            )
+        after = await backend.publish(first, session_id, 0)
+        assert after < second_user_id
+        published_for_first = [
+            n for n in backend.socket.notes("chat.message") if n["sequence"] == second_user_id
+        ]
+        assert published_for_first == []
+
+        gateway.gate.set()
+        await until(lambda: len(backend.socket.notes("chat.finished")) == 2)
+        second_notes = [
+            n for n in backend.socket.notes("chat.message") if n["sequence"] == second_user_id
+        ]
+        assert len(second_notes) == 1 and second_notes[0]["request_id"] == second
+
+        history = await call(
+            backend, "chat.history", {"session_id": session_id, "scope": WORKSPACE}
+        )
+        by_seq = {item["sequence"]: item for item in history["result"]["items"]}
+        assert by_seq[first_user_id].get("request_id") == first
+        assert by_seq[second_user_id].get("request_id") == second
+        tool_call_item = next(
+            item
+            for item in history["result"]["items"]
+            if item["message"].get("role") == "assistant" and item["message"].get("tool_calls")
+        )
+        tool_result_item = next(
+            item for item in history["result"]["items"] if item["message"].get("role") == "tool"
+        )
+        plain_assistant_item = next(
+            item
+            for item in history["result"]["items"]
+            if item["message"] == {"role": "assistant", "content": "Done"}
+        )
+        assert tool_call_item.get("request_id") == first
+        assert tool_result_item.get("request_id") == first
+        # Plain assistant text carries no durable per-message request_id in Option B.
+        assert "request_id" not in plain_assistant_item
+
+    run(system, scenario)
+
+
+def test_cancel_merged_steered_followup_and_waiting_request(system):
+    _, hermes, _ = system
+
+    def hold_on_rate_limit(run):
+        if len(hermes.runs) == 2:
+            hermes.fail(run.run_id, "HTTP 429: slow down")
+
+    async def scenario(backend, gateway, ctx, hermes):
+        hermes.script = hold_on_rate_limit
+        session_id = await opened(backend)
+        base_script = gateway.script
+        gateway.script = lambda run_id: (
+            [*base_script(run_id)[:5], {"gate": True}, *base_script(run_id)[5:]]
+            if len(hermes.runs) == 1
+            else [{"event": "run.started"}, {"event": "run.failed", "error": "HTTP 429: slow down"}]
+        )
+        first, follow_up = str(uuid4()), str(uuid4())
+        params = {"session_id": session_id, "messages": say("hi"), "scope": WORKSPACE}
+        await call(backend, "chat.send", params, request_id=first)
+        await until(lambda: started(backend))
+        await call(backend, "chat.send", params | {"messages": say("also")}, request_id=follow_up)
+        (run_id,) = hermes.runs
+        await until(lambda: hermes.steered.get(run_id) == ["also"])
+
+        # Cancelling the steered follow-up stops the shared host run and settles both requests.
+        cancel_reply = await call(
+            backend,
+            "chat.cancel",
+            {"session_id": session_id, "request_id": follow_up, "scope": WORKSPACE},
+        )
+        assert cancel_reply["result"] == {"requested": True}
+        assert any(name == "stop" and args["run_id"] == run_id for name, args in hermes.calls)
+        gateway.gate.set()
+        await until(lambda: len(backend.socket.notes("chat.finished")) == 2)
+        statuses = {n["request_id"]: n["status"] for n in backend.socket.notes("chat.finished")}
+        assert statuses == {first: "cancelled", follow_up: "cancelled"}
+
+        # Cancelling a waiting request settles immediately with waiting=None, error=None, and
+        # no stale retry/waiting state on the session.
+        waiting_id = str(uuid4())
+        await call(
+            backend,
+            "chat.send",
+            {"session_id": session_id, "messages": say("retry later"), "scope": WORKSPACE},
+            request_id=waiting_id,
+        )
+        get_waiting = {"resource": "requests", "id": waiting_id, "scope": WORKSPACE}
+        while (await call(backend, "state.get", get_waiting))["result"]["item"][
+            "status"
+        ] != "waiting":
+            await asyncio.sleep(0.05)
+
+        waiting_cancel = await call(
+            backend,
+            "chat.cancel",
+            {"session_id": session_id, "request_id": waiting_id, "scope": WORKSPACE},
+        )
+        assert waiting_cancel["result"] == {"requested": True}
+        await until(lambda: len(backend.socket.notes("chat.finished")) == 3)
+        finished_note = next(
+            n for n in backend.socket.notes("chat.finished") if n["request_id"] == waiting_id
+        )
+        assert finished_note["status"] == "cancelled"
+        assert "error" not in finished_note
+
+        settled_req = (await call(backend, "state.get", get_waiting))["result"]["item"]
+        assert settled_req["status"] == "cancelled"
+        assert settled_req["waiting"] is None
+        assert settled_req["error"] is None
+        waiting_row = ctx.wstore.one(
+            "SELECT status,resume_after FROM client_admissions WHERE op_id=?", (waiting_id,)
+        )
+        assert waiting_row["status"] == "cancelled" and waiting_row["resume_after"] is None
+
+        settled_session = (
+            await call(
+                backend,
+                "state.get",
+                {"resource": "sessions", "id": session_id, "scope": WORKSPACE},
+            )
+        )["result"]["item"]
+        assert settled_session["active_request_ids"] == []
+
+        frame_methods = [
+            (f["message"].get("method"), f["message"].get("params"))
+            for f in backend.socket.frames
+            if f["frontend_id"] == str(FRONTEND)
+        ]
+        changed_idx = max(
+            i
+            for i, (method, params_) in enumerate(frame_methods)
+            if method == "state.changed"
+            and params_["resource"] == "sessions"
+            and params_["item"]["id"] == session_id
+            and params_["item"]["active_request_ids"] == []
+            and any(
+                req["request_id"] == waiting_id and req["status"] == "cancelled"
+                for req in params_["item"]["requests"]
+            )
+        )
+        finished_idx = next(
+            i
+            for i, (method, params_) in enumerate(frame_methods)
+            if method == "chat.finished" and params_["request_id"] == waiting_id
+        )
+        assert changed_idx < finished_idx
 
     run(system, scenario)
