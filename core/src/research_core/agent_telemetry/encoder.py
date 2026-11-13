@@ -70,17 +70,15 @@ class _Baseline:
     message_digests: list[str]
     manifest_digest: str
     row_ids: dict[int, str]
-    # The redacted digest of each value of the last request, by a hash of its raw form.
-    known: dict[bytes, str]
 
 
 class _Objects:
     """The objects one observation depends on, by digest, without the empty object.
 
-    A value this history line has already redacted is not redacted again. Each request then costs a
-    hash of its history, far less than scanning it, and a scan of what is new. Such a value has been
-    sent, so the encoder keeps no text between requests. Hermes's prompt sections do stay in memory,
-    per Session, in ``plugin/capture.py``.
+    A value this process has already redacted, in any Session, is not redacted again. Each request
+    then costs a hash of its history, far less than scanning it, and a scan of what is new. Such a
+    value has been sent, so the encoder keeps no text between requests. Hermes's prompt sections do
+    stay in memory, per Session, in ``plugin/capture.py``.
     """
 
     def __init__(self, known: Mapping[bytes, str] | None = None) -> None:
@@ -199,8 +197,10 @@ class RecordEncoder:
         self._redaction_version = redactor.version if redactor else rec.NO_REDACTION
         self._next_sequence = 0
         self._baselines: dict[tuple[str, ...], _Baseline] = {}
-        # What this process has sent.
+        # What this process has sent, and the redacted digest of each value it sent in a
+        # request, by a hash of the value's raw form.
         self._sent: set[str] = set()
+        self._redacted: dict[bytes, str] = {}
 
     def write(self, kind: str, occurred_at: float, payload: Mapping[str, Any]) -> None:
         """``payload`` is the writer's own copy of what a callback saw."""
@@ -341,7 +341,7 @@ class RecordEncoder:
         fields = payload["fields"]
         baseline_key = (fields.get("profile") or "", payload["session_id"], payload["history_line"])
         baseline = self._baselines.get(baseline_key)
-        objects = _Objects(baseline.known if baseline else None)
+        objects = _Objects(self._redacted)
         model = payload["request"].get("model")
         ids = self._metadata(
             {
@@ -379,7 +379,7 @@ class RecordEncoder:
         if listed_row_ids:
             body["hermes_message_ids"] = listed_row_ids
         if cache_markers:
-            body["cache_markers"] = self._redact().value(cache_markers)
+            body["cache_markers"] = cache_markers
         manifest = rec.json_object(body, "request_manifest")
         objects.add(manifest)
 
@@ -391,4 +391,5 @@ class RecordEncoder:
         operation = "model_attempt", "request", operation_fields, refs
         self._emit([rec.operation_record(base, event_id, *operation)])
         self._sent.update(objects.made)
-        self._baselines[baseline_key] = _Baseline(digests, manifest.digest, row_ids, objects.seen)
+        self._redacted.update(objects.seen)
+        self._baselines[baseline_key] = _Baseline(digests, manifest.digest, row_ids)

@@ -25,7 +25,7 @@ Every line has:
 | `producer`, `image`, `source_instance`, `runtime_id` | Which process wrote it. `source_instance` is new at each process start |
 | `redaction_version` | Which scanner read it, or `none` from a writer that takes no free text. Such a writer still masks Softmax tokens in its metadata strings |
 | `occurred_at` | UTC with three decimals. Datadog's own timestamp is when it read the line |
-| `sequence` | Capture order inside one `source_instance` |
+| `sequence` | Capture order inside one `source_instance`. All chunks of one object share its `sequence` |
 | `family` | `operation`, `context` or `content` |
 | `trace_id`, `span_id` | On an operation or context line written inside a span: the OpenTelemetry span it belongs to, as 32 and 16 lowercase hex digits, the names and form Datadog uses to join a log to its APM trace. Datadog's JSON log preprocessing takes both off the line's attributes: search them as `trace_id:<hex>`, without `@`, but Logs search returns neither. A line written outside any span has neither |
 | `otel_trace_id` | Beside `trace_id`, the same value, under a name Logs search returns. Every trace link below reads this one |
@@ -230,8 +230,8 @@ A store event sends its type, `seq`, actor, a subject that is a display ID (`tas
 `execution`, `transition` or `session` adds the row behind it, read just after the commit: for an admission `session_id`,
 `profile`, `initiator` (its origin), `owner_instance` and `details.resumes`; for a durable command `tool_name`, `session_id`,
 `lease_epoch`, `owner_instance`, `execution_attempt_id` and `details.attempts`; for a Session `kind`, `session_scope`,
-`coworld_id`, `league_id`, `task_id`, `goal_id`, `parent_session_id` and `initiator` (the event that caused it). A rollback
-records nothing.
+`coworld_id`, `league_id`, `task_id`, `goal_id`, `parent_session_id` and `initiator` (the event that caused it). On
+`session.ended`, `initiator` is instead the payload's `stopped_by`: who ended the Session. A rollback records nothing.
 
 ### How to join them
 

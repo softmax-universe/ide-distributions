@@ -268,6 +268,20 @@ def test_paging_and_a_rate_limit(writer, stream_file, datadog):
     assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
 
 
+def test_a_lost_compaction_record_does_not_hide_the_session_under_its_live_id(
+    writer, stream_file, datadog
+):
+    """After a compaction in place, a record names the first ID and the live one. With the
+    compaction record lost, the live ID still finds the Session and its first ID."""
+    writer.capture_operation("turn", "started", session_id="ses_A", hermes_session_id="ses_B")
+    sent(writer, stream_file, datadog)
+
+    report = rebuild_session(search_of(datadog), "ses_B")
+    assert report["session_ids"] == ["ses_A", "ses_B"]
+    assert [event["action"] for event in report["events"]] == ["turn"]
+    assert report["missing"] == []
+
+
 def test_compaction_is_followed_in_both_directions_after_a_restart(writer, stream_file, datadog):
     """After a restart a process no longer knows the first ID, so records name only the new one."""
     two_requests(writer, "ses_1")
@@ -789,6 +803,31 @@ def test_a_new_row_with_a_reused_call_id_keeps_its_own_result(writer, stream_fil
     by_row = {row["hermes_message_id"]: row["message"] for row in report["rows"]}
     assert by_row["10"] == old
     assert by_row["77"] == {**old, "content": "NEW result"}
+    assert report["missing"] == []
+
+
+def test_a_new_row_with_a_reused_call_id_and_no_result_keeps_its_commit(
+    writer, stream_file, datadog
+):
+    """An older listing has this call ID with no row ID. A later turn reuses the ID and ends at a
+    guard halt, so no result is recorded and only the new row's commit holds its text."""
+    old = {"role": "tool", "tool_call_id": "call_1", "content": "OLD result"}
+    new = {**old, "content": "NEW result"}
+    writer.capture_request(
+        request_body([{"role": "user", "content": "Go"}, old]),
+        session_id="ses_1",
+        provider="moonshot",
+        model_attempt_id="att_1",
+        otel_trace_id="trace_1",
+    )
+    committed(writer, "10", tool_call_id="call_1")
+    committed(writer, "77", tool_call_id="call_1", content={"message": new})
+    sent(writer, stream_file, datadog)
+
+    report = rebuild_session(search_of(datadog), "ses_1")
+    by_row = {row["hermes_message_id"]: row["message"] for row in report["rows"]}
+    assert by_row["10"] == old
+    assert by_row["77"] == new
     assert report["missing"] == []
 
 
