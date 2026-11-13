@@ -148,9 +148,10 @@ def with_row_ids(
     cursor = 0
     bound = []
     for message in wire_messages:
+        wanted = _identity(message)
         for index in range(cursor, len(keys)):
             identity, row_id = keys[index]
-            if identity == _identity(message):
+            if identity == wanted:
                 cursor = index + 1
                 if row_id is not None:
                     message = {**message, "_row_id": row_id}
