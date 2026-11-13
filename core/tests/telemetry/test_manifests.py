@@ -221,6 +221,24 @@ def test_text_repeated_in_one_request_is_redacted_once(stream_file, producer):
     assert rebuild_request(manifest["content_digest"], objects_of(records)) == request
 
 
+def test_a_committed_message_already_in_a_request_is_not_scanned_again(stream_file, producer):
+    redactor = CountingRedactor()
+    writer = TelemetryWriter(stream_file, producer, redactor=redactor)
+    user = {"role": "user", "content": "z" * 50_000}
+    writer.capture_request({"model": MODEL, "messages": [user]}, **attempt(0))
+    assert processed(writer, 5.0)
+    redactor.scanned.clear()
+    writer.capture_operation("message", "committed", session_id="ses_1", content={"message": user})
+    assert processed(writer, 5.0)
+    assert sum(redactor.scanned) < 1_000
+
+    records = stored_records(stream_file)
+    [committed] = [r for r in records if r.get("action") == "message"]
+    [request] = [r for r in records if r.get("stage") == "request"]
+    manifest = objects_of(records)[request["content_refs"][0]["digest"]]
+    assert committed["content_refs"][0]["digest"] == json.loads(manifest)["messages"][0]
+
+
 def test_every_manifest_describes_its_own_request(writer, stream_file):
     system = {"role": "system", "content": "s"}
     user = {"role": "user", "content": "u"}

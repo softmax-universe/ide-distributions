@@ -422,6 +422,22 @@ def test_the_queue_empties_with_no_flush(writer, stream_file):
     assert raw_lines(stream_file)
 
 
+class _NeedsTwo(Exception):
+    """Pickles with one argument and cannot be rebuilt from it."""
+
+    def __init__(self, first, second):
+        super().__init__(first)
+
+
+def test_a_capture_that_cannot_be_unpickled_costs_only_that_record(writer, stream_file, caplog):
+    with caplog.at_level(logging.WARNING):
+        writer.capture_operation("a", "broken", error=_NeedsTwo("x", "y"))
+        writer.capture_operation("a", "after")
+        assert processed(writer)
+    assert [r["stage"] for r in stored_records(stream_file)] == ["after"]
+    assert any("dropped a operation record (TypeError)" in m for m in caplog.messages)
+
+
 def test_a_failing_stream_costs_only_that_record(tmp_path, producer, caplog):
     """A pipe with no reader fails each write. The next capture still tries."""
     path = tmp_path / "gone"

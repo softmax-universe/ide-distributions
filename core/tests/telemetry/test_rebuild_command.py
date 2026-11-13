@@ -322,6 +322,35 @@ def test_compaction_is_followed_in_both_directions_after_a_restart(writer, strea
     assert len(from_first["requests"]) == len(from_last["requests"]) == 4
 
 
+def test_a_manifest_whose_bytes_were_first_sent_as_text_is_still_walked(
+    stream_file, producer, redactor, datadog, tmp_path
+):
+    """A digest names bytes, not a kind. When a tool's text has a manifest's exact bytes and goes
+    first, the manifest is never sent again, and only its reference says it is a manifest."""
+    body = request_body([{"role": "user", "content": "Go"}])
+    request = {"session_id": "ses_1", "provider": "moonshot", "model_attempt_id": "att_1"}
+    probe = TelemetryWriter(str(tmp_path / "probe"), producer, redactor=redactor)
+    probe.capture_request(body, **request)
+    assert processed(probe)
+    [manifest] = [
+        r for r in stored_records(tmp_path / "probe") if r.get("content_kind") == "request_manifest"
+    ]
+
+    writer = TelemetryWriter(stream_file, producer, redactor=redactor)
+    text = {"result": manifest["body"]}
+    writer.capture_operation("tool", "result", session_id="ses_1", content=text)
+    writer.capture_request(body, **request)
+    records = sent(writer, stream_file, datadog)
+    kinds = {
+        r["content_kind"] for r in records if r.get("content_digest") == manifest["content_digest"]
+    }
+    assert kinds == {"part"}
+
+    report = rebuild_session(search_of(datadog), "ses_1")
+    assert canonical_bytes(report["requests"][0]["request"]) == canonical_bytes(body)
+    assert report["missing"] == []
+
+
 def test_a_restart_sends_a_full_manifest_and_everything_it_lists(
     stream_file, producer, redactor, datadog
 ):
