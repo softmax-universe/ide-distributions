@@ -162,10 +162,12 @@ class _Finder:
                 linked = {record.get(name) for name in names} - {None}
                 if record.get("action") == "compaction" and linked & self.session_ids:
                     self.session_ids |= linked
-                # After a compaction in place a record names the live ID and the first one. Its
-                # first ID is followed too, so a lost compaction record cannot hide the Session.
-                elif record.get("hermes_session_id") in self.session_ids and "session_id" in record:
-                    self.session_ids.add(record["session_id"])
+                # After a compaction in place a record names the first ID and the live one. Each
+                # leads to the other, so a lost compaction record cannot hide part of the Session.
+                else:
+                    aliases = {record.get("session_id"), record.get("hermes_session_id")} - {None}
+                    if aliases & self.session_ids:
+                        self.session_ids |= aliases
         # A retried request names only its admission, and a store event or a workspace tool's
         # record only the trace of the message it served. A record written before records named
         # their trace (retained for 15 days) names its run instead. A record with a Session ID
@@ -490,6 +492,9 @@ def _rows(finder: _Finder, operations: list[dict], requests: list[dict]) -> list
     last: dict[tuple[str, str], tuple[str, dict]] = {}
     row_of_call: dict[str, str] = {}
     for request in requests:
+        # An auxiliary call can carry the conversation's tool messages, capped, with no row IDs.
+        if request["model_attempt_id"].startswith("aux-"):
+            continue
         body = request["request"] or {"messages": ()}
         for position, message in enumerate(body["messages"]):
             listed = (request["message_digests"][position], message)
