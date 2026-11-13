@@ -1225,11 +1225,12 @@ class Backend:
             snapshot = await self.scoped(self.subscribers[session_id].scope, session_id=session_id)
             (row,) = snapshot.records.sessions
             session = await self.project(row, snapshot.records.requests)
-            self.revision = max(self.revision + 1, snapshot.seq)
+            previous = self.revision
+            self.revision = max(previous + 1, snapshot.seq)
             change = {
                 "resource": "sessions",
                 "epoch": snapshot.epoch,
-                "previous_revision": self.revision - 1,
+                "previous_revision": previous,
                 "revision": self.revision,
                 "change": "upsert",
                 "item": session.model_dump(mode="json"),

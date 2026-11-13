@@ -596,7 +596,10 @@ def test_chat_round_trip_pushes_what_the_reads_return_to_every_subscriber(system
             assert finished["cursor"] == {"attempt": 0, "seq": 6}
             changes = socket.notes("state.changed", frontend)
             assert any(request_id in c["item"]["active_request_ids"] for c in changes)
-            assert all(c["previous_revision"] + 1 == c["revision"] for c in changes)
+            assert all(c["previous_revision"] < c["revision"] for c in changes)
+            assert [c["previous_revision"] for c in changes[1:]] == [
+                c["revision"] for c in changes[:-1]
+            ]
         read = (await events_read(backend, session_id, request_id))["result"]
         assert read["events"] == pushed and read["done"] is True
         assert read["next"] == {"attempt": 0, "seq": 6}
@@ -2328,5 +2331,40 @@ def test_concurrent_changed_calls_preserve_revision_order(system):
         revs = [n["revision"] for n in session_notes]
         assert revs == sorted(revs) and len(set(revs)) == len(revs)
         assert req_id in session_notes[-1]["item"]["active_request_ids"]
+
+    run(system, scenario)
+
+
+def test_session_pushes_chain_previous_revision_from_state_list(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        listed = (await call(backend, "state.list", {"resource": "sessions"}))["result"]
+        start_idx = len(backend.socket.notes("state.changed"))
+
+        settings.update(ctx.wstore, HARNESS, "paused", True, cites="hold")
+        req_1 = str(uuid4())
+        await call(
+            backend,
+            "chat.send",
+            {"session_id": session_id, "messages": say("one"), "scope": WORKSPACE},
+            request_id=req_1,
+        )
+        await until(lambda: len(backend.socket.notes("state.changed")) > start_idx)
+        await call(
+            backend,
+            "chat.cancel",
+            {"session_id": session_id, "request_id": req_1, "scope": WORKSPACE},
+        )
+        await until(lambda: len(backend.socket.notes("state.changed")) >= start_idx + 2)
+
+        pushes = [
+            n
+            for n in backend.socket.notes("state.changed")[start_idx:]
+            if n["resource"] == "sessions"
+        ]
+        first, second = pushes[0], pushes[1]
+        assert first["previous_revision"] == listed["revision"]
+        assert second["previous_revision"] == first["revision"]
+        assert listed["revision"] < first["revision"] < second["revision"]
 
     run(system, scenario)
