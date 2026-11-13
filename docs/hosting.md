@@ -336,7 +336,8 @@ untouched and the workspace is paused until the matching release runs again.
 A push to `main` touching the paths in `.github/workflows/release-hermes.yml` (what the image holds)
 dispatches Metta's image release for the `main` channel, unless the last nightly read-only platform
 check (`research platform check --read-only`) failed. A push to `beta` does the same for the `beta`
-channel.
+channel. Creating `beta` from `main` releases it too, so beta starts on `main`'s image (reused, not
+rebuilt).
 
 `beta` is a playground for experiments, not a path to `main`. Team members opt their workspace into
 it on softmax.com. Open experimental pull requests against `beta`; `sync-beta.yml` merges `main` into
