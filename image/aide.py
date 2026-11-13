@@ -17,6 +17,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 from urllib.parse import quote
@@ -52,6 +53,7 @@ CONTROLS = frozenset({"approval.request", "approval.settled", "clarify.request",
 COMMANDS = frozenset(
     {"session.open", "session.page", "chat.send", "chat.cancel", "task.cancel", "input.respond"}
 )
+COMMITTING: ContextVar[bool] = ContextVar("committing", default=False)
 RECENT_TERMINAL = 10  # terminal requests a Session embeds beside its open ones
 EMBEDDED_ACTIVE = 1000  # open requests a Session embeds at most
 ERROR_CHARS = 4000  # RequestError.message
@@ -594,6 +596,8 @@ class Refusal(Exception):
     def error(self) -> dict[str, JsonValue]:
         if self.code == "invalid":
             return {"code": -32602, "message": str(self)}
+        if self.code == "internal":
+            return {"code": -32603, "message": str(self)}
         data = {"code": self.code} | ({"outcome": "unknown"} if self.unknown else {}) | self.data
         return {"code": -32000, "message": str(self), "data": data}
 
@@ -866,6 +870,8 @@ class Backend:
         self, client: httpx.AsyncClient, method: str, path: str, command: bool = False, **kwargs
     ) -> bytes:
         """A native reply's body, or the refusal its status means."""
+        if command:
+            COMMITTING.set(True)
         headers = dict(kwargs.pop("headers", {}))
         propagator.inject(headers)
         response = await client.request(
@@ -873,16 +879,31 @@ class Backend:
         )
         if response.is_success:
             return response.content
-        if "op_id was already used for different input" in response.text:
+        payload = json.loads(response.content) if response.content.startswith(b"{") else {}
+        detail = str(payload.get("error") or response.text)
+        tagged = payload.get("code")
+        if tagged == "id_reused" or "op_id was already used for different input" in detail:
             raise Refusal("id_reused", "This request id was used for different input")
+        if isinstance(tagged, str):
+            raise Refusal(tagged, detail)
         if response.status_code >= 500:
-            raise Refusal("unavailable", response.text, unknown=command)
+            log.error(
+                "Seam %s %s failed with HTTP %s: %s", method, path, response.status_code, detail
+            )
+            if command or COMMITTING.get():
+                raise Refusal("unavailable", "Internal error", unknown=True)
+            raise Refusal("internal", "Internal error")
         if response.status_code == 409:
-            # The seam's only scope check answers 409 scope_mismatch.
-            code = "forbidden" if "scope_mismatch" in response.text else "conflict"
-            raise Refusal(code, response.text)
+            code = (
+                "forbidden"
+                if payload.get("kind") == "scope_mismatch" or "scope_mismatch" in detail
+                else "conflict"
+            )
+            raise Refusal(code, detail)
+        if response.status_code == 413:
+            raise Refusal("too_large", detail)
         code = {400: "invalid", 404: "not_found"}.get(response.status_code, "unsupported")
-        raise Refusal(code, response.text)
+        raise Refusal(code, detail)
 
     async def snapshot(self, **params: str) -> Snapshot:
         """Top-level chat Sessions with their requests, as one consistent seam read."""
@@ -928,7 +949,10 @@ class Backend:
             if response.status_code == 404:
                 continue  # a retired run has no prompts left
             if not response.is_success:
-                raise Refusal("unavailable", response.text)
+                log.error("Gateway run read failed with HTTP %s", response.status_code)
+                if COMMITTING.get():
+                    raise Refusal("unavailable", "Internal error", unknown=True)
+                raise Refusal("internal", "Internal error")
             for control in RunState.model_validate_json(response.content).pending_controls:
                 identity = f"aide-input:{session_id}:{run_id}:{control.execution_generation}"
                 request_id = str(uuid5(NAMESPACE_URL, f"{identity}:{control.prompt_id}"))
@@ -968,7 +992,10 @@ class Backend:
         if response.status_code == 404:
             return []
         if not response.is_success:
-            raise Refusal("unavailable", response.text)
+            log.error("Gateway messages read failed with HTTP %s", response.status_code)
+            if COMMITTING.get():
+                raise Refusal("unavailable", "Internal error", unknown=True)
+            raise Refusal("internal", "Internal error")
         native = NativePage.model_validate_json(response.content).data[::-1]
         if not native:
             return []
@@ -1126,7 +1153,7 @@ class Backend:
                             await self.publish_board(coworld, feed, event)
                             after = event.seq
             except (httpx.TransportError, Refusal) as error:
-                if isinstance(error, Refusal) and error.code != "unavailable":
+                if isinstance(error, Refusal) and error.code not in {"unavailable", "internal"}:
                     raise
                 log.info("Coworld board stream dropped; resuming after %s", after)
             await asyncio.sleep(1)
@@ -1311,7 +1338,7 @@ class Backend:
                 "actor": "user:aide",
             }
             try:
-                await self.call(self.seam, "POST", "/message-events", json=body)
+                await self.call(self.seam, "POST", "/message-events", command=True, json=body)
             except httpx.TransportError as error:
                 # No answer says nothing about the commit, and ``place`` has already moved past
                 # this event, so following on would append after a gap. This fails like a 5xx:
@@ -1838,8 +1865,12 @@ class Backend:
                 "failure": {"what_failed": "Cancelled by user", "next_step": "None requested"},
             },
         }
-        await self.call(self.seam, "POST", "/store/apply", command=True, json=body)
-        return {"requested": True}
+        applied = json.loads(
+            await self.call(self.seam, "POST", "/store/apply", command=True, json=body)
+        )
+        return {
+            "requested": applied.get("record") is not None or applied.get("status") == "pending"
+        }
 
     async def respond(self, frontend_id: UUID, request_id: str, params: Respond) -> dict:
         await self.touch(params.session_id, params.scope, frontend_id)
@@ -1854,7 +1885,7 @@ class Backend:
             return {"applied": True}
         snapshot = await self.scoped(params.scope, session_id=params.session_id)
         found = [
-            (run_id, control)
+            (pending, run_id, control)
             for pending, run_id, control in await self.pending(
                 params.session_id, snapshot.records.requests
             )
@@ -1862,11 +1893,14 @@ class Backend:
         ]
         if not found:
             raise Refusal("conflict", "That input is no longer pending")
-        ((run_id, control),) = found
+        ((pending, run_id, control),) = found
+        if isinstance(pending, ApprovalInput) and params.response.choice not in pending.choices:
+            raise Refusal("conflict", "Approval choice is not allowed for this prompt")
         answer = params.response.model_dump(exclude={"kind"})
         action = "approval" if control.kind == "approval" else "clarify"
         headers = {"Idempotency-Key": request_id}
         propagator.inject(headers)
+        COMMITTING.set(True)
         response = await self.gateway.post(
             f"v1/runs/{quote(run_id, safe='')}/{action}",
             json={
@@ -1877,15 +1911,14 @@ class Backend:
             headers=headers,
             timeout=30,
         )
-        if response.status_code == 400:
-            raise Refusal("invalid", response.text)
-        if response.status_code in {404, 409} or (
+        if response.status_code in {400, 404, 409} or (
             response.is_success
             and Resolution.model_validate_json(response.content).status != "resolved"
         ):
             raise Refusal("conflict", "That input is no longer pending")
         if not response.is_success:
-            raise Refusal("unavailable", response.text, unknown=True)
+            log.error("Gateway %s failed with HTTP %s", action, response.status_code)
+            raise Refusal("unavailable", "Internal error", unknown=True)
         record = {"op_id": request_id, "request": request, "actor": "user:aide"}
         await self.call(self.seam, "POST", "/input-response", command=True, json=record)
         return {"applied": True}
@@ -1920,19 +1953,21 @@ class Backend:
                 reply["error"] = {"code": -32602, "message": str(error)}
                 await self.send(socket, frame.frontend_id, reply)
                 return
+            COMMITTING.set(False)
             try:
                 reply["result"] = await handler(frame.frontend_id, request_id, params)
             except Refusal as refusal:  # the contract's typed application errors
                 reply["error"] = refusal.error()
             except httpx.TransportError as error:  # the seam or gateway dropped mid-request
-                unknown = method in COMMANDS
+                unknown = method in COMMANDS and COMMITTING.get()
                 refusal = Refusal("unavailable", type(error).__name__, unknown=unknown)
                 reply["error"] = refusal.error()
-            except Exception as error:  # one request's bug must not end every other client's chat
+            except Exception:  # one request's bug must not end every other client's chat
                 log.exception("%s failed unexpectedly", method)
-                unknown = method in COMMANDS
-                refusal = Refusal("unavailable", type(error).__name__, unknown=unknown)
-                reply["error"] = refusal.error()
+                if method in COMMANDS and COMMITTING.get():
+                    reply["error"] = Refusal("unavailable", "Internal error", unknown=True).error()
+                else:
+                    reply["error"] = Refusal("internal", "Internal error").error()
             await self.send(socket, frame.frontend_id, reply)
 
     def closed(self, frontend_id: UUID) -> None:

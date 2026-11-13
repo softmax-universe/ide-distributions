@@ -1781,15 +1781,13 @@ def test_a_forged_cursor_is_refused_and_the_backend_keeps_answering(system, numb
 
 
 @pytest.mark.parametrize(
-    ("method", "handler", "params", "unknown"),
+    ("method", "handler", "params"),
     [
-        ("state.list", "list_state", {"resource": "sessions"}, False),
-        ("task.cancel", "cancel_task", {"task_id": "t", "scope": LEAGUE}, True),
+        ("state.list", "list_state", {"resource": "sessions"}),
+        ("task.cancel", "cancel_task", {"task_id": "t", "scope": LEAGUE}),
     ],
 )
-def test_an_unexpected_failure_answers_only_its_request(
-    system, caplog, method, handler, params, unknown
-):
+def test_an_unexpected_failure_answers_only_its_request(system, caplog, method, handler, params):
     async def scenario(backend, gateway, ctx, hermes):
         async def broken(*_args):
             raise KeyError("a bug")
@@ -1798,8 +1796,7 @@ def test_an_unexpected_failure_answers_only_its_request(
         setattr(backend, handler, broken)
         reply = await call(backend, method, params)
         setattr(backend, handler, working)
-        assert code(reply) == "unavailable"
-        assert (reply["error"]["data"].get("outcome") == "unknown") is unknown
+        assert reply["error"] == {"code": -32603, "message": "Internal error"}
         assert f"{method} failed unexpectedly" in caplog.text
         assert "KeyError" in caplog.text
         assert "result" in await call(backend, "state.list", {"resource": "sessions"})
@@ -1825,6 +1822,9 @@ def test_a_send_that_fails_after_its_commit_still_runs_once_and_finishes(system,
         failed = await call(backend, "chat.send", params, request_id=request_id)
         assert code(failed) == "unavailable"
         assert failed["error"]["data"]["outcome"] == "unknown"
+        assert failed["error"]["message"] == "Internal error"
+        assert "KeyError" not in failed["error"]["message"]
+        assert "a bug after the commit" not in failed["error"]["message"]
         assert "chat.send failed unexpectedly" in caplog.text
 
         # The admission is committed, so the event watcher gives the run its consumer.
@@ -2366,5 +2366,172 @@ def test_session_pushes_chain_previous_revision_from_state_list(system):
         assert first["previous_revision"] == listed["revision"]
         assert second["previous_revision"] == first["revision"]
         assert listed["revision"] < first["revision"] < second["revision"]
+
+    run(system, scenario)
+
+
+def test_oversized_message_returns_too_large(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        oversized_str = {
+            "session_id": session_id,
+            "messages": [{"role": "user", "content": "a" * 50_001}],
+            "scope": WORKSPACE,
+        }
+        reply_str = await call(backend, "chat.send", oversized_str)
+        assert reply_str["error"]["code"] == -32000
+        assert code(reply_str) == "too_large"
+
+        oversized_parts = {
+            "session_id": session_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "b" * 30_000},
+                        {"type": "text", "text": "c" * 20_001},
+                    ],
+                }
+            ],
+            "scope": WORKSPACE,
+        }
+        reply_parts = await call(backend, "chat.send", oversized_parts)
+        assert reply_parts["error"]["code"] == -32000
+        assert code(reply_parts) == "too_large"
+
+    run(system, scenario)
+
+
+def test_input_respond_disallowed_choice_returns_conflict(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        hermes.script = lambda run_obj: gateway.controls.__setitem__(
+            run_obj.run_id,
+            [
+                {
+                    "kind": "approval",
+                    "prompt_id": "p-deny-only",
+                    "execution_generation": 1,
+                    "description": "Deny-only prompt",
+                    "command": "echo test",
+                    "choices": ["deny"],
+                }
+            ],
+        )
+        gateway.script = lambda run_id: [{"event": "run.started"}, {"gate": True}]
+        await call(
+            backend,
+            "chat.send",
+            {"session_id": session_id, "messages": say("go"), "scope": WORKSPACE},
+        )
+        state = {"resource": "sessions", "id": session_id, "scope": WORKSPACE}
+        await until(lambda: hermes.runs)
+        while not (await call(backend, "state.get", state))["result"]["item"]["pending"]:
+            await asyncio.sleep(0.05)
+        (pending,) = (await call(backend, "state.get", state))["result"]["item"]["pending"]
+        assert pending["choices"] == ["deny"]
+
+        disallowed = await call(
+            backend,
+            "input.respond",
+            {
+                "session_id": session_id,
+                "request_id": pending["request_id"],
+                "scope": WORKSPACE,
+                "response": {"kind": "approval", "choice": "once"},
+            },
+        )
+        assert disallowed["error"]["code"] == -32000
+        assert code(disallowed) == "conflict"
+        gateway.gate.set()
+
+    run(system, scenario)
+
+
+def test_state_get_and_task_cancel_refusal_codes(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        goal = goals.create(ctx.store, HARNESS, title="Win", end_state="Top", reason="asked")
+        task = tasks.create(
+            ctx.store,
+            HARNESS,
+            type="maintenance",
+            title="Fix",
+            description="Do",
+            goal_id=goal["id"],
+        )
+        mismatched = await call(
+            backend,
+            "state.get",
+            {"resource": "goals", "id": f"{COWORLD_ID}:{task['id']}", "scope": LEAGUE},
+        )
+        assert code(mismatched) == "not_found"
+
+        invalid_coworld_scope = {"scope": "coworld", "coworld": "bad/coworld", "league": "l1"}
+        invalid_get = await call(
+            backend,
+            "state.get",
+            {"resource": "tasks", "id": "bad/coworld:T-1", "scope": invalid_coworld_scope},
+        )
+        assert code(invalid_get) == "not_found"
+
+        real_board = backend.board
+
+        async def board_then_abandon(coworld_id, resource, item_id=None):
+            result = await real_board(coworld_id, resource, item_id)
+            tasks.abandon(
+                ctx.store,
+                HARNESS,
+                task["id"],
+                failure={"what_failed": "Already ended", "next_step": "None"},
+            )
+            backend.board = real_board
+            return result
+
+        backend.board = board_then_abandon
+        cancelled = await call(
+            backend,
+            "task.cancel",
+            {"task_id": f"{COWORLD_ID}:{task['id']}", "scope": LEAGUE},
+        )
+        assert cancelled["result"] == {"requested": False}
+
+    run(system, scenario)
+
+
+def test_seam_500_returns_internal_error_without_traceback(system, monkeypatch):
+    server = system[2]
+
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        real_snapshot = server.snapshot
+
+        def broken_snapshot(*_args, **_kwargs):
+            raise RuntimeError("secret database detail")
+
+        monkeypatch.setattr(server, "snapshot", broken_snapshot)
+        raw = await backend.seam.get("/snapshot", params={"store": "workspace", "requests": "1"})
+        assert raw.status_code == 500
+        body = raw.json()
+        assert "traceback" not in body
+        assert "secret database detail" not in body["error"]
+        assert body["error"] == "Internal server error"
+
+        read_reply = await call(backend, "state.list", {"resource": "sessions"})
+        assert read_reply["error"] == {"code": -32603, "message": "Internal error"}
+        monkeypatch.setattr(server, "snapshot", real_snapshot)
+
+        def broken_message(*_args, **_kwargs):
+            raise RuntimeError("secret commit detail")
+
+        monkeypatch.setattr(server, "message", broken_message)
+        cmd_reply = await call(
+            backend,
+            "chat.send",
+            {"session_id": session_id, "messages": say("hi"), "scope": WORKSPACE},
+        )
+        assert code(cmd_reply) == "unavailable"
+        assert cmd_reply["error"]["data"]["outcome"] == "unknown"
+        assert cmd_reply["error"]["message"] == "Internal error"
+        assert "secret commit detail" not in cmd_reply["error"]["message"]
 
     run(system, scenario)

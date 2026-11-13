@@ -52,7 +52,6 @@ import socket
 import subprocess
 import threading
 import time
-import traceback
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager, nullcontext
@@ -90,7 +89,7 @@ from research_core.store import cli as store_cli
 from research_core.store._common import parse_display_id, parse_iso
 from research_core.store.actors import Actor
 from research_core.store.db import Store, change_version, wait_for_change
-from research_core.store.errors import NotFound, StoreError
+from research_core.store.errors import IdReused, NotFound, StoreError
 from research_core.store.registry import GOAL, TASK, record_from_row
 from research_core.telemetry import correlation, process_context, propagator, span
 from research_core.watcher import context, hermes_api
@@ -555,6 +554,7 @@ class SeamServer:
                         HTTPStatus.CONFLICT,
                         "a session's Coworld and league cannot change",
                         kind="scope_mismatch",
+                        code="forbidden",
                     )
             registration = intake.OpenRegistration(
                 profile=self.profile,
@@ -600,6 +600,17 @@ class SeamServer:
         """Confirm a durable input once; dispatch serially with Hermes's durable run key."""
         current = trace.get_current_span()
         session_id = _text(body, "session_id")
+        raw_message = body.get("message")
+        if (
+            isinstance(raw_message, dict)
+            and isinstance(raw_message.get("content"), str)
+            and len(raw_message["content"]) > 50000
+        ):
+            raise Refused(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "Message text exceeds 50000 characters",
+                code="too_large",
+            )
         message = UserMessage.model_validate(body["message"])
         content = message.root["content"]
         text = (
@@ -607,6 +618,12 @@ class SeamServer:
             if isinstance(content, str)
             else "\n".join(part["text"] for part in content if part["type"] == "text")
         )
+        if len(text) > 50000:
+            raise Refused(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "Message text exceeds 50000 characters",
+                code="too_large",
+            )
         actor = _actor(body.get("actor"))
         op_id = str(UUID(_text(body, "op_id")))
         current.set_attribute("op.id", op_id)
@@ -998,7 +1015,11 @@ class SeamServer:
             if row is None:
                 tx.event("client.input_responded", op_id, request)
             elif json.loads(row["payload"]) != request:
-                raise Refused(HTTPStatus.BAD_REQUEST, "op_id was already used for different input")
+                raise Refused(
+                    HTTPStatus.CONFLICT,
+                    "op_id was already used for different input",
+                    code="id_reused",
+                )
         return {"op_id": op_id, "replayed": row is not None}
 
     def store_apply(self, body: dict) -> dict:
@@ -1021,7 +1042,13 @@ class SeamServer:
                 seq = stores.by_kind(kind).last_seq()
         except store_cli.Refusal as error:
             raise Refused(HTTPStatus.BAD_REQUEST, error.error, problems=error.problems) from None
+        except NotFound as error:
+            raise Refused(
+                HTTPStatus.NOT_FOUND, f"{op} refused", code="not_found", problems=error.problems
+            ) from None
         except StoreError as error:
+            if op == "tasks.abandon" and any("only an open Task" in p for p in error.problems):
+                return {"ok": True, "op": op, "store": "coworld", "record": None, "seq": 0}
             raise Refused(
                 HTTPStatus.BAD_REQUEST, f"{op} refused", problems=error.problems
             ) from None
@@ -1083,6 +1110,7 @@ class SeamServer:
                                 HTTPStatus.CONFLICT,
                                 "this session belongs to a different Coworld or league",
                                 kind="scope_mismatch",
+                                code="forbidden",
                             )
                         selected = [session]
                     else:
@@ -1134,10 +1162,17 @@ class SeamServer:
                         (prefix,),
                     )
                 else:
-                    kind, number = parse_display_id(item_id)
+                    try:
+                        kind, number = parse_display_id(item_id)
+                    except ValueError:
+                        raise Refused(
+                            HTTPStatus.NOT_FOUND, "No such board item", code="not_found"
+                        ) from None
                     if kind != resource[:-1]:
                         raise Refused(
-                            HTTPStatus.BAD_REQUEST, "Item ID does not match the board resource"
+                            HTTPStatus.NOT_FOUND,
+                            "Item ID does not match the board resource",
+                            code="not_found",
                         )
                     rows = store.q(
                         f"SELECT *, {revision_sql} FROM {spec.table} WHERE id = ?",
@@ -1315,6 +1350,7 @@ class SeamServer:
                     HTTPStatus.CONFLICT,
                     f"context.{field} differs from this session; open a new session",
                     kind="scope_mismatch",
+                    code="forbidden",
                 )
             if expected is not None and (field != "scope" or "scope" in declared):
                 block[field] = expected
@@ -1475,18 +1511,21 @@ class _Handler(BaseHTTPRequestHandler):
         elif isinstance(error, ValueError):
             status = HTTPStatus.BAD_REQUEST
             body = {"ok": False, "error": str(error), "problems": []}
+        elif isinstance(error, IdReused):
+            status = HTTPStatus.CONFLICT
+            body = {
+                "ok": False,
+                "error": str(error),
+                "problems": list(error.problems),
+                "code": "id_reused",
+            }
         elif isinstance(error, StoreError):
             status = HTTPStatus.NOT_FOUND if isinstance(error, NotFound) else HTTPStatus.BAD_REQUEST
             body = {"ok": False, "error": str(error), "problems": list(error.problems)}
         else:
             log.exception("request failed: %s %s", self.command, self.path)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
-            body = {
-                "ok": False,
-                "error": f"{type(error).__name__}: {error}",
-                "problems": [],
-                "traceback": traceback.format_exc()[-2000:],
-            }
+            body = {"ok": False, "error": "Internal server error", "problems": []}
         if record is not None:
             phrase = HTTPStatus(status).phrase.lower().replace(" ", "_")
             record(status, reason=body.get("kind") or body.get("code") or phrase)
