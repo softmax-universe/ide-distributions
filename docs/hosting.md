@@ -211,7 +211,7 @@ then exits and the normal container restart policy replaces that runtime; a fres
 clears the obligation before HTTP admission opens. Later chat inputs can then proceed. Release requests stop the recorded worker, then clear ownership and reservation;
 exhausted worker recovery records a failed Task for normal Orchestrator review.
 The stronger lifecycle v2 and descendant/delivery guarantees remain a separate future design.
-Merging changes here triggers `.github/workflows/release-hermes.yml` and the hosted image release.
+Merging changes here triggers `.github/workflows/release-hermes.yml` and the beta image release.
 
 Recovery frequency is available as `runtime_recovery_count` in `/status` and `research watcher status`.
 The image emits a typed `workspace_runtime_recovery` event before recycling, with workspace and boot IDs.
@@ -333,10 +333,19 @@ untouched and the workspace is paused until the matching release runs again.
 
 ## Releases
 
-A push to `main` touching the paths in `.github/workflows/release-hermes.yml` (what the image holds)
-dispatches Metta's image release, unless the last nightly read-only platform check (`research
-platform check --read-only`) failed. Metta's `deploy-hermes-agent.yml` builds `image/Dockerfile`,
-runs `image/system_tests/start-stop.sh`, publishes the digest and dispatches its qualification job.
+Pull requests target `beta`, the default branch. A push to `beta` or `main` touching the paths in
+`.github/workflows/release-hermes.yml` (what the image holds) dispatches Metta's image release for
+the `beta` or `stable` channel, unless the last nightly read-only platform check (`research
+platform check --read-only`) failed. Team members opt their workspace into beta from softmax.com.
+
+`main` moves only through the `Promote beta to stable` workflow (`promote-stable.yml`). It
+fast-forwards `main` to a beta commit (default: the newest with a successful beta release) and
+refuses a commit beta did not release or one that is not a fast-forward. The stable release then
+reuses beta's `distribution-<sha>` image. A hotfix lands on `beta` like any change, then is
+promoted once beta has released it; there is no stable-only path.
+
+Metta's `deploy-hermes-agent.yml` builds `image/Dockerfile` and runs `image/system_tests/start-stop.sh`
+(both skipped when the commit's image exists), publishes the digest and dispatches the channel's qualification job.
 None of these sends a model request. The acceptance scenario ("submit the starter as my champion" on
 a new workspace ends in a submission) runs scripted, with no model, as a pull request check
 (`core/tests/scenarios/test_seam_end_to_end.py`); its real-gateway form needs a model key, so it

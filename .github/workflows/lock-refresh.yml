@@ -1,6 +1,6 @@
 # Refresh the platform client pins daily (design H "CLI freshness"): nothing else refreshes
 # uv.lock, so the profiles would otherwise run an ageing coworld and softmax-cli. The pull
-# request merges on green CI, which releases the hosted image.
+# request targets the default branch (beta) and merges on green CI, which releases the beta image.
 name: Refresh the platform CLI lock
 
 on:

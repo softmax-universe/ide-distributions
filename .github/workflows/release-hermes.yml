@@ -2,7 +2,7 @@ name: Release hosted Hermes image
 
 on:
   push:
-    branches: [main]
+    branches: [main, beta]
     paths:
       - "image/**"
       - ".dockerignore"
@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   dispatch:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -29,10 +29,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "started_at=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at)" >> "$GITHUB_OUTPUT"
-          # Only nightly runs on main count: a run on a branch (for example a rejected
-          # workflow file on a pull request) must not block a release.
+          # Only nightly runs count: a run on a branch (for example a rejected workflow file on a
+          # pull request) must not block a release. Schedules run on the default branch, so the
+          # event filter alone selects them whichever branch is the default.
           conclusion=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow platform-check.yml \
-            --branch main --event schedule --status completed --limit 1 \
+            --event schedule --status completed --limit 1 \
             --json conclusion --jq '.[0].conclusion // "none"')
           echo "last nightly platform check: $conclusion"
           if [ "$conclusion" = "failure" ]; then
@@ -44,6 +45,8 @@ jobs:
           GH_TOKEN: ${{ secrets.METTA_RELEASE_DISPATCH_TOKEN }}
           SOURCE_REVISION: ${{ github.sha }}
           RELEASE_STARTED_AT: ${{ steps.origin.outputs.started_at }}
+          CHANNEL: ${{ github.ref_name == 'main' && 'stable' || 'beta' }}
         run: >-
           gh workflow run deploy-hermes-agent.yml --repo softmax-universe/softmax --ref main
           -f "source_revision=$SOURCE_REVISION" -f "release_started_at=$RELEASE_STARTED_AT"
+          -f "channel=$CHANNEL"
