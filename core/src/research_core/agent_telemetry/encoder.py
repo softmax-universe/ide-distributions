@@ -89,10 +89,11 @@ class _Objects:
             self.made.setdefault(obj.digest, obj)
         return obj.digest
 
-    def add_value(self, raw: Any, make: Callable[[], ContentObject]) -> str:
-        """``make`` redacts and encodes ``raw``. ``raw`` may hold text that UTF-8 cannot encode."""
+    def add_value(self, raw: Any, make: Callable[[], ContentObject], text: bool = False) -> str:
+        """``make`` redacts and encodes ``raw``, as text when ``text``, so the same string stored
+        as text and as JSON has two digests. ``raw`` may hold text that UTF-8 cannot encode."""
         key = hashlib.sha256(
-            json.dumps(raw, sort_keys=True, separators=(",", ":")).encode("ascii")
+            json.dumps([text, raw], sort_keys=True, separators=(",", ":")).encode("ascii")
         ).digest()
         # Text seen earlier in this request, or sent before, is not redacted again.
         digest = self.seen.get(key) or self._known.get(key) or self.add(make())
@@ -243,6 +244,7 @@ class RecordEncoder:
             name: objects.add_value(
                 value,
                 partial(self._text_object if isinstance(value, str) else self._json_object, value),
+                text=isinstance(value, str),
             )
             for name, value in payload["content"].items()
         }
@@ -252,7 +254,8 @@ class RecordEncoder:
         base = self._base(occurred_at)
         self._emit([rec.operation_record(base, event_id, action, stage, fields, refs)])
         self._sent.update(objects.made)
-        self._redacted.update(objects.seen)
+        # Requests fill ``_redacted``, which an operation only reads, so that every distinct log
+        # or error text does not grow it.
 
     def _write_context_parts(self, payload: Mapping[str, Any], occurred_at: str) -> None:
         """Say where each part sits in the redacted target. A reader counts what no part covers.

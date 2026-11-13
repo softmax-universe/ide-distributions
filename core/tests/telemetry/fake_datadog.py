@@ -134,6 +134,8 @@ class FakeDatadog:
         self.status = "done"
         self.warnings: list[dict[str, str]] | None = None
         self.brokers: list[ThreadingHTTPServer] = []
+        # A hosted session's agent proxy adds the token to what goes to the broker.
+        self.agent_proxy_adds_token = False
         datadog = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -268,7 +270,10 @@ class FakeDatadog:
     def _proxy(self, path: str, headers: Any, request: dict[str, Any]) -> tuple[int, Any]:
         if path != "/proxy":
             return 404, {"detail": "Not Found"}
-        if headers.get("Authorization") != "Bearer tbk_test":
+        authorization = headers.get("Authorization")
+        if authorization is None and self.agent_proxy_adds_token:
+            authorization = "Bearer tbk_test"
+        if authorization != "Bearer tbk_test":
             return 401, {"detail": "invalid token"}
         if request.get("scope") != "datadog.content.read" or request.get("method") != "POST":
             return 403, {"detail": "method_not_allowed_for_scope"}

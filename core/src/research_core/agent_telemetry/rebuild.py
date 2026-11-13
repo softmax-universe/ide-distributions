@@ -601,7 +601,7 @@ def _rows(finder: _Finder, operations: list[dict], requests: list[dict]) -> list
         if record["action"] != "message":
             continue
         row_id = record.get("hermes_message_id")
-        entry = {**record, "hermes_message_id": row_id}
+        entry = dict(record)
         call = record.get("tool_call_id")
         result = results.get(row_id) or results.get((_scope(record), call))
         key = ("row", row_id) if ("row", row_id) in first else ("call", call)

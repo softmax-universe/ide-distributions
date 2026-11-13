@@ -133,20 +133,12 @@ def bind(
     writer: Writer,
     call_ids: Callable[[], Mapping[str, str | None]] = dict,
 ) -> None:
-    """Make ``writer`` this process's writer, from now until ``unbind``."""
+    """Make ``writer`` this process's writer, until another is bound."""
     from research_core.store import db
 
     global _binding
     _binding = _Binding(writer, call_ids)
     db.observe_commits(observe_commit)
-
-
-def unbind(writer: Writer) -> None:
-    """Stop using ``writer``. Does nothing if another writer has been bound since. The store keeps
-    calling ``observe_commit``, which does nothing while no writer is bound."""
-    global _binding
-    if _binding is not None and _binding.writer is writer:
-        _binding = None
 
 
 def bind_command(
