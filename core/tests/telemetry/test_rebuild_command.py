@@ -1282,9 +1282,11 @@ def test_an_attempt_ends_with_a_reply_a_failure_or_unread_and_not_a_partial_repl
 
 def test_a_reply_whose_request_was_lost_is_named(writer, stream_file, datadog):
     """A reply, a failure and a broken stream's partial reply of attempts whose request records
-    never arrived are neither requests nor events, so the report names them."""
+    never arrived are no requests. The report names them, and keeps each among the events with
+    its text."""
     ids = {"session_id": "ses_1", "otel_trace_id": "trace_1"}
-    writer.capture_response({"role": "assistant", "content": "hi"}, model_attempt_id="a1", **ids)
+    reply = {"role": "assistant", "content": "the reply that survived"}
+    writer.capture_response(reply, model_attempt_id="a1", **ids)
     writer.capture_operation("model_attempt", "failed", model_attempt_id="a2", **ids)
     partial = {"role": "assistant", "content": "h"}
     writer.capture_response(partial, model_attempt_id="a3", partial=True, **ids)
@@ -1296,6 +1298,11 @@ def test_a_reply_whose_request_was_lost_is_named(writer, stream_file, datadog):
         {"kind": "reply_with_no_request", "model_attempt_id": attempt}
         for attempt in ("a1", "a2", "a3")
     ]
+    kept = {event["model_attempt_id"]: event for event in report["events"]}
+    assert sorted(kept) == ["a1", "a2", "a3"]
+    assert kept["a1"]["stage"] == "response" and kept["a2"]["stage"] == "failed"
+    assert "the reply that survived" in kept["a1"]["message"]
+    assert kept["a3"]["partial"] is True
 
 
 @pytest.mark.parametrize(
