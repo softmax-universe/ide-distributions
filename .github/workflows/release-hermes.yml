@@ -12,6 +12,9 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/release-hermes.yml"
+  # Creating beta from main changes no files, so the push above does not fire; release it on creation
+  # so beta starts on main's image.
+  create:
   workflow_dispatch:
 
 permissions:
@@ -19,6 +22,7 @@ permissions:
 
 jobs:
   dispatch:
+    # A create event fires for every new branch and tag; only main and beta release.
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta'
     runs-on: ubuntu-latest
     timeout-minutes: 2
