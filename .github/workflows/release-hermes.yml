@@ -29,11 +29,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "started_at=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at)" >> "$GITHUB_OUTPUT"
-          # Only nightly runs count: a run on a branch (for example a rejected workflow file on a
-          # pull request) must not block a release. Schedules run on the default branch, so the
-          # event filter alone selects them whichever branch is the default.
+          # Only nightly runs on main count: a run on a branch (for example a rejected
+          # workflow file on a pull request) must not block a release.
           conclusion=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow platform-check.yml \
-            --event schedule --status completed --limit 1 \
+            --branch main --event schedule --status completed --limit 1 \
             --json conclusion --jq '.[0].conclusion // "none"')
           echo "last nightly platform check: $conclusion"
           if [ "$conclusion" = "failure" ]; then
