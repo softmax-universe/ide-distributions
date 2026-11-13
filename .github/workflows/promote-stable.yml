@@ -1,19 +1,18 @@
-# Promote a beta commit to stable. `main` only ever fast-forwards to a beta commit whose image the
-# beta channel already released; the push to main then runs release-hermes.yml with
-# channel=stable, which reuses the existing distribution-<sha> image instead of rebuilding.
+# Promote a beta commit to stable by fast-forwarding `main` to it. The push to main runs
+# release-hermes.yml with channel=stable; stable's own canary decides whether the stable pointer
+# moves, exactly as it does for beta. A commit beta already built reuses its distribution-<sha> image.
 name: Promote beta to stable
 
 on:
   workflow_dispatch:
     inputs:
       revision:
-        description: Beta commit to promote. Empty promotes the newest commit with a successful beta release.
+        description: Beta commit to promote. Empty promotes the head of beta.
         required: false
         type: string
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
   group: promote-stable
@@ -30,21 +29,12 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.STABLE_PROMOTION_TOKEN }}
-      - name: Promote a beta-released commit to main
+      - name: Fast-forward main to a beta commit
         env:
-          GH_TOKEN: ${{ github.token }}
           REQUESTED: ${{ inputs.revision }}
         run: |
           set -euo pipefail
-          if [ -z "$REQUESTED" ]; then
-            REQUESTED=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-hermes.yml \
-              --branch beta --status success --limit 1 --json headSha --jq '.[0].headSha // ""')
-            if [ -z "$REQUESTED" ]; then
-              echo "::error::no successful beta release exists to promote"
-              exit 1
-            fi
-          fi
-          revision=$(git rev-parse --verify "$REQUESTED^{commit}")
+          revision=$(git rev-parse --verify "${REQUESTED:-origin/beta}^{commit}")
           echo "revision: $revision"
 
           if ! git merge-base --is-ancestor "$revision" origin/beta; then
@@ -58,18 +48,6 @@ jobs:
           if [ "$(git rev-parse origin/main)" = "$revision" ]; then
             echo "main is already at $revision"
             exit 0
-          fi
-
-          # Evidence that beta released this exact commit: release-hermes.yml succeeded for it on
-          # beta. That run only dispatches Metta's release; build, canary qualification and
-          # promotion finish asynchronously in Metta, so they cannot be checked here. Metta keeps
-          # a beta history and refuses to move an opted-out workspace to an image beta never
-          # promoted.
-          released=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release-hermes.yml \
-            --branch beta --commit "$revision" --status success --limit 1 --json headSha --jq 'length')
-          if [ "$released" = 0 ]; then
-            echo "::error::no successful beta release ran for $revision; promote a commit beta released"
-            exit 1
           fi
 
           git push origin "$revision:refs/heads/main"
