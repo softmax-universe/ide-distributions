@@ -128,7 +128,7 @@ characters only.
 | `chunk_gap` | Entries exist, but no sending of the object supplied these chunks: `missing_chunks` names them |
 | `digest_failure` | The joined chunks do not match the digest or size |
 | `row_without_text` | A committed row that no request lists and whose own text is unknown: its commit text or a tool row's result was lost, or two results with no row ID share its call ID |
-| `call_with_no_attempt` | A call started and no attempt was written: its request record was dropped or lost |
+| `call_with_no_attempt` | A call started more times than attempts of it were written: a request record, of its first attempt or of a retry (a retry keeps the call's `api_request_id`), was dropped or lost |
 | `reply_with_no_request` | A reply, failure or partial reply names an attempt whose request record is lost. One dropped oversized request shows as this and `call_with_no_attempt`: one loss, not two |
 | `manifest_mismatch` | A request's manifest chain lists `messages_listed` messages, not the `message_count` its manifest says, so the request is not rebuilt |
 | `no_request_manifest` | A request record names no manifest, so the request is not rebuilt |

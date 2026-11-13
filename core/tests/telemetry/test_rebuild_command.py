@@ -243,8 +243,11 @@ def test_tokens_are_shared_by_characters(writer, stream_file, datadog):
 
 def test_paging_and_a_rate_limit(writer, stream_file, datadog):
     bodies = two_requests(writer)
-    for number in range(1200):
+    # More than one 5000-line page, written in steps the writer's 4096-item queue can hold.
+    for number in range(5200):
         writer.capture_operation("turn", "ended", session_id="ses_1", details={"number": number})
+        if number % 1000 == 999:
+            assert processed(writer)
     sent(writer, stream_file, datadog)
     datadog.rate_limit_next = 2
     waits = []
@@ -261,7 +264,7 @@ def test_paging_and_a_rate_limit(writer, stream_file, datadog):
     span = datetime.fromisoformat(end) - datetime.fromisoformat(start)
     assert span == timedelta(days=15)
     assert any(search["page"].get("cursor") for search in datadog.searches)
-    assert len(report["events"]) == 1200
+    assert len(report["events"]) == 5200
     assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
 
 
@@ -433,6 +436,27 @@ def test_a_call_with_no_attempt_is_named(writer, stream_file, datadog):
     )
     sent(writer, stream_file, datadog)
     report = rebuild_session(search_of(datadog), "ses_1")
+    assert report["missing"] == [{"kind": "call_with_no_attempt", "api_request_id": "t:api:1"}]
+
+
+def test_a_lost_request_of_a_retried_call_is_named(writer, stream_file, datadog, home):
+    """Hermes retries a call under its one ``api_request_id``, and each attempt starts its own
+    ``model_request`` / ``started``. The first attempt's request record does not cover the
+    second's."""
+    capture = GatewayCapture(writer, "researcher", lambda *_: {})
+    request = request_body([{"role": "user", "content": "Go"}])
+    for retry in (0, 1):
+        capture.keep_request(request=request, session_id="ses_1")
+        capture.pre_api_request(session_id="ses_1", api_request_id="t:api:1", retry_count=retry)
+    assert processed(writer)
+    retried = {"stage": "request", "model_attempt_id": "t:api:1#2"}
+    lines = [
+        line for line in raw_lines(stream_file) if not retried.items() <= json.loads(line).items()
+    ]
+    datadog.take_lines(lines)
+
+    report = rebuild_session(search_of(datadog), "ses_1")
+    assert [r["model_attempt_id"] for r in report["requests"]] == ["t:api:1#1"]
     assert report["missing"] == [{"kind": "call_with_no_attempt", "api_request_id": "t:api:1"}]
 
 

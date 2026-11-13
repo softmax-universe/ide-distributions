@@ -45,7 +45,8 @@ class JsonLines(logging.Formatter):
     ``status`` becomes the log's status, so a warning on stderr is no longer an error, and a
     traceback stays inside its record's ``message`` instead of arriving as one log per line.
     Fields a caller passes as ``extra={"attributes": {...}}`` become top-level fields. The
-    message goes through ``redact``.
+    message and each string field go through ``redact``, because a field can hold what the model
+    chose, such as a tool name or call ID.
     """
 
     def __init__(self, redact: Callable[[str], str]) -> None:
@@ -54,10 +55,11 @@ class JsonLines(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         created = datetime.fromtimestamp(record.created, UTC)
+        attributes = getattr(record, "attributes", {})
         return json.dumps(
             {
                 # First, so a caller's field cannot replace the redacted message or the status.
-                **getattr(record, "attributes", {}),
+                **{k: self.redact(v) if isinstance(v, str) else v for k, v in attributes.items()},
                 "timestamp": created.isoformat(timespec="milliseconds"),
                 "status": record.levelname.lower(),
                 "logger.name": record.name,
@@ -149,16 +151,18 @@ def configure_logging() -> None:
 
 def tracer() -> trace.Tracer:
     global _provider
+    if _provider is not None:
+        return _provider.get_tracer("research_core")
     with _lock:
         if _provider is None:
             if os.environ.get("OTEL_SDK_DISABLED", "").strip().lower() == "true":
                 # The long-lived native caller records the complete subprocess tool call.
                 # A one-shot command must not start exporters or flush them at exit.
-                _provider = trace.NoOpTracerProvider()
+                provider: TracerProvider | trace.NoOpTracerProvider = trace.NoOpTracerProvider()
             else:
                 try:
                     configure_logging()
-                    _provider = TracerProvider(
+                    provider = TracerProvider(
                         shutdown_on_exit=False,
                         resource=OTELResourceDetector()
                         .detect()
@@ -180,7 +184,7 @@ def tracer() -> trace.Tracer:
                             )
                         ),
                     )
-                    _provider.add_span_processor(
+                    provider.add_span_processor(
                         BatchSpanProcessor(
                             ConsoleSpanExporter(
                                 out=sys.stderr,
@@ -191,17 +195,19 @@ def tracer() -> trace.Tracer:
                 except Exception:
                     # Configuration/SDK failure disables tracing, never application work.
                     # Do not report through a synchronous log handler on this path.
-                    _provider = trace.NoOpTracerProvider()
+                    provider = trace.NoOpTracerProvider()
                 if "OTEL_EXPORTER_OTLP_ENDPOINT" in os.environ or (
                     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" in os.environ
                 ):
                     try:
-                        if isinstance(_provider, TracerProvider):
-                            _provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+                        if isinstance(provider, TracerProvider):
+                            provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
                     except Exception:
                         # Keep console diagnostics when only the remote exporter is invalid.
                         pass
-                trace.set_tracer_provider(_provider)
+                trace.set_tracer_provider(provider)
+            # Published only once configured, so a caller may read it without the lock.
+            _provider = provider
         return _provider.get_tracer("research_core")
 
 

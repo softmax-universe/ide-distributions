@@ -151,12 +151,18 @@ def test_both_tool_boundaries_name_the_same_call_and_only_a_short_error_class(
     assert statuses == ["warning", "warning", "info", "warning", "warning"]
 
 
-def test_a_callers_attributes_cannot_replace_the_redacted_message():
+def test_a_callers_attributes_are_redacted_and_cannot_replace_the_message():
     record = logging.LogRecord("x", logging.INFO, __file__, 1, "token secret", None, None)
-    record.attributes = {"message": "secret", "status": "error", "duration_s": 1.5}
+    record.attributes = {
+        "message": "secret",
+        "status": "error",
+        "duration_s": 1.5,
+        "gen_ai.tool.name": "a secret tool",
+    }
     formatter = telemetry.JsonLines(lambda text: text.replace("secret", "***"))
     line = json.loads(formatter.format(record))
     assert (line["message"], line["status"], line["duration_s"]) == ("token ***", "info", 1.5)
+    assert line["gen_ai.tool.name"] == "a *** tool"
 
 
 def test_a_failed_tools_text_that_only_looks_like_json_stays_a_tool_error():
