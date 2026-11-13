@@ -16,6 +16,8 @@ import urllib.error
 import urllib.request
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator
+from itertools import groupby
+from operator import itemgetter
 from typing import Any
 
 from research_core.agent_telemetry.encoder import message_text
@@ -47,30 +49,24 @@ class IncompleteSearch(Exception):
     warnings, so what it returned may be partial."""
 
 
-class LogsSearch:
+class LogsSearchBase:
     """Logs search over the Standard indexes. It waits out a 429 for as long as Datadog says.
+    ``LogsSearch`` and ``BrokerLogsSearch`` say how a search is sent.
 
     The time window is fixed when this is made, one per rebuild, and every search and page uses
     it: Datadog warns that a relative window such as ``now-15d`` can miss results across pages.
     """
 
-    page_limit = PAGE_LIMIT
+    page_limit: int
 
-    def __init__(
-        self, url: str, api_key: str, app_key: str, sleep: Callable[[float], None] = time.sleep
-    ) -> None:
-        self._url = url.rstrip("/") + SEARCH_PATH
-        self._keys = {"DD-API-KEY": api_key, "DD-APPLICATION-KEY": app_key}
+    def __init__(self, sleep: Callable[[float], None]) -> None:
         self._sleep = sleep
         now = time.time()
         self._window = {"from": format_time(now - SEARCH_WINDOW_S), "to": format_time(now)}
 
     def _send(self, body: dict[str, Any]) -> dict[str, Any]:
         """One search. Datadog's error answer raises ``HTTPError``."""
-        headers = {"Content-Type": "application/json", **self._keys}
-        request = urllib.request.Request(self._url, json.dumps(body).encode(), headers)
-        with urllib.request.urlopen(request, timeout=120) as response:
-            return json.load(response)
+        raise NotImplementedError
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         while True:
@@ -83,10 +79,9 @@ class LogsSearch:
 
     def entries(self, query: str) -> Iterator[dict[str, Any]]:
         """Each log entry's own fields, which Datadog nests under ``attributes.attributes``."""
-        window = {**self._window, "storage_tier": "indexes"}
+        filters = {"query": query, **self._window, "storage_tier": "indexes"}
         page: dict[str, Any] = {"limit": self.page_limit}
         while True:
-            filters = {"query": query, **window}
             answer = self._post({"filter": filters, "page": page, "sort": "timestamp"})
             meta = answer.get("meta") or {}
             status = meta.get("status")
@@ -103,7 +98,26 @@ class LogsSearch:
                 return
 
 
-class BrokerLogsSearch(LogsSearch):
+class LogsSearch(LogsSearchBase):
+    """The search sent to Datadog with its two keys."""
+
+    page_limit = PAGE_LIMIT
+
+    def __init__(
+        self, url: str, api_key: str, app_key: str, sleep: Callable[[float], None] = time.sleep
+    ) -> None:
+        super().__init__(sleep)
+        self._url = url.rstrip("/") + SEARCH_PATH
+        self._keys = {"DD-API-KEY": api_key, "DD-APPLICATION-KEY": app_key}
+
+    def _send(self, body: dict[str, Any]) -> dict[str, Any]:
+        headers = {"Content-Type": "application/json", **self._keys}
+        request = urllib.request.Request(self._url, json.dumps(body).encode(), headers)
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return json.load(response)
+
+
+class BrokerLogsSearch(LogsSearchBase):
     """The same search through the Softmax token broker's ``POST /proxy``, which adds the
     ``datadog.content.read`` keys itself and never hands them out. Metta's
     ``docs/specs/0156-broker-http-proxy.md`` defines the request and the answer.
@@ -122,7 +136,7 @@ class BrokerLogsSearch(LogsSearch):
         session_id: str,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        super().__init__("", "", "", sleep)  # No Datadog keys: the broker adds them.
+        super().__init__(sleep)
         self._url = broker_url.rstrip("/") + "/proxy"
         # A hosted session's agent proxy adds the token to what it sends to the broker.
         self._headers = {"Content-Type": "application/json"}
@@ -170,7 +184,7 @@ def _any_of(field: str, values: Iterable[str]) -> str:
     return f"@{field}:(" + " OR ".join(_quoted(value) for value in values) + ")"
 
 
-def _batches(values: Iterable[str]) -> Iterator[list[str]]:
+def _batches(values: Iterable[Any]) -> Iterator[list[Any]]:
     ordered = sorted(values)
     for start in range(0, len(ordered), VALUES_PER_SEARCH):
         yield ordered[start : start + VALUES_PER_SEARCH]
@@ -193,7 +207,7 @@ class _Finder:
     """What has been found so far: records by ``event_id``, chunks by digest and index. These keys
     are what drops duplicates. ``missing`` holds what could not be read, by digest."""
 
-    def __init__(self, search: LogsSearch, session_id: str, workspace: str | None) -> None:
+    def __init__(self, search: LogsSearchBase, session_id: str, workspace: str | None) -> None:
         self.search = search
         self.session_ids = {session_id}
         self.workspaces = {workspace} if workspace else set()
@@ -202,8 +216,6 @@ class _Finder:
         self.objects: dict[str, bytes | None] = {EMPTY_DIGEST: b""}
         self.parsed: dict[str, Any] = {}
         self.missing: dict[str, list[dict[str, Any]]] = {}
-        # The characters of each tool schema, which every request of a process lists again.
-        self.tool_chars: dict[str, int] = {}
 
     def _find(self, condition: str) -> None:
         scope = _any_of("workspace_id", sorted(self.workspaces)) if self.workspaces else ""
@@ -240,19 +252,21 @@ class _Finder:
         # their trace (retained for 15 days) names its run instead. A record with a Session ID
         # was found above if it is this Session's, and ``owned`` drops it otherwise. A record
         # found by one link can name another, so the searches repeat until none finds a new value.
+        # Each round is one search of all three fields, batched by the number of values.
         links = ("admission_id", "otel_trace_id", "run_id")
-        linked: dict[str, set[str]] = {field: set() for field in links}
+        linked: set[tuple[str, str]] = set()
         while True:
-            found = False
-            for field in links:
-                values = {r[field] for r in self.records.values() if self.owned(r) and field in r}
-                new = values - linked[field]
-                linked[field] |= new
-                found = found or bool(new)
-                for batch in _batches(new):
-                    self._find(f"{_any_of(field, batch)} -@session_id:*")
-            if not found:
+            owned = [record for record in self.records.values() if self.owned(record)]
+            new = {(f, r[f]) for r in owned for f in links if f in r} - linked
+            if not new:
                 return
+            linked |= new
+            for batch in _batches(new):
+                terms = [
+                    _any_of(field, [value for _, value in pairs])
+                    for field, pairs in groupby(batch, key=itemgetter(0))
+                ]
+                self._find("(" + " OR ".join(terms) + ") -@session_id:*")
 
     def owned(self, record: dict[str, Any]) -> bool:
         """A record with another Session's ID came here by a link, and is not this Session's."""
@@ -426,9 +440,7 @@ def _source_chars(finder: _Finder, manifest: dict, request: dict, places: dict) 
                 arguments = (call.get("function") or {}).get("arguments")
                 chars["tool_call_arguments"] += len(arguments or "")
     for tool in (finder.json(manifest.get("tool_list_digest")) or {}).get("tools", ()):
-        if tool not in finder.tool_chars:
-            finder.tool_chars[tool] = len(finder.text(tool) or "")
-        chars["tool_schemas"] += finder.tool_chars[tool]
+        chars["tool_schemas"] += len(finder.text(tool) or "")
     return {source: count for source, count in chars.items() if count}
 
 
@@ -643,7 +655,7 @@ def _rows(finder: _Finder, operations: list[dict], requests: list[dict]) -> list
     return rows
 
 
-def rebuild_session(search: LogsSearch, session_id: str, workspace: str | None = None) -> dict:
+def rebuild_session(search: LogsSearchBase, session_id: str, workspace: str | None = None) -> dict:
     """The whole report. Raises ``AmbiguousSession`` when no one workspace can be chosen."""
     finder = _Finder(search, session_id, workspace)
     finder.find_session()
@@ -677,14 +689,18 @@ def rebuild_session(search: LogsSearch, session_id: str, workspace: str | None =
     for call, starts in started.items():
         if attempted[call] < starts:
             finder.missing[call] = [{"kind": "call_with_no_attempt", "api_request_id": call}]
+    # An attempt's records are under its request. Those of a lost request stay among the events,
+    # so what survives of them is printed.
+    in_requests = {request["model_attempt_id"] for request in requests}
     events = [
         _with_text(finder, record)
         for record in operations
-        if record["action"] not in ("tool", "message") and not _of_attempt(record)
+        if record["action"] not in ("tool", "message")
+        and not (_of_attempt(record) and record["model_attempt_id"] in in_requests)
     ]
     # ``unended``: no record says how these ended, as after a kill, a cancel (Hermes's interrupt
-    # fires no hook), or a call still running. None of these is a loss, so they stay out of
-    # ``missing``.
+    # fires no hook), a call still running, or a reply record that a full queue dropped or that was
+    # lost on the way. Nothing tells these apart, so they stay out of ``missing``.
     return {
         "session_id": session_id,
         # None when no record is this Session's, even for a workspace named with ``--workspace``.

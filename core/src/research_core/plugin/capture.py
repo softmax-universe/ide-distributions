@@ -578,8 +578,14 @@ class GatewayCapture:
             aux_task, started_at, session_id, starting=True
         )
         identity = {key: value for key, value in ids.items() if key != "session_id"}
+        # Over its 50,000-character hook cap Hermes passes ``{"_truncated": True, "original_type",
+        # "preview"}`` with no ``body``, and that is kept as the request. A Responses-API body has
+        # ``input`` and no ``messages``. Either way the writer needs a list of messages.
+        handed = request or {}
+        wire = wire_request(handed.get("body", handed) or {})
+        wire["messages"] = wire.get("messages") or []
         self._writer.capture_request(
-            wire_request((request or {}).get("body") or {}),
+            wire,
             session_id=session,
             model_attempt_id=attempt_id,
             provider=provider or "unknown",

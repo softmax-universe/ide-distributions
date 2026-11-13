@@ -473,6 +473,24 @@ def test_auxiliary_calls_outside_a_turn_and_those_without_a_reply(capture, write
     assert _operations(records, "model_attempt", "unread")[0]["outcome"] == "streamed"
 
 
+def test_an_auxiliary_request_over_hermess_cap_or_without_messages_is_kept(
+    capture, writer, stream_file
+):
+    """Hermes's ``_sanitize_hook_payload`` replaces a request over 50,000 characters with a
+    preview and no ``body``. A Responses-API body names ``input`` in place of ``messages``."""
+    capped = {"_truncated": True, "original_type": "dict", "preview": '{"method": "POST", "bo'}
+    capture.pre_auxiliary_call(aux_task="compression", request=capped, started_at=STARTED)
+    responses = {"model": "m", "input": "Summarize the notes"}
+    capture.pre_auxiliary_call(
+        aux_task="title", request={"method": "POST", "body": responses}, started_at=STARTED + 1
+    )
+    records = _flushed(writer, stream_file)
+    assert len(_operations(records, "model_attempt", "request")) == 2
+    stored = b"".join(objects_of(records).values())
+    assert b'"preview":"{\\"method\\": \\"POST\\", \\"bo"' in stored
+    assert b'"input":"Summarize the notes"' in stored
+
+
 def test_approvals_are_recorded_with_their_text_redacted(capture, writer, stream_file):
     command = f"curl -H 'key: {HERMES_STYLE_SECRET}' example.com"
     capture.pre_approval_request(

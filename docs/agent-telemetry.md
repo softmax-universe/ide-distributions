@@ -68,11 +68,8 @@ each lost nothing with no wait, one run each. A line is searchable 12 to 27 seco
 ## Read a Session
 
 The content sits in service `ide-agent-telemetry`, in Datadog's `main` index, and a Restricted Dataset
-selects it. On 2026-11-05 at 17:28 Pacific a freshly written test line, sent straight to Datadog's intake
-rather than through a pod's stream, was read by `datadog.content.read` (1 line) and not by `datadog.read`
-(0 lines). Metta #30918 removed the separate index, and the `datadog` stack reports no changes. On
-2026-11-08 lines from real pods' streams were checked the same way: `datadog.content.read` reads them and
-`datadog.read` gets 0 results. From `core/` in a checkout of this repository:
+selects it, so only the token broker's `datadog.content.read` reads it ("Proof and cost" says how that
+was checked). From `core/` in a checkout of this repository:
 
 ```bash
 uv run research telemetry rebuild --session <session id> > session.json
@@ -88,13 +85,9 @@ Session <id>`. When `DD_API_KEY` and `DD_APP_KEY` are both set, it uses them and
 instead.
 
 Through the broker a page is 100 rows, and with the keys 5,000, Datadog's largest. The broker refuses an
-answer over 2 MB (502 `upstream_response_too_large`). On 2026-11-13 a row of a real search was the
-line's fields plus 1,937 to 2,057 bytes of envelope (2,724 to 3,754 bytes a row on average), and Datadog
-writes `&`, `<` and `>` as six-byte escapes. A line is at most 4,096 bytes, so 100 rows fit in 2 MB even
-when about 3,000 characters of each line are escaped. The broker waits at most 25 seconds for Datadog. A
-search of 1,500 digests (105,000 characters) over the 15 days took 0.5 to 1.5 seconds. A rebuild through
-the broker took 8 seconds for a Session of 9 requests and 4 minutes 14 seconds for one of 286 requests and
-3,462 events, on 2026-11-13.
+answer over 2 MB (502 `upstream_response_too_large`), and a row is a line of at most 4,096 bytes plus
+Datadog's envelope and escapes, so 100 rows fit with room to spare ("Proof and cost" has the
+measurements).
 
 Add `--workspace <id>` if the command says several workspaces hold that ID. `--session` takes any ID of
 the Session, first or after compaction. The command needs only the broker token, or `DD_API_KEY` and
@@ -113,14 +106,14 @@ each reference's name:
 - `requests`: each model request in wire order, whole, with `response`, `failed` or `unread` (the record
   of how the attempt ended), `partial_responses` (what each broken stream of the attempt had shown),
   `tools` (its tool activity, including each `result`), and `tokens_by_source`.
-- `unended_attempts`: the `model_attempt_id` of each request with no reply, failure or `unread` record (a partial reply is no end, because Hermes can retry the stream): a process killed during the call, a cancel (Hermes's interrupt fires no hook), or a call still running. It is not a loss, so it does not change the exit code.
+- `unended_attempts`: the `model_attempt_id` of each request with no reply, failure or `unread` record (a partial reply is no end, because Hermes can retry the stream): a process killed during the call, a cancel (Hermes's interrupt fires no hook), a call still running, or a reply, failure or `unread` record that a full queue dropped or that was lost on the way. Nothing tells these apart, so it does not change the exit code.
 - `rows`: each committed native row, with `message` as it was first sent and `rewritten_to` if a prune
   later changed it. `message` means "first sent" only when `missing` is empty: if a row's original was
   lost, it shows the first form that survived. A row no request lists never reached a model, such as a
   turn's last reply or the text Hermes's tool guard ends a turn with, or the request that listed it was
   lost. It shows the text its commit recorded, except a tool row, which shows the result recorded for
   it, as Hermes passed it on, and its commit's text only when there is no such result.
-- `events`: admissions, model calls started, a call that failed before any attempt of it was recorded, store events, approvals, lifecycle, compaction, log lines and everything else. Each
+- `events`: admissions, model calls started, a call that failed before any attempt of it was recorded, the reply, failure or partial reply of an attempt whose request was lost (`reply_with_no_request`), store events, approvals, lifecycle, compaction, log lines and everything else. Each
   holds its own IDs, and `CONTRACT.md`, "How to join them", says how they join.
 - `unattached_tools`: tool records that name no request found, by attempt, call or an earlier record
   of the same tool call. A non-empty list usually means a tool's completion record was lost, because a
@@ -186,7 +179,7 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 | A request is the `llm_request` middleware's view: `stream` and `stream_options` are added after it. | `agent/chat_completion_helpers.py`, `_call_chat_completions` |
 | A broken stream keeps the text it showed and its streamed reasoning, not the partial arguments of a tool call it was writing. | `on_stream_end`; `plugin/capture.py` |
 | The provider-billed `cost` is not captured: `post_api_request` passes a token summary without the provider's raw usage. | `agent/api_request_hooks.py`, `_usage_summary_for_api_request_hook` |
-| Auxiliary requests and replies are Hermes's capped hook payloads (`HERMES_PLUGIN_PAYLOAD_MAX_CHARS`, 50,000 characters, 8,000 per string). | `agent/auxiliary_hooks.py` |
+| Auxiliary requests and replies are Hermes's capped hook payloads (`HERMES_PLUGIN_PAYLOAD_MAX_CHARS`, 50,000 characters, 8,000 per string). A request still over the cap comes as `_truncated`, `original_type` and a `preview` of its start, and is recorded as that, with no messages. | `agent/auxiliary_hooks.py` |
 | Prompt sections name SOUL and this plugin's own sections, found by their text. Hermes's guidance, the project's rules and the skill index are unattributed. | `plugin/capture.py`, `_sections` |
 | Committed rows are read from `state.db` on the writer's thread after each turn's end. Rows of a turn that a killed gateway never ended are not recorded (they stay in `state.db`), and a new process records only rows written after it started. Any gateway exit, graceful or not, also loses what the writer still had queued. The read is a deferred job that waits at most 0.5 s for `state.db`, so if it fails (for example "database is locked"), that turn's rows are lost, with only a warning in the gateway's log. | `plugin/capture.py`, `_capture_commits` |
 | A compaction partway through a turn, done in place as the pinned Hermes's `compression.in_place: true` default does, may leave the rows that turn committed before it uncaptured (Hermes archives them as `compacted`, which the turn's read skips) and capture the kept tail twice, as the fresh copies Hermes inserts. Unverified: read from the code only. | `plugin/capture.py`, `_capture_commits`; Hermes `agent/conversation_compression.py` |
@@ -208,6 +201,23 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 `core/tests/hermes/test_rebuild_real.py` runs a real gateway through a real `research serve`, with tool calls, a prune, a restart and a tool-guard halt, feeds every line to a fake Logs search, and compares the rebuild with what a stub model received and each row of `state.db`.
 
 Real Sessions have also been rebuilt from real Datadog. On 2026-11-08 three of James's Sessions rebuilt with exit 0. On 2026-11-12 four Sessions rebuilt byte for byte the same after each review fix, and against their `state.db`, 93 of 94 rows matched. The other row has a trailing newline that was never sent to the model.
+
+Only `datadog.content.read` reads the content. On 2026-11-05 at 17:28 Pacific a freshly written test
+line, sent straight to Datadog's intake rather than through a pod's stream, was read by
+`datadog.content.read` (1 line) and not by `datadog.read` (0 lines). Metta #30918 removed the separate
+index, and the `datadog` stack reports no changes. On 2026-11-08 lines from real pods' streams were
+checked the same way: `datadog.content.read` reads them and `datadog.read` gets 0 results.
+
+Through the broker's proxy, on 2026-11-13, a row of a real search was the line's fields plus 1,937 to
+2,057 bytes of envelope (2,724 to 3,754 bytes a row on average), and Datadog writes `&`, `<` and `>` as
+six-byte escapes. So 100 rows of 4,096-byte lines fit in the broker's 2 MB even when about 3,000
+characters of each line are escaped, and a page of 1,000 rows was refused. The broker waits at most 25
+seconds for Datadog, and a search of 1,500 digests (105,000 characters) over the 15 days took 0.5 to 1.5
+seconds. A rebuild through the broker took 8 seconds for a Session of 9 requests. For one of 286
+requests and 3,462 events it took 3 to 4.5 minutes for 187 searches, nearly all of them pages of 100
+content rows at about 1.2 seconds each. One other run took 34 minutes and ended in a read timeout
+(exit 2), and the cause was not found. The link searches send one search a round for all three fields, and that Session
+needed one, where a search per field had needed three: too few to change the time.
 
 On 2026-11-06, capture added about 4 to 5 ms to a tool cycle at the median, but that was measured on the earlier capture through the former Hermes telemetry patches, and the current unpatched capture has not been measured. On 2026-11-05 a gateway held 386 MiB with capture and 387 without after 100 turns, and an 8 MB request cleared the writer in 1.1 s. On 2026-11-06 a 66 MiB request through the writer alone, with a stand-in for Hermes's scanner, took a process from 88 MiB to a peak of 419 MiB and took 3.9 s to clear. There is no exit flush, so an exit while a request is still clearing loses what is left of it.
 
