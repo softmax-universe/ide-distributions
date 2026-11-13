@@ -2576,7 +2576,13 @@ def test_session_title_preserved_across_open_page_and_state_changed(system):
         restarted = await backend.restart()
         reopened = await call(restarted, "session.open", {"scope": LEAGUE}, request_id=open_id)
         assert reopened["result"]["session"]["id"] == target_id
-        assert reopened["result"]["session"]["title"] == "Named in Hermes"
+        # session.open never waits on Hermes: after a restart the title cache is empty, so the
+        # reply carries the first-message fallback and a read carries Hermes's title.
+        assert reopened["result"]["session"]["title"] == "hi"
+        read = await call(
+            restarted, "state.get", {"resource": "sessions", "id": target_id, "scope": LEAGUE}
+        )
+        assert read["result"]["item"]["title"] == "Named in Hermes"
 
     run(system, scenario)
 

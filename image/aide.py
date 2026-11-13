@@ -1032,8 +1032,13 @@ class Backend:
             requests=[chat_request(r, scope) for r in mine if r.op_id in embedded],
         )
 
-    async def title_sessions(self, sessions: list[Session], requests: list[Admission]) -> None:
-        """Prefer Hermes titles (cached per backend binding) and fall back to first user text."""
+    async def title_sessions(
+        self, sessions: list[Session], requests: list[Admission], *, read_hermes: bool = True
+    ) -> None:
+        """Prefer Hermes titles (cached per backend binding) and fall back to first user text.
+
+        ``read_hermes=False`` uses only the cache and the fallback: ``session.open`` and
+        ``session.page`` must answer without waiting on Hermes, which may be busy or starting."""
         if not sessions:
             return
         uncached: list[Session] = []
@@ -1060,6 +1065,10 @@ class Backend:
                 text = " ".join(part["text"] for part in content if part["type"] == "text")
             if text := " ".join(text.split()):
                 first_text[request.session_id] = text[:80]
+        if not read_hermes:
+            for session in uncached:
+                session.title = first_text.get(session.id)
+            return
 
         replies = await asyncio.gather(
             *(
@@ -1651,7 +1660,7 @@ class Backend:
         snapshot = await self.scoped(params.scope, session_id=opened.session_id)
         (row,) = snapshot.records.sessions
         session = await self.project(row, snapshot.records.requests)
-        await self.title_sessions([session], snapshot.records.requests)
+        await self.title_sessions([session], snapshot.records.requests, read_hermes=False)
         return {"session": session.model_dump(mode="json")}
 
     async def session_page(self, frontend_id: UUID, request_id: str, params: SessionPage) -> dict:
@@ -1685,7 +1694,7 @@ class Backend:
             if target is None:
                 raise Refusal("not_found", "No such session for the viewed Coworld")
             session = await self.project(target, snapshot.records.requests)
-            await self.title_sessions([session], snapshot.records.requests)
+            await self.title_sessions([session], snapshot.records.requests, read_hermes=False)
             return {"kind": "switched", "session": session.model_dump(mode="json")}
 
         activity = {}
