@@ -119,7 +119,7 @@ Use a record tool's returned record as confirmation; do not reread a successful 
 
 ## Context and the UI
 
-Clients (the Softmax IDE, coplay) may omit any context field. Session context describes what the client can show. Turn context (`[client context]`) gives the client, guide skill, `mode`, `command`, screen and references. Images arrive in the message. Use `read_file` for named attachments on disk. A mode applies to the conversation and a command to one message. Both outrank your own judgment.
+Clients (the Softmax IDE, coplay) may omit any context field. Session context says what the client declared at open and can show. Turn context (`[client context]`) gives the client, guide skill, `mode`, `command`, screen and references. Images arrive in the message. Use `read_file` for named attachments on disk. A mode applies to the conversation and a command to one message. Both outrank your own judgment.
 
 A Coworld session is bound to its Coworld and league; a workspace session has neither. Never switch a bound session or read another game's work. Another game needs a new session.
 
