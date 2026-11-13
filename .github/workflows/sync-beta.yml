@@ -1,11 +1,14 @@
 # Beta is main plus experiments: after every push to main, merge main into beta with a merge
 # commit. A clean merge is pushed to beta, which releases the beta channel. A conflicting merge
-# opens (or updates) a pull request from sync/main-into-beta into beta for a human to resolve.
+# opens (or updates) a pull request from sync/main-into-beta into beta for a human to resolve, and
+# posts to Slack when that pull request opens and once a day while it stays open.
 name: Merge main into beta
 
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "0 16 * * 1-5"
   workflow_dispatch:
 
 permissions:
@@ -32,6 +35,8 @@ jobs:
       - name: Merge main into beta
         env:
           GH_TOKEN: ${{ secrets.BETA_SYNC_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.BETA_SYNC_SLACK_WEBHOOK_URL }}
+          SLACK_MENTION: ${{ vars.BETA_SYNC_SLACK_MENTION }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -64,9 +69,19 @@ jobs:
           fi
 
           pr=$(gh pr list --head "$SYNC_BRANCH" --base beta --state open --json url --jq '.[0].url // ""')
+          opened=false
           if [ -z "$pr" ]; then
+            opened=true
             pr=$(gh pr create --head "$SYNC_BRANCH" --base beta \
               --title "Merge main into beta (conflicts)" \
               --body "Merging \`main\` into \`beta\` conflicts. Merge \`beta\` into \`$SYNC_BRANCH\`, resolve the conflicts, and merge this pull request with a merge commit. Opened by \`sync-beta.yml\`.")
           fi
           echo "Merging main at $main into beta conflicts; resolve in $pr" >> "$GITHUB_STEP_SUMMARY"
+
+          # Alert when the conflict first appears and on the daily run while it stays unresolved;
+          # beta stops receiving main's fixes until it is merged.
+          if [ "$opened" = true ] || [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            state=$([ "$opened" = true ] && echo "conflicts" || echo "still conflicts")
+            jq -n --arg text "<@${SLACK_MENTION:?}> Merging \`main\` into \`beta\` $state, so beta is not getting main's changes. Resolve <$pr|the sync PR>." \
+              '{text: $text}' | curl -fsS -X POST -H 'Content-Type: application/json' --data @- "${SLACK_WEBHOOK_URL:?}"
+          fi
