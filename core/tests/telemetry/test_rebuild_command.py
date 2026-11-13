@@ -541,6 +541,18 @@ def test_a_lost_request_of_a_retried_call_is_named(writer, stream_file, datadog,
     assert report["missing"] == [{"kind": "call_with_no_attempt", "api_request_id": "t:api:1"}]
 
 
+def test_an_id_named_only_as_a_parent_has_no_records_and_no_workspace(writer, stream_file, datadog):
+    """A subagent's records name the asked ID only as their parent. They are another Session's,
+    so nothing is this Session's and no workspace is reported."""
+    writer.capture_operation(
+        "turn", "started", session_id="ses_child", parent_session_id="ses_parent"
+    )
+    sent(writer, stream_file, datadog)
+    report = rebuild_session(search_of(datadog), "ses_parent")
+    assert report["missing"] == [{"kind": "no_records", "session_id": "ses_parent"}]
+    assert report["workspace_id"] is None
+
+
 @pytest.mark.parametrize("workspace", [None, "wrk-named"])
 def test_a_session_datadog_has_never_seen_says_so(datadog, workspace):
     report = rebuild_session(search_of(datadog), "ses_unknown", workspace)

@@ -160,8 +160,13 @@ def tracer() -> trace.Tracer:
                 # A one-shot command must not start exporters or flush them at exit.
                 provider: TracerProvider | trace.NoOpTracerProvider = trace.NoOpTracerProvider()
             else:
+                # First and on its own, so a logging failure leaves tracing on. Neither one may
+                # fail application work.
                 try:
                     configure_logging()
+                except Exception:
+                    pass
+                try:
                     provider = TracerProvider(
                         shutdown_on_exit=False,
                         resource=OTELResourceDetector()
