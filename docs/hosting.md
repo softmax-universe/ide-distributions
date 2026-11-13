@@ -339,10 +339,11 @@ the `beta` or `stable` channel, unless the last nightly read-only platform check
 platform check --read-only`) failed. Team members opt their workspace into beta from softmax.com.
 
 `main` moves only through the `Promote beta to stable` workflow (`promote-stable.yml`). It
-fast-forwards `main` to a beta commit (default: the newest with a successful beta release) and
-refuses a commit beta did not release or one that is not a fast-forward. The stable release then
-reuses beta's `distribution-<sha>` image. A hotfix lands on `beta` like any change, then is
-promoted once beta has released it; there is no stable-only path.
+fast-forwards `main` to a beta commit (default: the head of `beta`) and refuses anything that is
+not a fast-forward. Both channels use the same canary and promotion: stable's canary decides
+whether the stable pointer moves, and a commit beta already built reuses its `distribution-<sha>`
+image. A change that misbehaves is reverted on `beta`; commits before it can still be promoted.
+A hotfix lands on `beta` like any change; there is no stable-only path.
 
 Metta's `deploy-hermes-agent.yml` builds `image/Dockerfile` and runs `image/system_tests/start-stop.sh`
 (both skipped when the commit's image exists), publishes the digest and dispatches the channel's qualification job.
