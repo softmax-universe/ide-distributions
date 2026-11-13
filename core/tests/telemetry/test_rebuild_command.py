@@ -22,7 +22,6 @@ from research_core.agent_telemetry.rebuild import (
     PROXY_PAGE_LIMIT,
     AmbiguousSession,
     BrokerLogsSearch,
-    LogsSearch,
     rebuild_session,
 )
 from research_core.agent_telemetry.records import canonical_bytes
@@ -124,8 +123,8 @@ def datadog():
     server.close()
 
 
-def search_of(datadog: FakeDatadog, sleep=None) -> LogsSearch:
-    return LogsSearch(datadog.url, "a", "b", **({"sleep": sleep} if sleep else {}))
+def search_of(datadog: FakeDatadog, sleep=None) -> BrokerLogsSearch:
+    return datadog.search(sleep)
 
 
 def sent(writer, stream_file, datadog) -> list[dict]:
@@ -269,7 +268,7 @@ def test_prompt_sections_count_only_in_the_first_system_message(writer, stream_f
 
 def test_paging_and_a_rate_limit(writer, stream_file, datadog):
     bodies = two_requests(writer)
-    # More than one 5000-line page, written in steps the writer's 4096-item queue can hold.
+    # Many pages, written in steps the writer's 4096-item queue can hold.
     for number in range(5200):
         writer.capture_operation("turn", "ended", session_id="ses_1", details={"number": number})
         if number % 1000 == 999:
@@ -282,6 +281,7 @@ def test_paging_and_a_rate_limit(writer, stream_file, datadog):
     assert waits == [1.0, 1.0]
     assert datadog.rate_limited == 2
     assert len(datadog.searches) > 3
+    assert {search["page"]["limit"] for search in datadog.searches} == {PROXY_PAGE_LIMIT}
     # Whichever index holds the lines: no search names one, and none reaches past the retention.
     assert all("indexes" not in search["filter"] for search in datadog.searches)
     # One absolute window, fixed once, for every search and every page of it.
@@ -294,29 +294,10 @@ def test_paging_and_a_rate_limit(writer, stream_file, datadog):
     assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
 
 
-def test_paging_and_a_rate_limit_through_the_token_broker(writer, stream_file, datadog):
-    bodies = two_requests(writer)
-    for number in range(250):
-        writer.capture_operation("turn", "ended", session_id="ses_1", details={"number": number})
-    sent(writer, stream_file, datadog)
-    datadog.rate_limit_next = 2
-    waits = []
-    broker = datadog.serve_broker()
-    search = BrokerLogsSearch(broker, "tbk_test", "a test rebuild", "session-1", waits.append)
-    report = rebuild_session(search, "ses_1")
-    assert waits == [1.0, 1.0]
-    assert {search["page"]["limit"] for search in datadog.searches} == {PROXY_PAGE_LIMIT}
-    assert any(search["page"].get("cursor") for search in datadog.searches)
-    assert len(report["events"]) == 250
-    assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
-
-
 def test_an_upstream_error_through_the_token_broker_raises_as_datadogs_own(datadog):
     datadog.answer = lambda *_: (400, {"errors": ["Limit can't be more than 5000"]}, {})
     waits = []
-    search = BrokerLogsSearch(
-        datadog.serve_broker(), "tbk_test", "a test", "session-1", waits.append
-    )
+    search = search_of(datadog, waits.append)
     with pytest.raises(urllib.error.HTTPError) as raised:
         rebuild_session(search, "ses_1")
     assert raised.value.code == 400 and waits == []
@@ -648,45 +629,35 @@ def _command(datadog: FakeDatadog, *arguments: str, **env: str) -> subprocess.Co
             "research_core.cli",
             "telemetry",
             "rebuild",
-            "--datadog-url",
-            datadog.url,
             *arguments,
         ],
-        env={**allowed, **env},
+        env={
+            **allowed,
+            "TOKEN_BROKER_URL": datadog.broker_url(),
+            "TOKEN_BROKER_TOKEN": "tbk_test",
+            **env,
+        },
         capture_output=True,
         text=True,
         timeout=60,
     )
 
 
-def test_the_command_runs_with_only_the_two_keys(writer, stream_file, datadog, tmp_path):
+def test_the_command_runs_through_the_token_broker(writer, stream_file, datadog, tmp_path):
     bodies = two_requests(writer)
     sent(writer, stream_file, datadog)
-    keys = {"DD_API_KEY": "a", "DD_APP_KEY": "b", "HOME": str(tmp_path)}
-    done = _command(datadog, "--session", "ses_1", **keys)
+    home = {"HOME": str(tmp_path)}
+    done = _command(datadog, "--session", "ses_1", **home)
     assert done.returncode == 0, done.stderr
     report = json.loads(done.stdout)
     assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
-
-    datadog.remove_chunk(result_message_digest(), 0)
-    assert _command(datadog, "--session", "ses_1", **keys).returncode == 3
-    assert _command(datadog, "--session", "ses_1", HOME=str(tmp_path)).returncode == 2
-
-
-def test_the_command_runs_through_the_token_broker_without_keys(
-    writer, stream_file, datadog, tmp_path
-):
-    bodies = two_requests(writer)
-    sent(writer, stream_file, datadog)
-    broker = {"TOKEN_BROKER_URL": datadog.serve_broker(), "HOME": str(tmp_path)}
-    done = _command(datadog, "--session", "ses_1", TOKEN_BROKER_TOKEN="tbk_test", **broker)
-    assert done.returncode == 0, done.stderr
-    report = json.loads(done.stdout)
-    assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
+    assert _command(datadog, "--session", "ses_1", TOKEN_BROKER_TOKEN="", **home).returncode == 2
     # The client's token file serves as well as the variable.
     (tmp_path / ".config" / "token-broker").mkdir(parents=True)
     (tmp_path / ".config" / "token-broker" / "token").write_text("tbk_test\n")
-    assert _command(datadog, "--session", "ses_1", **broker).returncode == 0
+    assert _command(datadog, "--session", "ses_1", TOKEN_BROKER_TOKEN="", **home).returncode == 0
+    datadog.remove_chunk(result_message_digest(), 0)
+    assert _command(datadog, "--session", "ses_1", **home).returncode == 3
 
     # Datadog's or the broker's error body is shown, in at most 300 bytes and on the same line.
     reason = "Limit can't be more than 5000 " + "x" * 400
@@ -695,16 +666,15 @@ def test_the_command_runs_through_the_token_broker_without_keys(
         ("tbk_revoked", 'HTTP Error 401: Unauthorized {"detail": "invalid token"}'),
         ("tbk_test", 'HTTP Error 400: Datadog\'s answer through the broker {"errors": ["Limit'),
     ):
-        done = _command(datadog, "--session", "ses_1", TOKEN_BROKER_TOKEN=token, **broker)
+        done = _command(datadog, "--session", "ses_1", TOKEN_BROKER_TOKEN=token, **home)
         assert done.returncode == 2 and done.stdout == ""
         assert error in done.stderr and len(done.stderr.strip().splitlines()) == 1, done.stderr
         assert len(done.stderr) < 450
 
 
 def test_a_datadog_failure_is_could_not_start_and_says_so_in_one_line(datadog, tmp_path):
-    keys = {"DD_API_KEY": "a", "DD_APP_KEY": "b", "HOME": str(tmp_path)}
-    for url in (f"{datadog.url}/no-such-route", "http://127.0.0.1:1"):
-        done = _command(datadog, "--session", "ses_1", "--datadog-url", url, **keys)
+    for url in (f"{datadog.broker_url()}/no-such-route", "http://127.0.0.1:1"):
+        done = _command(datadog, "--session", "ses_1", TOKEN_BROKER_URL=url, HOME=str(tmp_path))
         assert done.returncode == 2, done.stderr
         assert "Traceback" not in done.stderr
         assert len(done.stderr.strip().splitlines()) == 1, done.stderr
@@ -714,11 +684,11 @@ def test_a_search_datadog_did_not_finish_is_could_not_start(writer, stream_file,
     """A ``timeout`` answer can hold part of the results, so nothing is rebuilt from it."""
     two_requests(writer)
     sent(writer, stream_file, datadog)
-    keys = {"DD_API_KEY": "a", "DD_APP_KEY": "b", "HOME": str(tmp_path)}
+    home = {"HOME": str(tmp_path)}
     datadog.status = None  # An answer that gives no status is taken as it comes.
-    assert _command(datadog, "--session", "ses_1", **keys).returncode == 0
+    assert _command(datadog, "--session", "ses_1", **home).returncode == 0
     datadog.status = "timeout"
-    done = _command(datadog, "--session", "ses_1", **keys)
+    done = _command(datadog, "--session", "ses_1", **home)
     assert done.returncode == 2 and done.stdout == ""
     assert "status 'timeout'" in done.stderr and "Traceback" not in done.stderr
 
@@ -727,9 +697,9 @@ def test_a_search_datadog_warned_about_is_could_not_start(writer, stream_file, d
     """Datadog can answer ``done`` with warnings that its results are partial."""
     two_requests(writer)
     sent(writer, stream_file, datadog)
-    keys = {"DD_API_KEY": "a", "DD_APP_KEY": "b", "HOME": str(tmp_path)}
+    home = {"HOME": str(tmp_path)}
     datadog.warnings = []  # An empty list warns of nothing.
-    assert _command(datadog, "--session", "ses_1", **keys).returncode == 0
+    assert _command(datadog, "--session", "ses_1", **home).returncode == 0
     datadog.warnings = [
         {
             "code": "unknown_index",
@@ -737,7 +707,7 @@ def test_a_search_datadog_warned_about_is_could_not_start(writer, stream_file, d
             "detail": "indexes: main-old",
         }
     ]
-    done = _command(datadog, "--session", "ses_1", **keys)
+    done = _command(datadog, "--session", "ses_1", **home)
     assert done.returncode == 2 and done.stdout == ""
     assert "indexes are missing or invalid" in done.stderr and "Traceback" not in done.stderr
 

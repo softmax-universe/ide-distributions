@@ -47,7 +47,8 @@ trace: its admission, the seam's dispatch and every Hermes turn that works on it
 (`plugin/tracing.py`). Records join on these IDs, not on Hermes's runs.
 
 `research_core/telemetry.py` moves the root logger's handlers behind its own queue, which drops and counts a record that does
-not fit rather than wait, at a process's first span, and the gateway at plugin registration. The gateway's
+not fit rather than wait. That happens at the start of each `research` command and of the image's runtime, in the gateway
+at plugin registration, and otherwise at a process's first span. The gateway's
 log handler stays on the root logger, because it only enqueues.
 
 Other output shares this stream and can leave a line open at any moment, so each telemetry line starts with a newline of its own, and that output cannot join it (`test_real_prints_beside_telemetry_lines_on_one_pipe_lose_no_line`). The price is a blank line on the stream for each telemetry line: see "Proof and cost". [`stream.py`](../core/src/research_core/agent_telemetry/stream.py) says why buffering would not do.
@@ -62,7 +63,7 @@ each lost nothing with no wait, one run each. A line is searchable 12 to 27 seco
 | Nothing confirms delivery. A line that never arrives is not noticed, and a stream that cannot be opened stays closed for the life of that process | There is no sender to tell. Rebuild reports what a surviving record refers to |
 | Any exit of the gateway or `research serve`, graceful or not, loses what the memory queue still holds: across 20 turns of a real gateway with tool results of 40,000 characters, 629 captures found at most 4 records queued (median 1), at most 945 KB. A short command has no queue. A request is written before its call, so a process killed during a call keeps the request, and with it the user's message, once the writer has written it, and rebuild lists the attempt in `unended_attempts` (`test_a_kill_during_a_call_keeps_its_request`, `test_a_kill_during_the_first_call_keeps_the_users_message`). The turn's committed rows are lost, because they are read at the turn's end. A kill while the request is still queued can leave `model_request` / `started` alone, and rebuild names that call `call_with_no_attempt` | The queue empties as records arrive, and nothing on the agent's path may wait for it |
 | The Agent falling behind by more than the retained log files would lose lines. Untested | 240 MB over about 15 rotations lost nothing with the Agent keeping up |
-| A full queue drops records, which a stream that has stopped soon causes. The writer's thread logs the count each time it changes. A capture over the 64 MiB byte limit goes in only when nothing is queued, so a request that large captured just after another record, such as its own context parts, is dropped, and rebuild shows `call_with_no_attempt` and, for its reply, `reply_with_no_request` | A caller must never wait |
+| A full queue drops records, which a stream that has stopped soon causes. The writer's thread logs the count each time it changes. A capture that would take the queue past its 64 MiB byte limit is dropped, so a request over 64 MiB is always dropped, and rebuild shows `call_with_no_attempt` and, for its reply, `reply_with_no_request` | A caller must never wait |
 | Any process in the workspace can write a line that looks like ours | James: restriction work matters very little here |
 
 ## Read a Session
@@ -81,16 +82,14 @@ scope: the token broker never hands out its keys, and `token_broker_client.py ex
 Datadog's answer. It finds the broker token as metta's `scripts/token_broker_client.py` does:
 `TOKEN_BROKER_TOKEN`, or else `~/.config/token-broker/token`, and `TOKEN_BROKER_URL` overrides the broker
 URL. `--reason` is the reason the broker records for each search, by default `telemetry rebuild of
-Session <id>`. When `DD_API_KEY` and `DD_APP_KEY` are both set, it uses them and calls Datadog directly
-instead.
+Session <id>`.
 
-Through the broker a page is 99 rows, and with the keys 5,000, Datadog's largest. The broker refuses an
+A page is 99 rows. The broker refuses an
 answer over 2 MB (502 `upstream_response_too_large`), and a row is a line of at most 4,096 bytes plus
 Datadog's envelope and escapes, so 99 rows fit ("Proof and cost" has the measurements).
 
 Add `--workspace <id>` if the command says several workspaces hold that ID. `--session` takes any ID of
-the Session, first or after compaction. The command needs only the broker token, or `DD_API_KEY` and
-`DD_APP_KEY`: no state.db, volume or workspace API. It exits 0 when nothing was missing, 3 when something was, and 2 when
+the Session, first or after compaction. The command needs only the broker token: no state.db, volume or workspace API. It exits 0 when nothing was missing, 3 when something was, and 2 when
 it could not start, which includes Datadog refusing the search, not answering, or answering that a search did not
 finish (`meta.status` other than `done`, such as `timeout`) or that warns (any `meta.warnings`, even with
 status `done`), because such an answer can hold part of the results. Exit 1 is a crash, as for any
@@ -215,10 +214,10 @@ page of 1,000 real rows was refused. The broker waits at most 25
 seconds for Datadog, and a search of 1,500 digests (105,000 characters) over the 15 days took 0.5 to 1.5
 seconds. A rebuild through the broker took 8 seconds for a Session of 9 requests. For one of 286
 requests and 3,462 events it took 3 to 4.5 minutes for 187 searches, nearly all of them pages of 100
-content rows (the page size then) at about 1.2 seconds each. One other run took 34 minutes and ended in a read timeout
+content rows at about 1.2 seconds each. One other run took 34 minutes and ended in a read timeout
 (exit 2), and the cause was not found. The link searches send one search a round for all three fields, and that Session
 needed one, where a search per field had needed three: too few to change the time.
 
-On 2026-11-06, capture added about 4 to 5 ms to a tool cycle at the median, but that was measured on the earlier capture through the former Hermes telemetry patches, and the current unpatched capture has not been measured. On 2026-11-05 a gateway held 386 MiB with capture and 387 without after 100 turns, and an 8 MB request cleared the writer in 1.1 s. On 2026-11-06 a 66 MiB request through the writer alone, with a stand-in for Hermes's scanner, took a process from 88 MiB to a peak of 419 MiB and took 3.9 s to clear. There is no exit flush, so an exit while a request is still clearing loses what is left of it.
+On 2026-11-05 a gateway held 386 MiB with capture and 387 without after 100 turns, and an 8 MB request cleared the writer in 1.1 s. A request over the 64 MiB byte limit is dropped. There is no exit flush, so an exit while a request is still clearing loses what is left of it.
 
 On real pods a Session writes about 36 to 86 lines per model call, more than the 27 to 32 of the 100-turn test (5,358 lines and 5.2 MB with 5,000-character tool results, 6,496 lines and 8.9 MB with 20,000), because each new gateway process sends its roughly 74,000 characters of tool schemas again. A user row's commit text adds almost nothing, because the same message from a request is already stored under its digest. At 1,105 model calls a day (the highest day in the plan's Appendix I), and about 1 KB a line as in that test, that is an estimated $3.10 to $7.40 a month, at a third-party $0.10 per GB and $2.50 per million events for 30-day retention while content is kept for 15, so check it against the contract. Each line leaves a blank line on the stream, and Datadog does not keep those: real pods showed 0 empty events.
