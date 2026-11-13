@@ -8,7 +8,7 @@ run events, appends each, and only then pushes it, so a push carries the cursor 
 returning the same event. Consumers start with the backend and resume from their log's last
 row, so a restart keeps what the log holds and loses what had not reached it, along with pushes
 not yet sent. A frontend is subscribed to a session from its first request naming it until the
-relay reports ``frontend.closed``.
+relay reports ``frontend.closed`` or the backend rebinds.
 """
 
 import asyncio
@@ -861,6 +861,7 @@ class Backend:
         self.session_locks: dict[str, asyncio.Lock] = {}
         self.publish_locks: dict[str, asyncio.Lock] = {}
         self.published_after: dict[str, int] = {}
+        self.titles: dict[str, str] = {}  # session id -> non-empty title read from Hermes
         self.boards: dict[str, BoardFeed] = {}
         self.requests: dict[str, str] = {}  # admission op id -> session id
         self.wakes: dict[str, asyncio.Event] = {}
@@ -1032,8 +1033,17 @@ class Backend:
         )
 
     async def title_sessions(self, sessions: list[Session], requests: list[Admission]) -> None:
-        """Prefer Hermes titles and use the first user text for chats Hermes left untitled."""
+        """Prefer Hermes titles (cached per backend binding) and fall back to first user text."""
         if not sessions:
+            return
+        uncached: list[Session] = []
+        for session in sessions:
+            cached = self.titles.get(session.id)
+            if cached is not None:
+                session.title = cached
+            else:
+                uncached.append(session)
+        if not uncached:
             return
         first_text: dict[str, str] = {}
         for request in requests:
@@ -1054,11 +1064,11 @@ class Backend:
         replies = await asyncio.gather(
             *(
                 self.gateway.get(f"api/sessions/{quote(session.id, safe='')}", timeout=3)
-                for session in sessions
+                for session in uncached
             ),
             return_exceptions=True,
         )
-        for session, reply in zip(sessions, replies, strict=True):
+        for session, reply in zip(uncached, replies, strict=True):
             if isinstance(reply, httpx.TransportError):
                 log.warning("Could not read Hermes session title: %s", type(reply).__name__)
             elif isinstance(reply, BaseException):
@@ -1067,6 +1077,7 @@ class Backend:
                 title = NativeSessionReply.model_validate_json(reply.content).session.title
                 if title and title.strip():
                     session.title = title.strip()
+                    self.titles[session.id] = session.title
                     continue
             elif reply.status_code != 404:
                 log.warning("Could not read Hermes session title: HTTP %s", reply.status_code)
@@ -1253,6 +1264,7 @@ class Backend:
             await self.send(self.socket, frontend_id, message)
 
     async def changed(self, session_id: str) -> None:
+        """Project and push ``state.changed`` serialized per session with its resolved title."""
         async with self.session_locks.setdefault(session_id, asyncio.Lock()):
             if session_id not in self.subscribers or not self.subscribers[session_id].frontends:
                 return
@@ -2029,6 +2041,7 @@ class Backend:
             # Frontends subscribe through one binding; after a rebind they subscribe again by
             # reading their sessions, so the last binding's frontends are stale.
             self.subscribers.clear()
+            self.titles.clear()
             self.socket = socket
             try:
                 async with asyncio.TaskGroup() as replies:

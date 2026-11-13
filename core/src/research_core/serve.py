@@ -995,6 +995,8 @@ class SeamServer:
             )
 
     def message_cancel(self, body: dict) -> dict:
+        """Cancel a chat admission: settle queued/waiting rows cleanly and stop any live run,
+        stopping the shared host run when cancelling a merged steered follow-up."""
         op_id = str(UUID(_text(body, "op_id")))
         with self._deliver_lock, self.stores() as stores:
             row = stores.wstore.one(

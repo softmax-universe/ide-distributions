@@ -2802,3 +2802,34 @@ def test_cancel_merged_steered_followup_and_waiting_request(system):
         assert changed_idx < finished_idx
 
     run(system, scenario)
+
+
+def test_cached_hermes_title_skips_repeat_gateway_gets(system, monkeypatch):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        title_gets = 0
+        real_get = backend.gateway.get
+
+        async def counted_get(url, *args, **kwargs):
+            nonlocal title_gets
+            if url == f"api/sessions/{session_id}":
+                title_gets += 1
+            return await real_get(url, *args, **kwargs)
+
+        monkeypatch.setattr(backend.gateway, "get", counted_get)
+
+        # Untitled at first: fallback is not cached so Hermes can supply a title later.
+        await backend.changed(session_id)
+        gateway.titles[session_id] = "Settled Hermes Title"
+        await backend.changed(session_id)
+        await backend.changed(session_id)
+        assert title_gets == 2
+
+        changed_titles = [
+            note["item"].get("title")
+            for note in backend.socket.notes("state.changed")
+            if note["resource"] == "sessions" and note["item"]["id"] == session_id
+        ]
+        assert changed_titles[-2:] == ["Settled Hermes Title", "Settled Hermes Title"]
+
+    run(system, scenario)
