@@ -11,11 +11,15 @@ import threading
 import time
 import types
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import httpx
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker, ValidationError
+from referencing import Registry
+from referencing.jsonschema import DRAFT202012
 
 from research_core import run_failures
 from research_core.serve import SeamServer
@@ -270,6 +274,205 @@ def run(system, scenario, inference=None, seam_transport=None, gateway=None):
     asyncio.run(main())
 
 
+_FORMAT_CHECKER = FormatChecker()
+
+
+@_FORMAT_CHECKER.checks("uuid")
+def _is_canonical_uuid(value: object) -> bool:
+    if not isinstance(value, str):
+        return True
+    try:
+        UUID(value)
+    except ValueError:
+        return False
+    return value == value.lower()
+
+
+@_FORMAT_CHECKER.checks("date-time")
+def _is_rfc3339_datetime(value: object) -> bool:
+    if not isinstance(value, str):
+        return True
+    if "T" not in value and "t" not in value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+class _AideContract:
+    def __init__(self, spec_path: Path):
+        document = json.loads(spec_path.read_bytes())
+        self._uri = spec_path.as_uri()
+        self._registry = Registry().with_resource(self._uri, DRAFT202012.create_resource(document))
+        self._validators: dict[str, Draft202012Validator] = {}
+        self.message_schemas: dict[str, str] = {}
+        self.param_schemas: dict[str, str] = {}
+        self.reply_envelopes: dict[str, dict] = {}
+        self.result_schemas: dict[str, str] = {}
+        for operation in document["operations"].values():
+            if operation["channel"]["$ref"] != "#/channels/frontend":
+                continue
+            message_obj = self._resolve(document, operation["messages"][0])
+            payload = self._resolve(document, message_obj["payload"])
+            if "method" not in payload["properties"] or operation["tags"][0]["name"].startswith(
+                "Relay"
+            ):
+                continue
+            name = payload["properties"]["method"]["const"]
+            self.message_schemas[name] = message_obj["payload"]["$ref"]
+            self.param_schemas[name] = payload["properties"]["params"]["$ref"]
+            if "reply" in operation:
+                reply_msg = self._resolve(document, operation["reply"]["messages"][0])
+                reply_payload = reply_msg["payload"]
+                self.reply_envelopes[name] = reply_payload
+                self.result_schemas[name] = reply_payload["properties"]["result"]["$ref"]
+
+    @staticmethod
+    def _resolve(document: dict, value: dict) -> dict:
+        while "$ref" in value:
+            reference = value["$ref"]
+            value = document
+            for segment in reference[2:].split("/"):
+                value = value[segment.replace("~1", "/").replace("~0", "~")]
+        return value
+
+    def _validate(self, ref: str, instance: object) -> None:
+        validator = self._validators.get(ref)
+        if validator is None:
+            validator = Draft202012Validator(
+                {"$ref": f"{self._uri}{ref}"},
+                registry=self._registry,
+                format_checker=_FORMAT_CHECKER,
+            )
+            self._validators[ref] = validator
+        validator.validate(instance)
+
+    def _validate_inline(self, key: str, schema: dict, instance: object) -> None:
+        validator = self._validators.get(key)
+        if validator is None:
+            resolved = json.loads(json.dumps(schema).replace('"#/', f'"{self._uri}#/'))
+            validator = Draft202012Validator(
+                resolved,
+                registry=self._registry,
+                format_checker=_FORMAT_CHECKER,
+            )
+            self._validators[key] = validator
+        validator.validate(instance)
+
+    def validate_request(self, frame: dict) -> None:
+        self._validate("#/components/schemas/Request", frame)
+        self._validate(self.message_schemas[frame["method"]], frame)
+
+    def validate_result(self, method: str, frame: dict) -> None:
+        self._validate_inline(f"reply:{method}", self.reply_envelopes[method], frame)
+        self._validate(self.result_schemas[method], frame["result"])
+
+    def validate_error(self, frame: object) -> None:
+        self._validate("#/components/schemas/Error", frame)
+
+    def validate_notification(self, frame: dict) -> None:
+        self._validate("#/components/schemas/Notification", frame)
+        method = frame["method"]
+        self._validate(self.message_schemas[method], frame)
+        self._validate(self.param_schemas[method], frame["params"])
+
+
+@lru_cache(maxsize=1)
+def _aide_contract() -> _AideContract:
+    return _AideContract(IMAGE / "contract/aide-1.0.0/asyncapi.json")
+
+
+@pytest.fixture(autouse=True)
+def _validate_every_aide_frame(monkeypatch):
+    contract = _aide_contract()
+    methods: dict[str, str] = {}
+    real_send = aide.Backend.send
+    real_answer = aide.Backend.answer
+    real_call = call
+
+    async def checked_call(backend, method, params, *, request_id=None, frontend=FRONTEND):
+        rid = request_id or str(uuid4())
+        methods[rid] = method
+        request = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
+        reply = await real_call(backend, method, params, request_id=rid, frontend=frontend)
+        if "result" in reply:
+            contract.validate_request(request)
+        return reply
+
+    async def checked_answer(self, socket, frame):
+        if isinstance(frame.message, dict):
+            rid = frame.message.get("id")
+            method = frame.message.get("method")
+            if isinstance(rid, str) and isinstance(method, str):
+                methods.setdefault(rid, method)
+        return await real_answer(self, socket, frame)
+
+    async def checked_send(self, socket, frontend, message):
+        if "method" in message and "id" not in message:
+            contract.validate_notification(message)
+        elif "error" in message:
+            contract.validate_error(message)
+        elif "result" in message:
+            method = methods.get(message["id"])
+            assert method is not None, f"Result for unknown request id {message['id']}"
+            contract.validate_result(method, message)
+        else:
+            raise AssertionError(f"Unclassified outgoing message: {message}")
+        return await real_send(self, socket, frontend, message)
+
+    monkeypatch.setattr(sys.modules[__name__], "call", checked_call)
+    monkeypatch.setattr(aide.Backend, "answer", checked_answer)
+    monkeypatch.setattr(aide.Backend, "send", checked_send)
+
+
+def test_aide_contract_validator_rejects_invalid_frames():
+    contract = _aide_contract()
+    valid_note = {
+        "jsonrpc": "2.0",
+        "method": "state.changed",
+        "params": {
+            "resource": "sessions",
+            "epoch": "2026-04-01T00:00:00.000Z",
+            "previous_revision": 0,
+            "revision": 1,
+            "change": "upsert",
+            "item": {
+                "id": "s1",
+                "parent_session_id": None,
+                "started_at": "2026-04-01T00:00:00Z",
+                "ended_at": None,
+                "active_request_ids": [],
+                "pending": [],
+                "scope": WORKSPACE,
+                "requests": [],
+            },
+        },
+    }
+    contract.validate_notification(valid_note)
+    with pytest.raises(ValidationError):
+        contract.validate_notification(
+            valid_note | {"params": valid_note["params"] | {"extra_field": True}}
+        )
+
+    valid_result = {
+        "jsonrpc": "2.0",
+        "id": str(uuid4()),
+        "result": {
+            "accepted": True,
+            "session_id": "s1",
+            "request_id": str(uuid4()),
+        },
+    }
+    contract.validate_result("chat.send", valid_result)
+    with pytest.raises(ValidationError):
+        contract.validate_result(
+            "chat.send",
+            valid_result | {"result": valid_result["result"] | {"accepted": False}},
+        )
+
+
 async def call(backend, method, params, *, request_id=None, frontend=FRONTEND):
     request_id = request_id or str(uuid4())
     message = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
@@ -393,7 +596,10 @@ def test_chat_round_trip_pushes_what_the_reads_return_to_every_subscriber(system
             assert finished["cursor"] == {"attempt": 0, "seq": 6}
             changes = socket.notes("state.changed", frontend)
             assert any(request_id in c["item"]["active_request_ids"] for c in changes)
-            assert all(c["previous_revision"] + 1 == c["revision"] for c in changes)
+            assert all(c["previous_revision"] < c["revision"] for c in changes)
+            assert [c["previous_revision"] for c in changes[1:]] == [
+                c["revision"] for c in changes[:-1]
+            ]
         read = (await events_read(backend, session_id, request_id))["result"]
         assert read["events"] == pushed and read["done"] is True
         assert read["next"] == {"attempt": 0, "seq": 6}
@@ -991,10 +1197,6 @@ def test_a_steered_follow_up_logs_only_its_outcome_and_leaves_the_host_run_alone
         await call(backend, "chat.send", params | {"messages": say("also")}, request_id=follow_up)
         (run_id,) = hermes.runs
         await until(lambda: hermes.steered.get(run_id) == ["also"])
-        # The follow-up rides the earlier request's run: cancelling it must not stop that run.
-        cancel = {"session_id": session_id, "request_id": follow_up, "scope": WORKSPACE}
-        assert code(await call(backend, "chat.cancel", cancel)) == "conflict"
-        assert "stop" not in [name for name, _ in hermes.calls]
         wrapped = (
             "[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered "
             "once at this position; not tool output and not a new delivery when replayed "
@@ -1575,15 +1777,13 @@ def test_a_forged_cursor_is_refused_and_the_backend_keeps_answering(system, numb
 
 
 @pytest.mark.parametrize(
-    ("method", "handler", "params", "unknown"),
+    ("method", "handler", "params"),
     [
-        ("state.list", "list_state", {"resource": "sessions"}, False),
-        ("task.cancel", "cancel_task", {"task_id": "t", "scope": LEAGUE}, True),
+        ("state.list", "list_state", {"resource": "sessions"}),
+        ("task.cancel", "cancel_task", {"task_id": "t", "scope": LEAGUE}),
     ],
 )
-def test_an_unexpected_failure_answers_only_its_request(
-    system, caplog, method, handler, params, unknown
-):
+def test_an_unexpected_failure_answers_only_its_request(system, caplog, method, handler, params):
     async def scenario(backend, gateway, ctx, hermes):
         async def broken(*_args):
             raise KeyError("a bug")
@@ -1592,8 +1792,7 @@ def test_an_unexpected_failure_answers_only_its_request(
         setattr(backend, handler, broken)
         reply = await call(backend, method, params)
         setattr(backend, handler, working)
-        assert code(reply) == "unavailable"
-        assert (reply["error"]["data"].get("outcome") == "unknown") is unknown
+        assert reply["error"] == {"code": -32603, "message": "Internal error"}
         assert f"{method} failed unexpectedly" in caplog.text
         assert "KeyError" in caplog.text
         assert "result" in await call(backend, "state.list", {"resource": "sessions"})
@@ -1619,6 +1818,9 @@ def test_a_send_that_fails_after_its_commit_still_runs_once_and_finishes(system,
         failed = await call(backend, "chat.send", params, request_id=request_id)
         assert code(failed) == "unavailable"
         assert failed["error"]["data"]["outcome"] == "unknown"
+        assert failed["error"]["message"] == "Internal error"
+        assert "KeyError" not in failed["error"]["message"]
+        assert "a bug after the commit" not in failed["error"]["message"]
         assert "chat.send failed unexpectedly" in caplog.text
 
         # The admission is committed, so the event watcher gives the run its consumer.
@@ -1928,3 +2130,712 @@ def test_relay_failures_reconnect_without_touching_the_control_connection(monkey
             control.cancel()
 
     asyncio.run(main())
+
+
+def test_state_changed_precedes_chat_finished(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        request_id = str(uuid4())
+        params = {"session_id": session_id, "messages": say("hi"), "scope": WORKSPACE}
+        await call(backend, "chat.send", params, request_id=request_id)
+        await until(lambda: backend.socket.notes("chat.finished"))
+        methods_and_params = [
+            (f["message"]["method"], f["message"]["params"])
+            for f in backend.socket.frames
+            if f["frontend_id"] == str(FRONTEND) and "method" in f["message"]
+        ]
+        finished_idx = next(
+            i for i, (m, _) in enumerate(methods_and_params) if m == "chat.finished"
+        )
+        preceding_session_updates = [
+            p
+            for m, p in methods_and_params[:finished_idx]
+            if m == "state.changed" and p["resource"] == "sessions"
+        ]
+        assert preceding_session_updates
+        last_before_finished = preceding_session_updates[-1]["item"]
+        assert request_id not in last_before_finished["active_request_ids"]
+        embedded = {r["request_id"]: r for r in last_before_finished["requests"]}
+        assert embedded[request_id]["status"] == "completed"
+
+    run(system, scenario)
+
+
+def test_epoch_survives_restart_and_changes_on_store_reset(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend, scope=LEAGUE)
+        goals.create(ctx.store, HARNESS, title="Win league", end_state="first", reason="asked")
+        task = tasks.create(
+            ctx.store,
+            HARNESS,
+            type="maintenance",
+            title="Tune policy",
+            description="desc",
+        )
+        w_epoch = ctx.wstore.get_meta("created")
+        c_epoch = ctx.store.get_meta("created")
+        assert w_epoch and c_epoch
+
+        s_list = (await call(backend, "state.list", {"resource": "sessions"}))["result"]
+        r_list = (
+            await call(
+                backend,
+                "state.list",
+                {"resource": "requests", "session_id": session_id, "scope": LEAGUE},
+            )
+        )["result"]
+        t_list = (await call(backend, "state.list", {"resource": "tasks", "scope": LEAGUE}))[
+            "result"
+        ]
+        g_list = (await call(backend, "state.list", {"resource": "goals", "scope": LEAGUE}))[
+            "result"
+        ]
+        assert s_list["epoch"] == r_list["epoch"] == w_epoch
+        assert t_list["epoch"] == g_list["epoch"] == c_epoch
+
+        restarted = await backend.restart()
+        s_after = (await call(restarted, "state.list", {"resource": "sessions"}))["result"]
+        t_after = (await call(restarted, "state.list", {"resource": "tasks", "scope": LEAGUE}))[
+            "result"
+        ]
+        assert s_after["epoch"] == w_epoch
+        assert t_after["epoch"] == c_epoch
+
+        # Simulate a store reset changing the store's created epoch.
+        ctx.wstore.set_meta("created", "2026-05-01T00:00:00.000Z")
+        ctx.wstore.conn.commit()
+        ctx.store.set_meta("created", "2026-05-02T00:00:00.000Z")
+        ctx.store.conn.commit()
+        s_reset = (
+            await call(
+                restarted,
+                "state.get",
+                {"resource": "sessions", "id": session_id, "scope": LEAGUE},
+            )
+        )["result"]
+        t_reset = (
+            await call(
+                restarted,
+                "state.get",
+                {
+                    "resource": "tasks",
+                    "id": f"{COWORLD_ID}:{task['id']}",
+                    "scope": LEAGUE,
+                },
+            )
+        )["result"]
+        assert s_reset["epoch"] == "2026-05-01T00:00:00.000Z"
+        assert t_reset["epoch"] == "2026-05-02T00:00:00.000Z"
+
+    run(system, scenario)
+
+
+def test_tasks_and_goals_carry_monotonic_item_revisions(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend, scope=LEAGUE)
+        s_get = (
+            await call(
+                backend,
+                "state.get",
+                {"resource": "sessions", "id": session_id, "scope": LEAGUE},
+            )
+        )["result"]
+        assert "revision" not in s_get["item"]
+        assert s_get["revision"] >= ctx.wstore.last_seq()
+
+        goal = goals.create(ctx.store, HARNESS, title="Goal v1", end_state="end", reason="asked")
+        task = tasks.create(
+            ctx.store,
+            HARNESS,
+            type="maintenance",
+            title="Task v1",
+            description="desc",
+        )
+        t_list = (await call(backend, "state.list", {"resource": "tasks", "scope": LEAGUE}))[
+            "result"
+        ]
+        g_list = (await call(backend, "state.list", {"resource": "goals", "scope": LEAGUE}))[
+            "result"
+        ]
+        t_rev_1 = t_list["items"][0]["revision"]
+        g_rev_1 = g_list["items"][0]["revision"]
+        assert t_rev_1 > g_rev_1 >= 1
+
+        tasks.update(ctx.store, HARNESS, task["id"], title="Task v2")
+        await until(lambda: backend.socket.notes("state.changed"))
+        t_pushed = [n for n in backend.socket.notes("state.changed") if n["resource"] == "tasks"][
+            -1
+        ]
+        assert t_pushed["item"]["revision"] > t_rev_1
+        assert t_pushed["item"]["revision"] == t_pushed["revision"]
+
+        g_get = (
+            await call(
+                backend,
+                "state.get",
+                {
+                    "resource": "goals",
+                    "id": f"{COWORLD_ID}:{goal['id']}",
+                    "scope": LEAGUE,
+                },
+            )
+        )["result"]
+        assert g_get["item"]["revision"] == g_rev_1
+
+    run(system, scenario)
+
+
+def test_concurrent_changed_calls_preserve_revision_order(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        real_pending = backend.pending
+        first_entered = asyncio.Event()
+        release_first = asyncio.Event()
+        calls = 0
+
+        async def gated_pending(sid, requests):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                first_entered.set()
+                await release_first.wait()
+            return await real_pending(sid, requests)
+
+        backend.pending = gated_pending
+        first_task = asyncio.create_task(backend.changed(session_id))
+        await first_entered.wait()
+        # Start a second changed() while the first is paused inside pending(); then create a
+        # queued request before releasing the first call so the second call's snapshot sees it.
+        second_task = asyncio.create_task(backend.changed(session_id))
+        settings.update(ctx.wstore, HARNESS, "paused", True, cites="hold")
+        req_id = admissions.enqueue(
+            ctx.wstore,
+            HARNESS,
+            key="c-order",
+            session_id=session_id,
+            profile="orchestrator",
+            text="queued",
+            origin="client",
+        )
+        release_first.set()
+        await asyncio.gather(first_task, second_task)
+
+        session_notes = [
+            n for n in backend.socket.notes("state.changed") if n["resource"] == "sessions"
+        ]
+        assert len(session_notes) >= 2
+        revs = [n["revision"] for n in session_notes]
+        assert revs == sorted(revs) and len(set(revs)) == len(revs)
+        assert req_id in session_notes[-1]["item"]["active_request_ids"]
+
+    run(system, scenario)
+
+
+def test_session_pushes_chain_previous_revision_from_state_list(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        listed = (await call(backend, "state.list", {"resource": "sessions"}))["result"]
+        start_idx = len(backend.socket.notes("state.changed"))
+
+        settings.update(ctx.wstore, HARNESS, "paused", True, cites="hold")
+        req_1 = str(uuid4())
+        await call(
+            backend,
+            "chat.send",
+            {"session_id": session_id, "messages": say("one"), "scope": WORKSPACE},
+            request_id=req_1,
+        )
+        await until(lambda: len(backend.socket.notes("state.changed")) > start_idx)
+        await call(
+            backend,
+            "chat.cancel",
+            {"session_id": session_id, "request_id": req_1, "scope": WORKSPACE},
+        )
+        await until(lambda: len(backend.socket.notes("state.changed")) >= start_idx + 2)
+
+        pushes = [
+            n
+            for n in backend.socket.notes("state.changed")[start_idx:]
+            if n["resource"] == "sessions"
+        ]
+        first, second = pushes[0], pushes[1]
+        assert first["previous_revision"] == listed["revision"]
+        assert second["previous_revision"] == first["revision"]
+        assert listed["revision"] < first["revision"] < second["revision"]
+
+    run(system, scenario)
+
+
+def test_oversized_message_returns_too_large(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        oversized_str = {
+            "session_id": session_id,
+            "messages": [{"role": "user", "content": "a" * 50_001}],
+            "scope": WORKSPACE,
+        }
+        reply_str = await call(backend, "chat.send", oversized_str)
+        assert reply_str["error"]["code"] == -32000
+        assert code(reply_str) == "too_large"
+
+        oversized_parts = {
+            "session_id": session_id,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "b" * 30_000},
+                        {"type": "text", "text": "c" * 20_001},
+                    ],
+                }
+            ],
+            "scope": WORKSPACE,
+        }
+        reply_parts = await call(backend, "chat.send", oversized_parts)
+        assert reply_parts["error"]["code"] == -32000
+        assert code(reply_parts) == "too_large"
+
+    run(system, scenario)
+
+
+def test_input_respond_disallowed_choice_returns_conflict(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        hermes.script = lambda run_obj: gateway.controls.__setitem__(
+            run_obj.run_id,
+            [
+                {
+                    "kind": "approval",
+                    "prompt_id": "p-deny-only",
+                    "execution_generation": 1,
+                    "description": "Deny-only prompt",
+                    "command": "echo test",
+                    "choices": ["deny"],
+                }
+            ],
+        )
+        gateway.script = lambda run_id: [{"event": "run.started"}, {"gate": True}]
+        await call(
+            backend,
+            "chat.send",
+            {"session_id": session_id, "messages": say("go"), "scope": WORKSPACE},
+        )
+        state = {"resource": "sessions", "id": session_id, "scope": WORKSPACE}
+        await until(lambda: hermes.runs)
+        while not (await call(backend, "state.get", state))["result"]["item"]["pending"]:
+            await asyncio.sleep(0.05)
+        (pending,) = (await call(backend, "state.get", state))["result"]["item"]["pending"]
+        assert pending["choices"] == ["deny"]
+
+        disallowed = await call(
+            backend,
+            "input.respond",
+            {
+                "session_id": session_id,
+                "request_id": pending["request_id"],
+                "scope": WORKSPACE,
+                "response": {"kind": "approval", "choice": "once"},
+            },
+        )
+        assert disallowed["error"]["code"] == -32000
+        assert code(disallowed) == "conflict"
+        gateway.gate.set()
+
+    run(system, scenario)
+
+
+def test_state_get_and_task_cancel_refusal_codes(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        goal = goals.create(ctx.store, HARNESS, title="Win", end_state="Top", reason="asked")
+        task = tasks.create(
+            ctx.store,
+            HARNESS,
+            type="maintenance",
+            title="Fix",
+            description="Do",
+            goal_id=goal["id"],
+        )
+        mismatched = await call(
+            backend,
+            "state.get",
+            {"resource": "goals", "id": f"{COWORLD_ID}:{task['id']}", "scope": LEAGUE},
+        )
+        assert code(mismatched) == "not_found"
+
+        invalid_coworld_scope = {"scope": "coworld", "coworld": "bad/coworld", "league": "l1"}
+        invalid_get = await call(
+            backend,
+            "state.get",
+            {"resource": "tasks", "id": "bad/coworld:T-1", "scope": invalid_coworld_scope},
+        )
+        assert code(invalid_get) == "not_found"
+
+        real_board = backend.board
+
+        async def board_then_abandon(coworld_id, resource, item_id=None):
+            result = await real_board(coworld_id, resource, item_id)
+            tasks.abandon(
+                ctx.store,
+                HARNESS,
+                task["id"],
+                failure={"what_failed": "Already ended", "next_step": "None"},
+            )
+            backend.board = real_board
+            return result
+
+        backend.board = board_then_abandon
+        cancelled = await call(
+            backend,
+            "task.cancel",
+            {"task_id": f"{COWORLD_ID}:{task['id']}", "scope": LEAGUE},
+        )
+        assert cancelled["result"] == {"requested": False}
+
+    run(system, scenario)
+
+
+def test_seam_500_returns_internal_error_without_traceback(system, monkeypatch):
+    server = system[2]
+
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        real_snapshot = server.snapshot
+
+        def broken_snapshot(*_args, **_kwargs):
+            raise RuntimeError("secret database detail")
+
+        monkeypatch.setattr(server, "snapshot", broken_snapshot)
+        raw = await backend.seam.get("/snapshot", params={"store": "workspace", "requests": "1"})
+        assert raw.status_code == 500
+        body = raw.json()
+        assert "traceback" not in body
+        assert "secret database detail" not in body["error"]
+        assert body["error"] == "Internal server error"
+
+        read_reply = await call(backend, "state.list", {"resource": "sessions"})
+        assert read_reply["error"] == {"code": -32603, "message": "Internal error"}
+        monkeypatch.setattr(server, "snapshot", real_snapshot)
+
+        def broken_message(*_args, **_kwargs):
+            raise RuntimeError("secret commit detail")
+
+        monkeypatch.setattr(server, "message", broken_message)
+        cmd_reply = await call(
+            backend,
+            "chat.send",
+            {"session_id": session_id, "messages": say("hi"), "scope": WORKSPACE},
+        )
+        assert code(cmd_reply) == "unavailable"
+        assert cmd_reply["error"]["data"]["outcome"] == "unknown"
+        assert cmd_reply["error"]["message"] == "Internal error"
+        assert "secret commit detail" not in cmd_reply["error"]["message"]
+
+    run(system, scenario)
+
+
+def test_session_title_preserved_across_open_page_and_state_changed(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        open_id = str(uuid4())
+        target_open = await call(backend, "session.open", {"scope": LEAGUE}, request_id=open_id)
+        target_id = target_open["result"]["session"]["id"]
+        assert target_open["result"]["session"].get("title") is None
+
+        gateway.titles[target_id] = "Named in Hermes"
+        send_id = str(uuid4())
+        await call(
+            backend,
+            "chat.send",
+            {"session_id": target_id, "messages": say("hi"), "scope": LEAGUE},
+            request_id=send_id,
+        )
+        await until(lambda: backend.socket.notes("chat.finished"))
+        changed_titles = [
+            note["item"].get("title")
+            for note in backend.socket.notes("state.changed")
+            if note["resource"] == "sessions" and note["item"]["id"] == target_id
+        ]
+        assert changed_titles[-1] == "Named in Hermes"
+
+        other_coworld = "coworld-other"
+        other_scope = {"scope": "coworld", "coworld": other_coworld, "league": "league_other"}
+        other_id = await opened(backend, other_scope)
+        switched = await call(
+            backend,
+            "session.page",
+            {
+                "session_id": other_id,
+                "scope": other_scope,
+                "page": LEAGUE,
+                "related_uploads": [],
+                "target_session_id": target_id,
+            },
+        )
+        assert switched["result"]["kind"] == "switched"
+        assert switched["result"]["session"]["title"] == "Named in Hermes"
+
+        restarted = await backend.restart()
+        reopened = await call(restarted, "session.open", {"scope": LEAGUE}, request_id=open_id)
+        assert reopened["result"]["session"]["id"] == target_id
+        # session.open never waits on Hermes: after a restart the title cache is empty, so the
+        # reply carries the first-message fallback and a read carries Hermes's title.
+        assert reopened["result"]["session"]["title"] == "hi"
+        read = await call(
+            restarted, "state.get", {"resource": "sessions", "id": target_id, "scope": LEAGUE}
+        )
+        assert read["result"]["item"]["title"] == "Named in Hermes"
+
+    run(system, scenario)
+
+
+def test_chat_history_includes_request_id_matching_live_events_and_publish_isolation(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        first = str(uuid4())
+        second = str(uuid4())
+
+        def two_turns(run_id: str) -> list[dict]:
+            if len(hermes.runs) == 1:
+                tool_call = {
+                    "id": "call_first",
+                    "type": "function",
+                    "function": {"name": "ls", "arguments": "{}"},
+                }
+                return [
+                    {"event": "run.started"},
+                    {
+                        "event": "tool.started",
+                        "tool": "ls",
+                        "preview": "ls",
+                        "tool_call_id": "call_first",
+                        "say": [{"role": "assistant", "content": None, "tool_calls": [tool_call]}],
+                    },
+                    {
+                        "event": "tool.completed",
+                        "tool": "ls",
+                        "tool_call_id": "call_first",
+                        "say": [{"role": "tool", "content": "files", "tool_call_id": "call_first"}],
+                    },
+                    {
+                        "event": "run.completed",
+                        "say": [{"role": "assistant", "content": "Done"}],
+                    },
+                ]
+            return [
+                {"event": "run.started"},
+                {"gate": True},
+                {"event": "run.completed", "say": [{"role": "assistant", "content": "Second"}]},
+            ]
+
+        gateway.script = two_turns
+        await call(
+            backend,
+            "chat.send",
+            {"session_id": session_id, "messages": say("first question"), "scope": WORKSPACE},
+            request_id=first,
+        )
+        await until(lambda: hermes.runs)
+        gateway.say(session_id, role="user", content="first question")
+        first_user_id = gateway.transcripts[session_id][-1]["id"]
+        with ctx.wstore.tx(HARNESS) as tx:
+            tx.execute(
+                "UPDATE client_admissions SET native_message_id=? WHERE op_id=?",
+                (first_user_id, first),
+            )
+        await until(lambda: backend.socket.notes("chat.finished"))
+
+        # Insert a native user message belonging to a second non-steered admission, and verify
+        # calling publish() for ``first`` stops before leaking it under ``first``.
+        await call(
+            backend,
+            "chat.send",
+            {"session_id": session_id, "messages": say("second question"), "scope": WORKSPACE},
+            request_id=second,
+        )
+        await until(lambda: len(hermes.runs) == 2)
+        gateway.say(session_id, role="user", content="second question")
+        second_user_id = gateway.transcripts[session_id][-1]["id"]
+        with ctx.wstore.tx(HARNESS) as tx:
+            tx.execute(
+                "UPDATE client_admissions SET native_message_id=? WHERE op_id=?",
+                (second_user_id, second),
+            )
+        after = await backend.publish(first, session_id, 0)
+        assert after < second_user_id
+        published_for_first = [
+            n for n in backend.socket.notes("chat.message") if n["sequence"] == second_user_id
+        ]
+        assert published_for_first == []
+
+        gateway.gate.set()
+        await until(lambda: len(backend.socket.notes("chat.finished")) == 2)
+        second_notes = [
+            n for n in backend.socket.notes("chat.message") if n["sequence"] == second_user_id
+        ]
+        assert len(second_notes) == 1 and second_notes[0]["request_id"] == second
+
+        history = await call(
+            backend, "chat.history", {"session_id": session_id, "scope": WORKSPACE}
+        )
+        by_seq = {item["sequence"]: item for item in history["result"]["items"]}
+        assert by_seq[first_user_id].get("request_id") == first
+        assert by_seq[second_user_id].get("request_id") == second
+        tool_call_item = next(
+            item
+            for item in history["result"]["items"]
+            if item["message"].get("role") == "assistant" and item["message"].get("tool_calls")
+        )
+        tool_result_item = next(
+            item for item in history["result"]["items"] if item["message"].get("role") == "tool"
+        )
+        plain_assistant_item = next(
+            item
+            for item in history["result"]["items"]
+            if item["message"] == {"role": "assistant", "content": "Done"}
+        )
+        assert tool_call_item.get("request_id") == first
+        assert tool_result_item.get("request_id") == first
+        # Plain assistant text carries no durable per-message request_id in Option B.
+        assert "request_id" not in plain_assistant_item
+
+    run(system, scenario)
+
+
+def test_cancel_merged_steered_followup_and_waiting_request(system):
+    _, hermes, _ = system
+
+    def hold_on_rate_limit(run):
+        if len(hermes.runs) == 2:
+            hermes.fail(run.run_id, "HTTP 429: slow down")
+
+    async def scenario(backend, gateway, ctx, hermes):
+        hermes.script = hold_on_rate_limit
+        session_id = await opened(backend)
+        base_script = gateway.script
+        gateway.script = lambda run_id: (
+            [*base_script(run_id)[:5], {"gate": True}, *base_script(run_id)[5:]]
+            if len(hermes.runs) == 1
+            else [{"event": "run.started"}, {"event": "run.failed", "error": "HTTP 429: slow down"}]
+        )
+        first, follow_up = str(uuid4()), str(uuid4())
+        params = {"session_id": session_id, "messages": say("hi"), "scope": WORKSPACE}
+        await call(backend, "chat.send", params, request_id=first)
+        await until(lambda: started(backend))
+        await call(backend, "chat.send", params | {"messages": say("also")}, request_id=follow_up)
+        (run_id,) = hermes.runs
+        await until(lambda: hermes.steered.get(run_id) == ["also"])
+
+        # Cancelling the steered follow-up stops the shared host run and settles both requests.
+        cancel_reply = await call(
+            backend,
+            "chat.cancel",
+            {"session_id": session_id, "request_id": follow_up, "scope": WORKSPACE},
+        )
+        assert cancel_reply["result"] == {"requested": True}
+        assert any(name == "stop" and args["run_id"] == run_id for name, args in hermes.calls)
+        gateway.gate.set()
+        await until(lambda: len(backend.socket.notes("chat.finished")) == 2)
+        statuses = {n["request_id"]: n["status"] for n in backend.socket.notes("chat.finished")}
+        assert statuses == {first: "cancelled", follow_up: "cancelled"}
+
+        # Cancelling a waiting request settles immediately with waiting=None, error=None, and
+        # no stale retry/waiting state on the session.
+        waiting_id = str(uuid4())
+        await call(
+            backend,
+            "chat.send",
+            {"session_id": session_id, "messages": say("retry later"), "scope": WORKSPACE},
+            request_id=waiting_id,
+        )
+        get_waiting = {"resource": "requests", "id": waiting_id, "scope": WORKSPACE}
+        while (await call(backend, "state.get", get_waiting))["result"]["item"][
+            "status"
+        ] != "waiting":
+            await asyncio.sleep(0.05)
+
+        waiting_cancel = await call(
+            backend,
+            "chat.cancel",
+            {"session_id": session_id, "request_id": waiting_id, "scope": WORKSPACE},
+        )
+        assert waiting_cancel["result"] == {"requested": True}
+        await until(lambda: len(backend.socket.notes("chat.finished")) == 3)
+        finished_note = next(
+            n for n in backend.socket.notes("chat.finished") if n["request_id"] == waiting_id
+        )
+        assert finished_note["status"] == "cancelled"
+        assert "error" not in finished_note
+
+        settled_req = (await call(backend, "state.get", get_waiting))["result"]["item"]
+        assert settled_req["status"] == "cancelled"
+        assert settled_req["waiting"] is None
+        assert settled_req["error"] is None
+        waiting_row = ctx.wstore.one(
+            "SELECT status,resume_after FROM client_admissions WHERE op_id=?", (waiting_id,)
+        )
+        assert waiting_row["status"] == "cancelled" and waiting_row["resume_after"] is None
+
+        settled_session = (
+            await call(
+                backend,
+                "state.get",
+                {"resource": "sessions", "id": session_id, "scope": WORKSPACE},
+            )
+        )["result"]["item"]
+        assert settled_session["active_request_ids"] == []
+
+        frame_methods = [
+            (f["message"].get("method"), f["message"].get("params"))
+            for f in backend.socket.frames
+            if f["frontend_id"] == str(FRONTEND)
+        ]
+        changed_idx = max(
+            i
+            for i, (method, params_) in enumerate(frame_methods)
+            if method == "state.changed"
+            and params_["resource"] == "sessions"
+            and params_["item"]["id"] == session_id
+            and params_["item"]["active_request_ids"] == []
+            and any(
+                req["request_id"] == waiting_id and req["status"] == "cancelled"
+                for req in params_["item"]["requests"]
+            )
+        )
+        finished_idx = next(
+            i
+            for i, (method, params_) in enumerate(frame_methods)
+            if method == "chat.finished" and params_["request_id"] == waiting_id
+        )
+        assert changed_idx < finished_idx
+
+    run(system, scenario)
+
+
+def test_cached_hermes_title_skips_repeat_gateway_gets(system, monkeypatch):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        title_gets = 0
+        real_get = backend.gateway.get
+
+        async def counted_get(url, *args, **kwargs):
+            nonlocal title_gets
+            if url == f"api/sessions/{session_id}":
+                title_gets += 1
+            return await real_get(url, *args, **kwargs)
+
+        monkeypatch.setattr(backend.gateway, "get", counted_get)
+
+        # Untitled at first: fallback is not cached so Hermes can supply a title later.
+        await backend.changed(session_id)
+        gateway.titles[session_id] = "Settled Hermes Title"
+        await backend.changed(session_id)
+        await backend.changed(session_id)
+        assert title_gets == 2
+
+        changed_titles = [
+            note["item"].get("title")
+            for note in backend.socket.notes("state.changed")
+            if note["resource"] == "sessions" and note["item"]["id"] == session_id
+        ]
+        assert changed_titles[-2:] == ["Settled Hermes Title", "Settled Hermes Title"]
+
+    run(system, scenario)

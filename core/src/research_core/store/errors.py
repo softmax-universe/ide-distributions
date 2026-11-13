@@ -46,5 +46,9 @@ class NotFound(StoreError):
     """A referenced record does not exist."""
 
 
+class IdReused(StoreError):
+    """An op_id was reused with different input."""
+
+
 class LeaseError(StoreError):
     """A Task-scoped write from someone other than the holder at the current epoch."""

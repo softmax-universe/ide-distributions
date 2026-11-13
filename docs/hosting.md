@@ -247,6 +247,24 @@ IDE reaches `research serve` only through the AIDE 1.0.0 methods, which have no 
 so the IDE cannot show or change a model until AIDE adds them.
 Nothing that starts a run may put a `model` in the run request.
 
+AIDE 1.0.0 details at the seam and backend boundary:
+
+- Store `epoch` values come from each store's durable `meta['created']` timestamp (`research store`
+  init), so epochs survive backend restarts and change only when the backing store is recreated.
+- `Task` and `Goal` items carry their own per-item `revision` from their latest coworld event;
+  `Session` items remain on the monotonically increasing collection `revision` chain because titles
+  and pending controls can change outside workspace store events.
+- Explicit seam refusals tag a contract `code` (`too_large`, `id_reused`, `forbidden`, `not_found`,
+  `conflict`); unexpected internal failures return HTTP 500 without tracebacks on the seam and
+  JSON-RPC `-32603` on the backend, except commands that fail after crossing a commit point return
+  `unavailable` with `outcome: "unknown"` so the client retries idempotently.
+- `chat.cancel` on a merged steered follow-up stops the shared native run and marks both the
+  follow-up and host admissions for cancellation; cancelling a held `waiting` request clears
+  `resume_after` and settles it as `cancelled` without error.
+- `chat.history` joins `request_id` on user/follow-up admissions (`client_admissions`) and tool
+  calls/results (`request_events`); plain assistant text replies carry no durable per-message
+  `request_id` and omit that field.
+
 ## Agent telemetry
 
 Capture is always on in the image, with no setting. Every process
