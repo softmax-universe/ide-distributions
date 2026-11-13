@@ -541,9 +541,11 @@ def test_a_lost_request_of_a_retried_call_is_named(writer, stream_file, datadog,
     assert report["missing"] == [{"kind": "call_with_no_attempt", "api_request_id": "t:api:1"}]
 
 
-def test_a_session_datadog_has_never_seen_says_so(datadog):
-    report = rebuild_session(search_of(datadog), "ses_unknown")
+@pytest.mark.parametrize("workspace", [None, "wrk-named"])
+def test_a_session_datadog_has_never_seen_says_so(datadog, workspace):
+    report = rebuild_session(search_of(datadog), "ses_unknown", workspace)
     assert report["missing"] == [{"kind": "no_records", "session_id": "ses_unknown"}]
+    assert report["workspace_id"] is None
 
 
 def test_workspaces_are_kept_apart(writer, stream_file, datadog):
