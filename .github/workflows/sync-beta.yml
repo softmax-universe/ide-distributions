@@ -1,0 +1,87 @@
+# Beta is main plus experiments: after every push to main, merge main into beta with a merge
+# commit. A clean merge is pushed to beta, which releases the beta channel. A conflicting merge
+# opens (or updates) a pull request from sync/main-into-beta into beta for a human to resolve, and
+# posts to Slack when that pull request opens and once a day while it stays open.
+name: Merge main into beta
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 16 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-beta
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SYNC_BRANCH: sync/main-into-beta
+    steps:
+      # BETA_SYNC_TOKEN must bypass the beta ruleset, and a push made with it (unlike one made
+      # with GITHUB_TOKEN) triggers release-hermes.yml on beta.
+      - uses: actions/checkout@v4
+        with:
+          ref: beta
+          fetch-depth: 0
+          token: ${{ secrets.BETA_SYNC_TOKEN }}
+      - name: Merge main into beta
+        env:
+          GH_TOKEN: ${{ secrets.BETA_SYNC_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.BETA_SYNC_SLACK_WEBHOOK_URL }}
+          SLACK_MENTION: ${{ vars.BETA_SYNC_SLACK_MENTION }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          main=$(git rev-parse origin/main)
+
+          if git merge-base --is-ancestor "$main" HEAD; then
+            echo "beta already contains main at $main" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if git merge --no-ff --no-edit -m "Merge main ($main) into beta" "$main"; then
+            git push origin HEAD:refs/heads/beta
+            echo "Merged main at $main into beta" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git merge --abort
+
+          # A sync branch a human already merged beta into is not an ancestor of main; leave it
+          # alone and let its open pull request carry the resolution.
+          if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null; then
+            git fetch origin "$SYNC_BRANCH"
+            if git merge-base --is-ancestor FETCH_HEAD "$main"; then
+              git push origin "$main:refs/heads/$SYNC_BRANCH"
+            else
+              echo "$SYNC_BRANCH has resolution commits; not moving it to $main" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            git push origin "$main:refs/heads/$SYNC_BRANCH"
+          fi
+
+          pr=$(gh pr list --head "$SYNC_BRANCH" --base beta --state open --json url --jq '.[0].url // ""')
+          opened=false
+          if [ -z "$pr" ]; then
+            opened=true
+            pr=$(gh pr create --head "$SYNC_BRANCH" --base beta \
+              --title "Merge main into beta (conflicts)" \
+              --body "Merging \`main\` into \`beta\` conflicts. Merge \`beta\` into \`$SYNC_BRANCH\`, resolve the conflicts, and merge this pull request with a merge commit. Opened by \`sync-beta.yml\`.")
+          fi
+          echo "Merging main at $main into beta conflicts; resolve in $pr" >> "$GITHUB_STEP_SUMMARY"
+
+          # Alert when the conflict first appears and on the daily run while it stays unresolved;
+          # beta stops receiving main's fixes until it is merged.
+          if [ "$opened" = true ] || [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            state=$([ "$opened" = true ] && echo "conflicts" || echo "still conflicts")
+            jq -n --arg text "<@${SLACK_MENTION:?}> Merging \`main\` into \`beta\` $state, so beta is not getting main's changes. Resolve <$pr|the sync PR>." \
+              '{text: $text}' | curl -fsS -X POST -H 'Content-Type: application/json' --data @- "${SLACK_WEBHOOK_URL:?}"
+          fi

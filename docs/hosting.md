@@ -334,9 +334,19 @@ untouched and the workspace is paused until the matching release runs again.
 ## Releases
 
 A push to `main` touching the paths in `.github/workflows/release-hermes.yml` (what the image holds)
-dispatches Metta's image release, unless the last nightly read-only platform check (`research
-platform check --read-only`) failed. Metta's `deploy-hermes-agent.yml` builds `image/Dockerfile`,
-runs `image/system_tests/start-stop.sh`, publishes the digest and dispatches its qualification job.
+dispatches Metta's image release for the `main` channel, unless the last nightly read-only platform
+check (`research platform check --read-only`) failed. A push to `beta` does the same for the `beta`
+channel. Creating `beta` from `main` releases it too, so beta starts on `main`'s image (reused, not
+rebuilt).
+
+`beta` is a playground for experiments, not a path to `main`. Team members opt their workspace into
+it on softmax.com. Open experimental pull requests against `beta`; `sync-beta.yml` merges `main` into
+`beta` after every push to `main`, and opens a pull request into `beta` when that merge conflicts.
+To ship an experiment, open a normal pull request to `main`. Opting out of beta applies at the
+workspace's next stop, and experimental state may not carry over.
+
+Metta's `deploy-hermes-agent.yml` builds `image/Dockerfile`, runs `image/system_tests/start-stop.sh`,
+publishes the digest and dispatches the channel's qualification job.
 None of these sends a model request. The acceptance scenario ("submit the starter as my champion" on
 a new workspace ends in a submission) runs scripted, with no model, as a pull request check
 (`core/tests/scenarios/test_seam_end_to_end.py`); its real-gateway form needs a model key, so it
