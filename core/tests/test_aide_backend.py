@@ -11,11 +11,15 @@ import threading
 import time
 import types
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import httpx
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker, ValidationError
+from referencing import Registry
+from referencing.jsonschema import DRAFT202012
 
 from research_core import run_failures
 from research_core.serve import SeamServer
@@ -268,6 +272,199 @@ def run(system, scenario, inference=None, seam_transport=None, gateway=None):
                 await stop()
 
     asyncio.run(main())
+
+
+_FORMAT_CHECKER = FormatChecker()
+
+
+@_FORMAT_CHECKER.checks("uuid")
+def _is_canonical_uuid(value: object) -> bool:
+    if not isinstance(value, str):
+        return True
+    try:
+        UUID(value)
+    except ValueError:
+        return False
+    return value == value.lower()
+
+
+@_FORMAT_CHECKER.checks("date-time")
+def _is_rfc3339_datetime(value: object) -> bool:
+    if not isinstance(value, str):
+        return True
+    if "T" not in value and "t" not in value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+class _AideContract:
+    def __init__(self, spec_path: Path):
+        document = json.loads(spec_path.read_bytes())
+        self._uri = spec_path.as_uri()
+        self._registry = Registry().with_resource(self._uri, DRAFT202012.create_resource(document))
+        self._validators: dict[str, Draft202012Validator] = {}
+        self.message_schemas: dict[str, str] = {}
+        self.param_schemas: dict[str, str] = {}
+        self.reply_envelopes: dict[str, dict] = {}
+        self.result_schemas: dict[str, str] = {}
+        for operation in document["operations"].values():
+            if operation["channel"]["$ref"] != "#/channels/frontend":
+                continue
+            message_obj = self._resolve(document, operation["messages"][0])
+            payload = self._resolve(document, message_obj["payload"])
+            if "method" not in payload["properties"] or operation["tags"][0]["name"].startswith(
+                "Relay"
+            ):
+                continue
+            name = payload["properties"]["method"]["const"]
+            self.message_schemas[name] = message_obj["payload"]["$ref"]
+            self.param_schemas[name] = payload["properties"]["params"]["$ref"]
+            if "reply" in operation:
+                reply_msg = self._resolve(document, operation["reply"]["messages"][0])
+                reply_payload = reply_msg["payload"]
+                self.reply_envelopes[name] = reply_payload
+                self.result_schemas[name] = reply_payload["properties"]["result"]["$ref"]
+
+    @staticmethod
+    def _resolve(document: dict, value: dict) -> dict:
+        while "$ref" in value:
+            reference = value["$ref"]
+            value = document
+            for segment in reference[2:].split("/"):
+                value = value[segment.replace("~1", "/").replace("~0", "~")]
+        return value
+
+    def _validate(self, ref: str, instance: object) -> None:
+        validator = self._validators.get(ref)
+        if validator is None:
+            validator = Draft202012Validator(
+                {"$ref": f"{self._uri}{ref}"},
+                registry=self._registry,
+                format_checker=_FORMAT_CHECKER,
+            )
+            self._validators[ref] = validator
+        validator.validate(instance)
+
+    def _validate_inline(self, key: str, schema: dict, instance: object) -> None:
+        validator = self._validators.get(key)
+        if validator is None:
+            resolved = json.loads(json.dumps(schema).replace('"#/', f'"{self._uri}#/'))
+            validator = Draft202012Validator(
+                resolved,
+                registry=self._registry,
+                format_checker=_FORMAT_CHECKER,
+            )
+            self._validators[key] = validator
+        validator.validate(instance)
+
+    def validate_request(self, frame: dict) -> None:
+        self._validate("#/components/schemas/Request", frame)
+        self._validate(self.message_schemas[frame["method"]], frame)
+
+    def validate_result(self, method: str, frame: dict) -> None:
+        self._validate_inline(f"reply:{method}", self.reply_envelopes[method], frame)
+        self._validate(self.result_schemas[method], frame["result"])
+
+    def validate_error(self, frame: object) -> None:
+        self._validate("#/components/schemas/Error", frame)
+
+    def validate_notification(self, frame: dict) -> None:
+        self._validate("#/components/schemas/Notification", frame)
+        method = frame["method"]
+        self._validate(self.message_schemas[method], frame)
+        self._validate(self.param_schemas[method], frame["params"])
+
+
+@lru_cache(maxsize=1)
+def _aide_contract() -> _AideContract:
+    return _AideContract(IMAGE / "contract/aide-1.0.0/asyncapi.json")
+
+
+@pytest.fixture(autouse=True)
+def _validate_every_aide_frame(monkeypatch):
+    contract = _aide_contract()
+    methods: dict[str, str] = {}
+    real_send = aide.Backend.send
+    real_answer = aide.Backend.answer
+    real_call = call
+
+    async def checked_call(backend, method, params, *, request_id=None, frontend=FRONTEND):
+        rid = request_id or str(uuid4())
+        methods[rid] = method
+        request = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
+        reply = await real_call(backend, method, params, request_id=rid, frontend=frontend)
+        if "result" in reply:
+            contract.validate_request(request)
+        return reply
+
+    async def checked_answer(self, socket, frame):
+        if isinstance(frame.message, dict):
+            rid = frame.message.get("id")
+            method = frame.message.get("method")
+            if isinstance(rid, str) and isinstance(method, str):
+                methods.setdefault(rid, method)
+        return await real_answer(self, socket, frame)
+
+    async def checked_send(self, socket, frontend, message):
+        if "method" in message and "id" not in message:
+            contract.validate_notification(message)
+        elif "error" in message:
+            contract.validate_error(message)
+        elif "result" in message:
+            method = methods.get(message["id"])
+            assert method is not None, f"Result for unknown request id {message['id']}"
+            contract.validate_result(method, message)
+        else:
+            raise AssertionError(f"Unclassified outgoing message: {message}")
+        return await real_send(self, socket, frontend, message)
+
+    monkeypatch.setattr(sys.modules[__name__], "call", checked_call)
+    monkeypatch.setattr(aide.Backend, "answer", checked_answer)
+    monkeypatch.setattr(aide.Backend, "send", checked_send)
+
+
+def test_aide_contract_validator_rejects_invalid_frames():
+    contract = _aide_contract()
+    with pytest.raises(ValidationError):
+        contract.validate_notification(
+            {
+                "jsonrpc": "2.0",
+                "method": "state.changed",
+                "params": {
+                    "resource": "sessions",
+                    "epoch": "e1",
+                    "revision": 1,
+                    "change": "updated",
+                    "item": {
+                        "id": "s1",
+                        "scope": WORKSPACE,
+                        "status": "active",
+                        "active_request_ids": [],
+                        "pending": [],
+                        "created_at": "2026-04-01T00:00:00Z",
+                        "updated_at": "2026-04-01T00:00:00Z",
+                    },
+                    "extra_field": True,
+                },
+            }
+        )
+    with pytest.raises(ValidationError):
+        contract.validate_result(
+            "chat.send",
+            {
+                "jsonrpc": "2.0",
+                "id": str(uuid4()),
+                "result": {
+                    "accepted": False,
+                    "session_id": "s1",
+                    "request_id": str(uuid4()),
+                },
+            },
+        )
 
 
 async def call(backend, method, params, *, request_id=None, frontend=FRONTEND):
