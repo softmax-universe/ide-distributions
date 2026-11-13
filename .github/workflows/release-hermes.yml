@@ -44,7 +44,8 @@ jobs:
           GH_TOKEN: ${{ secrets.METTA_RELEASE_DISPATCH_TOKEN }}
           SOURCE_REVISION: ${{ github.sha }}
           RELEASE_STARTED_AT: ${{ steps.origin.outputs.started_at }}
-          CHANNEL: ${{ github.ref_name == 'main' && 'stable' || 'beta' }}
+          # The release channel is the branch name: main or beta.
+          CHANNEL: ${{ github.ref_name }}
         run: >-
           gh workflow run deploy-hermes-agent.yml --repo softmax-universe/softmax --ref main
           -f "source_revision=$SOURCE_REVISION" -f "release_started_at=$RELEASE_STARTED_AT"
