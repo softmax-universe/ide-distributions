@@ -6,7 +6,10 @@ the bodies and the joins. ``docs/agent-telemetry.md`` says how to run it and wha
 
 from __future__ import annotations
 
+import base64
+import email.message
 import hashlib
+import io
 import json
 import time
 import urllib.error
@@ -22,6 +25,11 @@ SEARCH_PATH = "/api/v2/logs/events/search"
 # Datadog's largest page: 5000 answered 200 and 5001 a 400, "Limit can't be more than 5000",
 # on 2026-11-12.
 PAGE_LIMIT = 5000
+# The token broker's ``POST /proxy`` refuses an upstream answer over 2,097,152 bytes. A row Datadog
+# returns is the line's fields plus about 2,000 bytes of envelope (1,937 to 2,057 measured on
+# 2026-11-13), and Datadog writes ``&``, ``<`` and ``>`` as six-byte escapes. At 100 rows a page
+# holds 100 rows of 4,096-byte lines with about 3,000 escaped characters each.
+PROXY_PAGE_LIMIT = 100
 # 1,500 digests make a 105,000-character query. On 2026-11-12 Datadog answered searches of 1,500,
 # 2,000, 3,000 and 5,000 digest terms (up to 350,000 characters) with 200 and status ``done``. Those
 # matched no rows, so 1,500 leaves room for a search that does.
@@ -46,6 +54,8 @@ class LogsSearch:
     it: Datadog warns that a relative window such as ``now-15d`` can miss results across pages.
     """
 
+    page_limit = PAGE_LIMIT
+
     def __init__(
         self, url: str, api_key: str, app_key: str, sleep: Callable[[float], None] = time.sleep
     ) -> None:
@@ -55,13 +65,17 @@ class LogsSearch:
         now = time.time()
         self._window = {"from": format_time(now - SEARCH_WINDOW_S), "to": format_time(now)}
 
-    def _post(self, body: dict[str, Any]) -> dict[str, Any]:
+    def _send(self, body: dict[str, Any]) -> dict[str, Any]:
+        """One search. Datadog's error answer raises ``HTTPError``."""
         headers = {"Content-Type": "application/json", **self._keys}
+        request = urllib.request.Request(self._url, json.dumps(body).encode(), headers)
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return json.load(response)
+
+    def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         while True:
-            request = urllib.request.Request(self._url, json.dumps(body).encode(), headers)
             try:
-                with urllib.request.urlopen(request, timeout=120) as response:
-                    return json.load(response)
+                return self._send(body)
             except urllib.error.HTTPError as error:
                 if error.code != 429:
                     raise
@@ -70,7 +84,7 @@ class LogsSearch:
     def entries(self, query: str) -> Iterator[dict[str, Any]]:
         """Each log entry's own fields, which Datadog nests under ``attributes.attributes``."""
         window = {**self._window, "storage_tier": "indexes"}
-        page: dict[str, Any] = {"limit": PAGE_LIMIT}
+        page: dict[str, Any] = {"limit": self.page_limit}
         while True:
             filters = {"query": query, **window}
             answer = self._post({"filter": filters, "page": page, "sort": "timestamp"})
@@ -87,6 +101,64 @@ class LogsSearch:
             page["cursor"] = (meta.get("page") or {}).get("after")
             if not page["cursor"]:
                 return
+
+
+class BrokerLogsSearch(LogsSearch):
+    """The same search through the Softmax token broker's ``POST /proxy``, which adds the
+    ``datadog.content.read`` keys itself and never hands them out. Metta's
+    ``docs/specs/0156-broker-http-proxy.md`` defines the request and the answer.
+
+    The broker answers Datadog's own error, a 429 too, as a 200 that names ``upstream_status``.
+    That raises the ``HTTPError`` Datadog would have, so ``_post`` treats both transports alike.
+    """
+
+    page_limit = PROXY_PAGE_LIMIT
+
+    def __init__(
+        self,
+        broker_url: str,
+        token: str,
+        reason: str,
+        session_id: str,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        super().__init__("", "", "", sleep)  # No Datadog keys: the broker adds them.
+        self._url = broker_url.rstrip("/") + "/proxy"
+        # A hosted session's agent proxy adds the token to what it sends to the broker.
+        self._headers = {"Content-Type": "application/json"}
+        if token != "proxy-injected":
+            self._headers["Authorization"] = f"Bearer {token}"
+        self._request = {
+            "scope": "datadog.content.read",
+            "reason": reason,
+            "session_id": session_id,
+            "method": "POST",
+            "path": SEARCH_PATH,
+            "headers": {"Content-Type": "application/json"},
+        }
+
+    def _send(self, body: dict[str, Any]) -> dict[str, Any]:
+        payload = {
+            **self._request,
+            "body_b64": base64.b64encode(json.dumps(body).encode()).decode(),
+        }
+        request = urllib.request.Request(self._url, json.dumps(payload).encode(), self._headers)
+        with urllib.request.urlopen(request, timeout=120) as response:
+            answer = json.load(response)
+        data = base64.b64decode(answer["body_b64"])
+        status = int(answer["upstream_status"])
+        if status >= 400:
+            headers = email.message.Message()
+            for name, value in answer["headers"].items():
+                headers[name] = value
+            raise urllib.error.HTTPError(
+                SEARCH_PATH,
+                status,
+                "Datadog's answer through the broker",
+                headers,
+                io.BytesIO(data),
+            )
+        return json.loads(data)
 
 
 def _quoted(value: str) -> str:

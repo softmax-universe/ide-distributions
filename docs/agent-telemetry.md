@@ -72,17 +72,33 @@ selects it. On 2026-11-05 at 17:28 Pacific a freshly written test line, sent str
 rather than through a pod's stream, was read by `datadog.content.read` (1 line) and not by `datadog.read`
 (0 lines). Metta #30918 removed the separate index, and the `datadog` stack reports no changes. On
 2026-11-08 lines from real pods' streams were checked the same way: `datadog.content.read` reads them and
-`datadog.read` gets 0 results. In a checkout of this repository:
+`datadog.read` gets 0 results. From `core/` in a checkout of this repository:
 
 ```bash
-python3 ~/coding/metta/scripts/token_broker_client.py exec --scope datadog.content.read \
-  --reason "why you are reading this Session" -- \
-  uv run research telemetry rebuild --session <session id>
+uv run research telemetry rebuild --session <session id> > session.json
 ```
 
+Since metta #31272 (metta's `docs/specs/0156-broker-http-proxy.md`), `datadog.content.read` is a proxy
+scope: the token broker never hands out its keys, and `token_broker_client.py exec` refuses it with a
+409. So the command sends each search to the broker's `POST /proxy`, which adds the keys and passes on
+Datadog's answer. It finds the broker token as metta's `scripts/token_broker_client.py` does:
+`TOKEN_BROKER_TOKEN`, or else `~/.config/token-broker/token`, and `TOKEN_BROKER_URL` overrides the broker
+URL. `--reason` is the reason the broker records for each search, by default `telemetry rebuild of
+Session <id>`. When `DD_API_KEY` and `DD_APP_KEY` are both set, it uses them and calls Datadog directly
+instead.
+
+Through the broker a page is 100 rows, and with the keys 5,000, Datadog's largest. The broker refuses an
+answer over 2 MB (502 `upstream_response_too_large`). On 2026-11-13 a row of a real search was the
+line's fields plus 1,937 to 2,057 bytes of envelope (2,724 to 3,754 bytes a row on average), and Datadog
+writes `&`, `<` and `>` as six-byte escapes. A line is at most 4,096 bytes, so 100 rows fit in 2 MB even
+when about 3,000 characters of each line are escaped. The broker waits at most 25 seconds for Datadog. A
+search of 1,500 digests (105,000 characters) over the 15 days took 0.5 to 1.5 seconds. A rebuild through
+the broker took 8 seconds for a Session of 9 requests and 4 minutes 14 seconds for one of 286 requests and
+3,462 events, on 2026-11-13.
+
 Add `--workspace <id>` if the command says several workspaces hold that ID. `--session` takes any ID of
-the Session, first or after compaction. The command needs only `DD_API_KEY` and `DD_APP_KEY`: no
-state.db, volume or workspace API. It exits 0 when nothing was missing, 3 when something was, and 2 when
+the Session, first or after compaction. The command needs only the broker token, or `DD_API_KEY` and
+`DD_APP_KEY`: no state.db, volume or workspace API. It exits 0 when nothing was missing, 3 when something was, and 2 when
 it could not start, which includes Datadog refusing the search, not answering, or answering that a search did not
 finish (`meta.status` other than `done`, such as `timeout`) or that warns (any `meta.warnings`, even with
 status `done`), because such an answer can hold part of the results. Exit 1 is a crash, as for any
