@@ -130,6 +130,8 @@ class _Finder:
         self.objects: dict[str, bytes | None] = {EMPTY_DIGEST: b""}
         self.parsed: dict[str, Any] = {}
         self.missing: dict[str, list[dict[str, Any]]] = {}
+        # The characters of each tool schema, which every request of a process lists again.
+        self.tool_chars: dict[str, int] = {}
 
     def _find(self, condition: str) -> None:
         scope = _any_of("workspace_id", sorted(self.workspaces)) if self.workspaces else ""
@@ -352,7 +354,9 @@ def _source_chars(finder: _Finder, manifest: dict, request: dict, places: dict) 
                 arguments = (call.get("function") or {}).get("arguments")
                 chars["tool_call_arguments"] += len(arguments or "")
     for tool in (finder.json(manifest.get("tool_list_digest")) or {}).get("tools", ()):
-        chars["tool_schemas"] += len(finder.text(tool) or "")
+        if tool not in finder.tool_chars:
+            finder.tool_chars[tool] = len(finder.text(tool) or "")
+        chars["tool_schemas"] += finder.tool_chars[tool]
     return {source: count for source, count in chars.items() if count}
 
 
@@ -399,7 +403,10 @@ def _of_attempt(record: dict[str, Any]) -> bool:
 _ATTEMPT_ENDS = ("response", "failed", "unread")
 
 
-def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> list[dict]:
+def _build_requests(
+    finder: _Finder, operations: list[dict], places: dict
+) -> tuple[list[dict], list[str]]:
+    """Each request, and the attempt IDs of those no record says the end of."""
     replies: dict[str, dict] = defaultdict(dict)
     # What a broken stream had shown, which Hermes can retry inside the same attempt.
     partials: dict[str, list] = defaultdict(list)
@@ -409,6 +416,7 @@ def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> li
         else:
             replies[record["model_attempt_id"]][record["stage"]] = record
     requests = []
+    unended: list[str] = []
     attempts = [r for r in operations if r["action"] == "model_attempt" and r["stage"] == "request"]
     for position, attempt in enumerate(attempts, start=1):
         entry = {"position": position, **attempt, "tools": []}
@@ -422,6 +430,8 @@ def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> li
         else:
             entry.update(_rebuild_request(finder, manifest_digest))
         stages = replies[attempt["model_attempt_id"]]
+        if not stages.keys() & _ATTEMPT_ENDS:
+            unended.append(attempt["model_attempt_id"])
         reply = stages.get("response", {})
         if reply:
             entry["response"] = {**reply, "message": finder.json(_ref(reply, "message"))}
@@ -443,7 +453,7 @@ def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> li
         if "request" not in replies[attempt_id]:
             problem = {"kind": "reply_with_no_request", "model_attempt_id": attempt_id}
             finder.missing[attempt_id] = [problem]
-    return requests
+    return requests, unended
 
 
 def _scope(record: dict[str, Any]) -> str | None:
@@ -581,7 +591,7 @@ def rebuild_session(search: LogsSearch, session_id: str, workspace: str | None =
         if "target_digest" in record:
             place = (record["source_type"], record["byte_offset"], record["byte_length"])
             places[record["target_digest"]].append(place)
-    requests = _build_requests(finder, operations, places)
+    requests, unended = _build_requests(finder, operations, places)
     unattached = _attach_tools(finder, operations, requests)
     rows = _rows(finder, operations, requests)
     # Hermes retries a call under its one ``api_request_id`` and starts each attempt with its own
@@ -600,13 +610,13 @@ def rebuild_session(search: LogsSearch, session_id: str, workspace: str | None =
         for record in operations
         if record["action"] not in ("tool", "message") and not _of_attempt(record)
     ]
-    # No record says how these ended: a kill, a cancel (Hermes's interrupt fires no hook), or a
-    # call still running. None of these is a loss, so they stay out of ``missing``.
-    unended = [r["model_attempt_id"] for r in requests if not r.keys() & _ATTEMPT_ENDS]
+    # ``unended``: no record says how these ended, as after a kill, a cancel (Hermes's interrupt
+    # fires no hook), or a call still running. None of these is a loss, so they stay out of
+    # ``missing``.
     return {
         "session_id": session_id,
-        # None when Datadog had nothing, even for a workspace named with ``--workspace``.
-        "workspace_id": next(iter(finder.workspaces), None) if finder.records else None,
+        # None when no record is this Session's, even for a workspace named with ``--workspace``.
+        "workspace_id": next(iter(finder.workspaces), None) if owned else None,
         "session_ids": sorted(finder.session_ids),
         "requests": requests,
         "unended_attempts": unended,
