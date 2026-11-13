@@ -22,8 +22,10 @@ SEARCH_PATH = "/api/v2/logs/events/search"
 # Datadog's largest page: 5000 answered 200 and 5001 a 400, "Limit can't be more than 5000",
 # on 2026-11-12.
 PAGE_LIMIT = 5000
-# 200 digests make a 14,000-character query. Datadog answered one of 140,000 on 2026-11-04.
-VALUES_PER_SEARCH = 200
+# 1,500 digests make a 105,000-character query. On 2026-11-12 Datadog answered searches of 1,500,
+# 2,000, 3,000 and 5,000 digest terms (up to 350,000 characters) with 200 and status ``done``. Those
+# matched no rows, so 1,500 leaves room for a search that does.
+VALUES_PER_SEARCH = 1500
 # Agent content stays in the ``main`` index for 15 days, so nothing older can be there.
 SEARCH_WINDOW_S = 15 * 24 * 3600
 # What a structured body refers to, besides its lists.
@@ -160,6 +162,10 @@ class _Finder:
                 linked = {record.get(name) for name in names} - {None}
                 if record.get("action") == "compaction" and linked & self.session_ids:
                     self.session_ids |= linked
+                # After a compaction in place a record names the live ID and the first one. Its
+                # first ID is followed too, so a lost compaction record cannot hide the Session.
+                elif record.get("hermes_session_id") in self.session_ids and "session_id" in record:
+                    self.session_ids.add(record["session_id"])
         # A retried request names only its admission, and a store event or a workspace tool's
         # record only the trace of the message it served. A record written before records named
         # their trace (retained for 15 days) names its run instead. A record with a Session ID
@@ -506,8 +512,16 @@ def _rows(finder: _Finder, operations: list[dict], requests: list[dict]) -> list
         call = record.get("tool_call_id")
         result = results.get(row_id) or results.get((_scope(record), call))
         key = ("row", row_id) if ("row", row_id) in first else ("call", call)
-        if key[0] == "call" and key in first and result:
-            if message_text(first[key][1]) != finder.text(_ref(result, "result")):
+        if key[0] == "call" and key in first:
+            # A call ID can come back on a new row. The row's own result says which it is, or,
+            # with none recorded, as at a guard halt, the text its commit holds.
+            listed_text = message_text(first[key][1])
+            if result:
+                text = finder.text(_ref(result, "result"))
+            else:
+                own = finder.json(_ref(record, "message"))
+                text = listed_text if own is None else message_text(own)
+            if listed_text != text:
                 key = None
         if key in first:
             entry["message"] = first[key][1]
