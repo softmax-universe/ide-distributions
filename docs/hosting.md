@@ -334,7 +334,7 @@ untouched and the workspace is paused until the matching release runs again.
 ## Releases
 
 A push to `main` touching the paths in `.github/workflows/release-hermes.yml` (what the image holds)
-dispatches Metta's image release for the `stable` channel, unless the last nightly read-only platform
+dispatches Metta's image release for the `main` channel, unless the last nightly read-only platform
 check (`research platform check --read-only`) failed. A push to `beta` does the same for the `beta`
 channel.
 
