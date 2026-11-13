@@ -530,6 +530,35 @@ def test_an_admission_named_only_by_a_record_its_trace_found_is_followed(
     assert report["missing"] == []
 
 
+def test_a_store_event_another_session_caused_does_not_pull_in_its_trace(
+    writer, stream_file, datadog
+):
+    """``task.assigned`` names the assignee's Session, but its trace is the assigner's."""
+    assigned = {"native_event_type": "task.assigned", "otel_trace_id": "trace_assigner"}
+    writer.capture_operation(
+        "store_event", "committed", session_id="ses_2", reported_actor="session:ses_1", **assigned
+    )
+    writer.capture_operation(
+        "approval", "requested", otel_trace_id="trace_assigner", content={"command": "ls"}
+    )
+    writer.capture_operation(
+        "store_event",
+        "committed",
+        session_id="ses_2",
+        reported_actor="session:ses_2",
+        native_event_type="task.updated",
+        otel_trace_id="trace_own",
+    )
+    writer.capture_operation("approval", "requested", otel_trace_id="trace_own")
+    sent(writer, stream_file, datadog)
+
+    report = rebuild_session(search_of(datadog), "ses_2")
+    kinds = [(e["action"], e.get("otel_trace_id")) for e in report["events"]]
+    assert ("store_event", "trace_assigner") in kinds
+    assert ("approval", "trace_assigner") not in kinds
+    assert ("approval", "trace_own") in kinds
+
+
 def test_a_retained_record_from_before_traces_still_joins_by_its_run(writer, stream_file, datadog):
     """Records written before they named their trace named their run, and Datadog keeps them for
     15 days: an approval with only its run is still found through that run."""
@@ -659,11 +688,17 @@ def test_the_command_runs_through_the_token_broker_without_keys(
     (tmp_path / ".config" / "token-broker" / "token").write_text("tbk_test\n")
     assert _command(datadog, "--session", "ses_1", **broker).returncode == 0
 
-    datadog.answer = lambda *_: (500, {"errors": ["Internal Server Error"]}, {})
-    for token, error in (("tbk_revoked", "HTTP Error 401"), ("tbk_test", "HTTP Error 500")):
+    # Datadog's or the broker's error body is shown, in at most 300 bytes and on the same line.
+    reason = "Limit can't be more than 5000 " + "x" * 400
+    datadog.answer = lambda *_: (400, {"errors": [reason]}, {})
+    for token, error in (
+        ("tbk_revoked", 'HTTP Error 401: Unauthorized {"detail": "invalid token"}'),
+        ("tbk_test", 'HTTP Error 400: Datadog\'s answer through the broker {"errors": ["Limit'),
+    ):
         done = _command(datadog, "--session", "ses_1", TOKEN_BROKER_TOKEN=token, **broker)
         assert done.returncode == 2 and done.stdout == ""
         assert error in done.stderr and len(done.stderr.strip().splitlines()) == 1, done.stderr
+        assert len(done.stderr) < 450
 
 
 def test_a_datadog_failure_is_could_not_start_and_says_so_in_one_line(datadog, tmp_path):

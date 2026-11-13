@@ -84,10 +84,9 @@ URL. `--reason` is the reason the broker records for each search, by default `te
 Session <id>`. When `DD_API_KEY` and `DD_APP_KEY` are both set, it uses them and calls Datadog directly
 instead.
 
-Through the broker a page is 100 rows, and with the keys 5,000, Datadog's largest. The broker refuses an
+Through the broker a page is 99 rows, and with the keys 5,000, Datadog's largest. The broker refuses an
 answer over 2 MB (502 `upstream_response_too_large`), and a row is a line of at most 4,096 bytes plus
-Datadog's envelope and escapes, so 100 rows fit with room to spare ("Proof and cost" has the
-measurements).
+Datadog's envelope and escapes, so 99 rows fit ("Proof and cost" has the measurements).
 
 Add `--workspace <id>` if the command says several workspaces hold that ID. `--session` takes any ID of
 the Session, first or after compaction. The command needs only the broker token, or `DD_API_KEY` and
@@ -193,7 +192,7 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 | Hermes sends a tool call's arguments as compact JSON and its row keeps the model's text. A request shows the first, and `tool` / `proposed` keeps the second. | `_comparable` in `test_rebuild_real.py` |
 | Records from all processes are ordered by `occurred_at`, so `research serve`'s admissions and store events interleave with the gateway's turns; `sequence` breaks a tie only inside one process. Requests come from one gateway process at a time, so across a restart their order is their time order. This assumes one clock for the pod and that it did not go back. | `agent_telemetry/rebuild.py`, `_order` |
 | Each request is printed whole, as the model received it, so the report grows with the square of the Session's length. Measured on 2026-11-12: a 125-request Session gave a report of about 80 MB. Pick out parts with `jq`. | `agent_telemetry/rebuild.py`, `_rebuild_request` |
-| A store event that one Session causes on another, such as `task.assigned` with the initiator in `reported_actor`, appears in the target Session's report. The initiator's report shows its own tool call and result. | `agent_telemetry/observed.py`, `_ALLOWED` |
+| A store event that one Session causes on another, such as `task.assigned` with the initiator in `reported_actor`, appears in the target Session's report. Its trace, run and admission are the initiator's, so the target's rebuild follows none of them. The initiator's report shows its own tool call and result. | `agent_telemetry/observed.py`, `_ALLOWED`; `agent_telemetry/rebuild.py`, `_caused` |
 | `tokens_by_source` pools context records by text digest, so identical text that came from different sources in different requests is credited to one source. It is an estimate. | `agent_telemetry/rebuild.py`, `_source_chars` |
 
 ## Proof and cost
@@ -210,12 +209,13 @@ checked the same way: `datadog.content.read` reads them and `datadog.read` gets 
 
 Through the broker's proxy, on 2026-11-13, a row of a real search was the line's fields plus 1,937 to
 2,057 bytes of envelope (2,724 to 3,754 bytes a row on average), and Datadog writes `&`, `<` and `>` as
-six-byte escapes. So 100 rows of 4,096-byte lines fit in the broker's 2 MB even when about 3,000
-characters of each line are escaped, and a page of 1,000 rows was refused. The broker waits at most 25
+six-byte escapes. A 4,096-byte line with 3,000 escaped characters and 2,057 bytes of envelope is a
+21,153-byte row, so 99 such rows (2,094,147 bytes) fit in the broker's 2,097,152 and 100 would not. A
+page of 1,000 real rows was refused. The broker waits at most 25
 seconds for Datadog, and a search of 1,500 digests (105,000 characters) over the 15 days took 0.5 to 1.5
 seconds. A rebuild through the broker took 8 seconds for a Session of 9 requests. For one of 286
 requests and 3,462 events it took 3 to 4.5 minutes for 187 searches, nearly all of them pages of 100
-content rows at about 1.2 seconds each. One other run took 34 minutes and ended in a read timeout
+content rows (the page size then) at about 1.2 seconds each. One other run took 34 minutes and ended in a read timeout
 (exit 2), and the cause was not found. The link searches send one search a round for all three fields, and that Session
 needed one, where a search per field had needed three: too few to change the time.
 

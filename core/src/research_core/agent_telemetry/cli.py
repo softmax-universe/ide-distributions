@@ -7,6 +7,7 @@ import http.client
 import json
 import os
 import sys
+import urllib.error
 import uuid
 from pathlib import Path
 
@@ -56,7 +57,11 @@ def run_rebuild(args: argparse.Namespace) -> int:
         print(f"Several workspaces hold this Session ID, pick one: {error}", file=sys.stderr)
         return 2
     except (OSError, http.client.HTTPException, rebuild.IncompleteSearch) as error:
-        print(f"Could not search Datadog: {error}", file=sys.stderr)
+        # An error's body says what was wrong with the query, which holds only IDs and digests.
+        detail = ""
+        if isinstance(error, urllib.error.HTTPError):
+            detail = " ".join(error.read(300).decode("utf-8", "replace").split())
+        print(f"Could not search Datadog: {error} {detail}".rstrip(), file=sys.stderr)
         return 2
     json.dump(report, sys.stdout, ensure_ascii=False)
     # Not 1, which an uncaught Python error also exits with.

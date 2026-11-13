@@ -29,9 +29,10 @@ SEARCH_PATH = "/api/v2/logs/events/search"
 PAGE_LIMIT = 5000
 # The token broker's ``POST /proxy`` refuses an upstream answer over 2,097,152 bytes. A row Datadog
 # returns is the line's fields plus about 2,000 bytes of envelope (1,937 to 2,057 measured on
-# 2026-11-13), and Datadog writes ``&``, ``<`` and ``>`` as six-byte escapes. At 100 rows a page
-# holds 100 rows of 4,096-byte lines with about 3,000 escaped characters each.
-PROXY_PAGE_LIMIT = 100
+# 2026-11-13), and Datadog writes ``&``, ``<`` and ``>`` as six-byte escapes. A 4,096-byte line with
+# 3,000 escaped characters and 2,057 bytes of envelope is a 21,153-byte row, and 99 such rows are
+# 2,094,147 bytes.
+PROXY_PAGE_LIMIT = 99
 # 1,500 digests make a 105,000-character query. On 2026-11-12 Datadog answered searches of 1,500,
 # 2,000, 3,000 and 5,000 digest terms (up to 350,000 characters) with 200 and status ``done``. Those
 # matched no rows, so 1,500 leaves room for a search that does.
@@ -256,7 +257,7 @@ class _Finder:
         links = ("admission_id", "otel_trace_id", "run_id")
         linked: set[tuple[str, str]] = set()
         while True:
-            owned = [record for record in self.records.values() if self.owned(record)]
+            owned = [r for r in self.records.values() if self.owned(r) and not self._caused(r)]
             new = {(f, r[f]) for r in owned for f in links if f in r} - linked
             if not new:
                 return
@@ -267,6 +268,17 @@ class _Finder:
                     for field, pairs in groupby(batch, key=itemgetter(0))
                 ]
                 self._find("(" + " OR ".join(terms) + ") -@session_id:*")
+
+    def _caused(self, record: dict[str, Any]) -> bool:
+        """A store event another Session caused on this one, such as ``task.assigned``. It is this
+        Session's, but its trace, run and admission are the other Session's, so no link follows it.
+        """
+        actor = record.get("reported_actor") or ""
+        return (
+            record.get("action") == "store_event"
+            and actor.startswith("session:")
+            and actor.removeprefix("session:") not in self.session_ids
+        )
 
     def owned(self, record: dict[str, Any]) -> bool:
         """A record with another Session's ID came here by a link, and is not this Session's."""
