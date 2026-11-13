@@ -268,17 +268,20 @@ def test_paging_and_a_rate_limit(writer, stream_file, datadog):
     assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
 
 
-def test_a_lost_compaction_record_does_not_hide_the_session_under_its_live_id(
-    writer, stream_file, datadog
+@pytest.mark.parametrize("asked", ["ses_A", "ses_B"])
+def test_a_lost_compaction_record_does_not_hide_part_of_the_session(
+    writer, stream_file, datadog, asked
 ):
     """After a compaction in place, a record names the first ID and the live one. With the
-    compaction record lost, the live ID still finds the Session and its first ID."""
+    compaction record lost, either ID finds the other, and a later record that names only the
+    live ID, as after a restart or from a workspace tool, is still the Session's."""
     writer.capture_operation("turn", "started", session_id="ses_A", hermes_session_id="ses_B")
+    writer.capture_operation("workspace_tool", "completed", session_id="ses_B", tool_name="goal")
     sent(writer, stream_file, datadog)
 
-    report = rebuild_session(search_of(datadog), "ses_B")
+    report = rebuild_session(search_of(datadog), asked)
     assert report["session_ids"] == ["ses_A", "ses_B"]
-    assert [event["action"] for event in report["events"]] == ["turn"]
+    assert [event["action"] for event in report["events"]] == ["turn", "workspace_tool"]
     assert report["missing"] == []
 
 
@@ -829,6 +832,29 @@ def test_a_new_row_with_a_reused_call_id_and_no_result_keeps_its_commit(
     assert by_row["10"] == old
     assert by_row["77"] == new
     assert report["missing"] == []
+
+
+def test_an_auxiliary_call_listing_a_tool_message_does_not_rewrite_its_row(
+    writer, stream_file, datadog
+):
+    """A side question replays the conversation, with tool text capped and no row IDs. It is not
+    a later form of the row."""
+    full = {"role": "tool", "tool_call_id": "call_1", "content": "the whole result " * 50}
+    capped = {**full, "content": "the whole result"}
+    user = {"role": "user", "content": "Go"}
+    for attempt, message in (("att_1", {**full, "_row_id": 10}), ("aux-side-1", capped)):
+        writer.capture_request(
+            request_body([user, message]),
+            session_id="ses_1",
+            provider="moonshot",
+            model_attempt_id=attempt,
+            otel_trace_id="trace_1",
+        )
+    committed(writer, "10", tool_call_id="call_1")
+    sent(writer, stream_file, datadog)
+
+    [row] = rebuild_session(search_of(datadog), "ses_1")["rows"]
+    assert row["message"] == full and "rewritten_to" not in row
 
 
 def test_results_sharing_a_call_id_stay_apart_by_row(writer, stream_file, datadog):

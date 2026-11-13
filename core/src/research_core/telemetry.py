@@ -93,10 +93,10 @@ class DroppingQueueHandler(QueueHandler):
 
     def enqueue(self, record: logging.LogRecord) -> None:
         # ``Handler.handle`` holds this handler's lock, and only the listener takes records out.
-        if self.queue.full():
-            self.dropped += 1
-        else:
+        try:
             self.queue.put_nowait(record)
+        except queue.Full:
+            self.dropped += 1
 
 
 class DropReportingListener(QueueListener):

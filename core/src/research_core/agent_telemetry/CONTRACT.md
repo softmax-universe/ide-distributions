@@ -209,7 +209,10 @@ that sends it.
 `research_core/agent_telemetry/observed.py` holds one writer per process: `research-serve` (the seam and its coordinator loops),
 the gateway's, and `research-command` for every other `research` command, including a workspace tool's subprocess.
 All of this is metadata. Text reaches Datadog only through the gateway
-writer.
+writer. These records have no `hermes_session_id`. In a workspace tool's process, `session_id` on
+`workspace_tool` / `completed`, and on a store event it commits as that Session, is the ID Hermes
+gave the tool: the Session's live ID, not the one it started with. A reader joins the two through
+the gateway records, which name both.
 
 | `action` / `stage`                        | Written by             | Says                                                                                                   |
 | ----------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------ |
