@@ -72,6 +72,8 @@ def split_body(body: str, max_bytes: int = CHUNK_MAX_BODY_BYTES) -> list[str]:
         low = min(start + 1, len(body))
         # Every character takes at least one byte, so nothing past this can fit.
         high = min(start + max_bytes, len(body))
+        if _escaped_size(body[start:high]) <= max_bytes:
+            low = high  # The longest slice fits, as it does for most text.
         while low < high:
             middle = (low + high + 1) // 2
             if _escaped_size(body[start:middle]) <= max_bytes:

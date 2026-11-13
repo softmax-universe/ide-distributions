@@ -247,7 +247,14 @@ class TelemetryWriter(Writer):
                 logger.warning("telemetry: %d records dropped so far", dropped)
             if isinstance(item, tuple):
                 kind, occurred_at, blob = item
-                self._write(kind, occurred_at, pickle.loads(blob))
+                try:
+                    payload = pickle.loads(blob)
+                except Exception as error:  # Something can pickle and still fail to load.
+                    logger.warning(
+                        "telemetry: dropped a %s record (%s)", kind, type(error).__name__
+                    )
+                else:
+                    self._write(kind, occurred_at, payload)
             elif item is not None:
                 try:
                     item()

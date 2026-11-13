@@ -28,13 +28,8 @@ PAGE_LIMIT = 5000
 VALUES_PER_SEARCH = 1500
 # Agent content stays in the ``main`` index for 15 days, so nothing older can be there.
 SEARCH_WINDOW_S = 15 * 24 * 3600
-# What a structured body refers to, besides its lists.
-_SINGLE_REFERENCES = (
-    "parent_manifest_digest",
-    "prompt_sections_digest",
-    "tool_list_digest",
-    "options_digest",
-)
+# A record's references that name a manifest, which refers to other objects.
+_MANIFEST_REFERENCES = ("request_manifest",)
 
 
 class AmbiguousSession(Exception):
@@ -192,18 +187,27 @@ class _Finder:
         session = record.get("session_id") or record.get("hermes_session_id")
         return session is None or session in self.session_ids
 
-    def load(self, digests: Iterable[str]) -> None:
-        """Find each object named, wherever it was first stored, and all that those name in turn."""
-        frontier = set(digests)
-        seen: set[str] = set()
+    def load(self, references: Iterable[tuple[str, str]]) -> None:
+        """Find each object named, wherever it was first stored, and all that those name in turn.
+
+        ``references`` are ``(digest, name)``. The name says whether an object refers to others,
+        not the kind it was stored as: the same bytes can be stored first as a tool's text.
+        """
+        frontier = {
+            (digest, "manifest" if name in _MANIFEST_REFERENCES else None)
+            for digest, name in references
+        }
+        seen: set[tuple[str, str | None]] = set()
         while frontier:
             seen |= frontier
-            wanted = frontier - self.objects.keys()
+            wanted = {digest for digest, _ in frontier} - self.objects.keys()
             for batch in _batches(wanted):
                 self._find(_any_of("content_digest", batch))
             for digest in wanted:
                 self.read(digest)
-            frontier = {name for digest in frontier for name in self._names(digest)} - seen
+            frontier = {
+                named for digest, shape in frontier for named in self._names(digest, shape)
+            } - seen
 
     def read(self, digest: str) -> bytes | None:
         if digest not in self.objects:
@@ -226,15 +230,22 @@ class _Finder:
             self.parsed[digest] = json.loads(data) if data else None
         return self.parsed[digest]
 
-    def _names(self, digest: str) -> list[str]:
-        """What a structured object refers to. A native message or text refers to nothing."""
-        entries = self.chunks.get(digest)
-        kind = next(iter(entries.values()))["content_kind"] if entries else "part"
-        body = None if kind == "part" else self.json(digest)
-        if body is None:
+    def _names(self, digest: str, shape: str | None) -> list[tuple[str, str | None]]:
+        """What a manifest or tool list refers to, and the shape of each. Anything else, such as a
+        message, a text or a request's options, refers to nothing."""
+        body = self.json(digest) if shape else None
+        if not isinstance(body, dict):
             return []
-        one = [body[name] for name in _SINGLE_REFERENCES if name in body]
-        return [*one, *body.get("messages", ()), *body.get("tools", ())]
+        if shape == "tool_list":
+            return [(tool, None) for tool in body.get("tools", ())]
+        named: list[tuple[str, str | None]] = []
+        if "parent_manifest_digest" in body:
+            named.append((body["parent_manifest_digest"], "manifest"))
+        if "tool_list_digest" in body:
+            named.append((body["tool_list_digest"], "tool_list"))
+        leaves = ("prompt_sections_digest", "options_digest")
+        named += [(body[name], None) for name in leaves if name in body]
+        return named + [(message, None) for message in body.get("messages", ())]
 
 
 def _with_marker(message: dict[str, Any], marker: dict[str, Any]) -> dict[str, Any]:
@@ -558,7 +569,11 @@ def rebuild_session(search: LogsSearch, session_id: str, workspace: str | None =
     owned = _order(record for record in finder.records.values() if finder.owned(record))
     operations = [record for record in owned if record["family"] == "operation"]
     contexts = [record for record in owned if record["family"] == "context"]
-    finder.load(r["digest"] for record in operations for r in record.get("content_refs", ()))
+    finder.load(
+        (ref["digest"], ref["name"])
+        for record in operations
+        for ref in record.get("content_refs", ())
+    )
     if not owned:
         finder.missing[session_id] = [{"kind": "no_records", "session_id": session_id}]
 

@@ -70,9 +70,9 @@ each lost nothing with no wait, one run each. A line is searchable 12 to 27 seco
 The content sits in service `ide-agent-telemetry`, in Datadog's `main` index, and a Restricted Dataset
 selects it. On 2026-11-05 at 17:28 Pacific a freshly written test line, sent straight to Datadog's intake
 rather than through a pod's stream, was read by `datadog.content.read` (1 line) and not by `datadog.read`
-(0 lines). Metta #30918 removed the separate index, and the `datadog` stack reports no changes. A line from
-a real pod's stream has not yet been checked; the first real capture does that. In a checkout of this
-repository:
+(0 lines). Metta #30918 removed the separate index, and the `datadog` stack reports no changes. On
+2026-11-08 lines from real pods' streams were checked the same way: `datadog.content.read` reads them and
+`datadog.read` gets 0 results. In a checkout of this repository:
 
 ```bash
 python3 ~/coding/metta/scripts/token_broker_client.py exec --scope datadog.content.read \
@@ -189,8 +189,10 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 
 ## Proof and cost
 
-`core/tests/hermes/test_rebuild_real.py` runs a real gateway through a real `research serve`, with tool calls, a prune, a restart and a tool-guard halt, feeds every line to a fake Logs search, and compares the rebuild with what a stub model received and each row of `state.db`. No real agent content has yet been rebuilt from real Datadog.
+`core/tests/hermes/test_rebuild_real.py` runs a real gateway through a real `research serve`, with tool calls, a prune, a restart and a tool-guard halt, feeds every line to a fake Logs search, and compares the rebuild with what a stub model received and each row of `state.db`.
+
+Real Sessions have also been rebuilt from real Datadog. On 2026-11-08 three of James's Sessions rebuilt with exit 0. On 2026-11-12 four Sessions rebuilt byte for byte the same after each review fix, and against their `state.db`, 93 of 94 rows matched. The other row has a trailing newline that was never sent to the model.
 
 On 2026-11-06, capture added about 4 to 5 ms to a tool cycle at the median, but that was measured on the earlier capture through the former Hermes telemetry patches, and the current unpatched capture has not been measured. On 2026-11-05 a gateway held 386 MiB with capture and 387 without after 100 turns, and an 8 MB request cleared the writer in 1.1 s. On 2026-11-06 a 66 MiB request through the writer alone, with a stand-in for Hermes's scanner, took a process from 88 MiB to a peak of 419 MiB and took 3.9 s to clear. There is no exit flush, so an exit while a request is still clearing loses what is left of it.
 
-A 100-turn Session, about 200 model calls, writes 5,358 lines and 5.2 MB with 5,000-character tool results, and 6,496 lines and 8.9 MB with 20,000. A user row's commit text adds almost nothing, because the same message from a request is already stored under its digest. At 1,105 model calls a day (the highest day in the plan's Appendix I), that is an estimated $2.30 and $2.82 a month, at a third-party $0.10 per GB and $2.50 per million events for 30-day retention while content is kept for 15, so check them against the contract. Each line also leaves a blank line on the stream. By reading the Agent's source (`pkg/logs/internal/decoder/line_parser.go`) a blank line is forwarded, and whether Datadog then keeps it as an empty event under `service:hermes-runtime` is not measured. If it does, the event count doubles and the estimates become $4.51 and $5.51, and those empty events show among that service's logs.
+On real pods a Session writes about 36 to 86 lines per model call, more than the 27 to 32 of the 100-turn test (5,358 lines and 5.2 MB with 5,000-character tool results, 6,496 lines and 8.9 MB with 20,000), because each new gateway process sends its roughly 74,000 characters of tool schemas again. A user row's commit text adds almost nothing, because the same message from a request is already stored under its digest. At 1,105 model calls a day (the highest day in the plan's Appendix I), and about 1 KB a line as in that test, that is an estimated $3.10 to $7.40 a month, at a third-party $0.10 per GB and $2.50 per million events for 30-day retention while content is kept for 15, so check it against the contract. Each line leaves a blank line on the stream, and Datadog does not keep those: real pods showed 0 empty events.

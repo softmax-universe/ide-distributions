@@ -240,10 +240,11 @@ class RecordEncoder:
     # Operations and context records.
 
     def _write_operation(self, payload: Mapping[str, Any], occurred_at: str) -> None:
-        objects = _Objects()
+        objects = _Objects(self._redacted)
         refs = {
-            name: objects.add(
-                self._text_object(value) if isinstance(value, str) else self._json_object(value)
+            name: objects.add_value(
+                value,
+                partial(self._text_object if isinstance(value, str) else self._json_object, value),
             )
             for name, value in payload["content"].items()
         }
@@ -253,6 +254,7 @@ class RecordEncoder:
         base = self._base(occurred_at)
         self._emit([rec.operation_record(base, event_id, action, stage, fields, refs)])
         self._sent.update(objects.made)
+        self._redacted.update(objects.seen)
 
     def _write_context_parts(self, payload: Mapping[str, Any], occurred_at: str) -> None:
         """Say where each part sits in the redacted target. A reader counts what no part covers.
