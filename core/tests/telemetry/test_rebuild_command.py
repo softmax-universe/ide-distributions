@@ -24,7 +24,7 @@ from research_core.agent_telemetry.rebuild import (
     SearchRefused,
     rebuild_session,
 )
-from research_core.agent_telemetry.records import canonical_bytes
+from research_core.agent_telemetry.records import canonical_text
 from research_core.plugin.capture import GatewayCapture
 
 from .conftest import HERMES_STYLE_SECRET, insert_rows, processed, raw_lines, scrub, stored_records
@@ -148,8 +148,8 @@ def test_requests_responses_and_tools_come_back_exactly(writer, stream_file, dat
     report = rebuild_session(search_of(datadog), "ses_1")
     assert report["missing"] == []
     assert report["workspace_id"] == "wrk-proof"
-    assert [canonical_bytes(r["request"]) for r in report["requests"]] == [
-        canonical_bytes(body) for body in bodies
+    assert [canonical_text(r["request"]) for r in report["requests"]] == [
+        canonical_text(body) for body in bodies
     ]
     first, second = report["requests"]
     assert first["response"]["message"]["reasoning_content"] == "thinking"
@@ -169,8 +169,8 @@ def test_content_first_stored_under_an_earlier_session_is_followed(writer, strea
     assert len(parts) == 1
     report = rebuild_session(search_of(datadog), "ses_2")
     assert report["missing"] == []
-    assert [canonical_bytes(r["request"]) for r in report["requests"]] == [
-        canonical_bytes(body) for body in bodies
+    assert [canonical_text(r["request"]) for r in report["requests"]] == [
+        canonical_text(body) for body in bodies
     ]
 
 
@@ -181,7 +181,7 @@ def test_duplicates_are_dropped(writer, stream_file, datadog):
     datadog.take(list(datadog.entries))
     twice = rebuild_session(search_of(datadog), "ses_1")
     assert twice["missing"] == []
-    assert canonical_bytes(twice["requests"]) == canonical_bytes(clean["requests"])
+    assert canonical_text(twice["requests"]) == canonical_text(clean["requests"])
 
 
 def test_a_chunk_gap_is_named_and_blocks_only_the_requests_needing_it(writer, stream_file, datadog):
@@ -191,7 +191,7 @@ def test_a_chunk_gap_is_named_and_blocks_only_the_requests_needing_it(writer, st
     datadog.remove_chunk(digest, 1)
     report = rebuild_session(search_of(datadog), "ses_1")
     first, second = report["requests"]
-    assert canonical_bytes(first["request"]) == canonical_bytes(bodies[0])
+    assert canonical_text(first["request"]) == canonical_text(bodies[0])
     assert second["request"] is None and second["blocked_by"] == [digest]
     gap = next(problem for problem in report["missing"] if problem["digest"] == digest)
     assert gap["kind"] == "chunk_gap" and gap["missing_chunks"] == [1]
@@ -227,7 +227,7 @@ def test_a_chunk_resent_later_fills_a_gap_in_the_first_sending(writer, stream_fi
     datadog.take([e for e in second_sending if e["chunk_index"] == 1])
     report = rebuild_session(search_of(datadog), "ses_1")
     assert report["missing"] == []
-    assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
+    assert canonical_text(report["requests"][1]["request"]) == canonical_text(bodies[1])
 
 
 def test_tokens_are_shared_by_characters(writer, stream_file, datadog):
@@ -291,7 +291,7 @@ def test_paging_and_a_rate_limit(writer, stream_file, datadog):
     assert span == timedelta(days=15)
     assert any(search["page"].get("cursor") for search in datadog.searches)
     assert len(report["events"]) == 5200
-    assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
+    assert canonical_text(report["requests"][1]["request"]) == canonical_text(bodies[1])
 
 
 def test_an_upstream_error_through_the_token_broker_raises_as_datadogs_own(datadog):
@@ -311,7 +311,7 @@ def test_the_brokers_own_rate_limit_is_waited_out(writer, stream_file, datadog):
     waits = []
     report = rebuild_session(search_of(datadog, waits.append), "ses_1")
     assert waits == [1.0, 1.0]
-    assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
+    assert canonical_text(report["requests"][1]["request"]) == canonical_text(bodies[1])
 
 
 def test_a_proxy_injected_token_sends_no_authorization_of_its_own(writer, stream_file, datadog):
@@ -324,7 +324,7 @@ def test_a_proxy_injected_token_sends_no_authorization_of_its_own(writer, stream
     assert raised.value.status == 401  # Nothing in front of this fake adds the token.
     datadog.agent_proxy_adds_token = True
     report = rebuild_session(injected, "ses_1")
-    assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
+    assert canonical_text(report["requests"][1]["request"]) == canonical_text(bodies[1])
 
 
 @pytest.mark.parametrize("asked", ["ses_A", "ses_B"])
@@ -387,7 +387,7 @@ def test_a_manifest_whose_bytes_were_first_sent_as_text_is_still_walked(
     assert kinds == {"part"}
 
     report = rebuild_session(search_of(datadog), "ses_1")
-    assert canonical_bytes(report["requests"][0]["request"]) == canonical_bytes(body)
+    assert canonical_text(report["requests"][0]["request"]) == canonical_text(body)
     assert report["missing"] == []
 
 
@@ -426,8 +426,8 @@ def test_a_restart_sends_a_full_manifest_and_everything_it_lists(
     assert report["missing"] == []
     assert [r["operation"] for r in report["requests"]] == ["full", "full"]
     assert [r["source_instance"] for r in report["requests"]] == ["gateway-1", "gateway-2"]
-    rebuilt = [canonical_bytes(r["request"]) for r in report["requests"]]
-    assert rebuilt == [canonical_bytes(body)] * 2
+    rebuilt = [canonical_text(r["request"]) for r in report["requests"]]
+    assert rebuilt == [canonical_text(body)] * 2
 
 
 def test_records_of_processes_running_side_by_side_interleave_by_time(
@@ -673,7 +673,7 @@ def test_the_command_runs_through_the_token_broker(writer, stream_file, datadog,
     done = _command(datadog, "--session", "ses_1", **home)
     assert done.returncode == 0, done.stderr
     report = json.loads(done.stdout)
-    assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
+    assert canonical_text(report["requests"][1]["request"]) == canonical_text(bodies[1])
     assert _command(datadog, "--session", "ses_1", TOKEN_BROKER_TOKEN="", **home).returncode == 2
     # The client's token file serves as well as the variable.
     (tmp_path / ".config" / "token-broker").mkdir(parents=True)
@@ -912,7 +912,7 @@ def test_a_tool_call_of_any_shape_comes_back(writer, stream_file, datadog):
     writer.capture_request(body, session_id="ses_1", provider="moonshot", model_attempt_id="att_1")
     sent(writer, stream_file, datadog)
     [request] = rebuild_session(search_of(datadog), "ses_1")["requests"]
-    assert canonical_bytes(request["request"]) == canonical_bytes(body)
+    assert canonical_text(request["request"]) == canonical_text(body)
     assert "tool_call_arguments" not in {row["source"] for row in request["tokens_by_source"]}
 
 

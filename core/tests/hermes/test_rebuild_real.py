@@ -24,7 +24,7 @@ import pytest
 
 from research_core.agent_telemetry.encoder import message_text
 from research_core.agent_telemetry.rebuild import rebuild_session
-from research_core.agent_telemetry.records import MAX_LINE_BYTES, SERVICE, canonical_bytes
+from research_core.agent_telemetry.records import MAX_LINE_BYTES, SERVICE, canonical_text
 from research_core.plugin.capture import ACCESS_LOGGER
 from research_core.watcher.hermes_api import mint_session_id
 from tests.hermes.capture_rig import (
@@ -153,9 +153,9 @@ def test_each_request_equals_what_the_stub_received_in_wire_order(hermes_bin, pr
     assert len(got_main) == len(main)
     for position, (got, want) in enumerate(zip(got_main, main, strict=True)):
         want = {k: v for k, v in want.items() if k not in WIRE_ONLY}
-        assert canonical_bytes(got) == canonical_bytes(want), f"main request {position}"
+        assert canonical_text(got) == canonical_text(want), f"main request {position}"
     # An auxiliary call runs beside the turn: only its text is held to the wire, not its place.
-    assert sorted(map(canonical_bytes, got_auxiliary)) == sorted(map(canonical_bytes, auxiliary))
+    assert sorted(map(canonical_text, got_auxiliary)) == sorted(map(canonical_text, auxiliary))
 
 
 def _comparable(row: dict) -> dict:
@@ -444,7 +444,7 @@ def test_a_guard_halt_rebuilds_as_committed_beside_real_stdout(hermes_bin, tmp_p
         for body in redacted_by_hermes(hermes_bin, stub.main_requests())
     ]
     sent = [r["request"] for r in main_requests(report)]
-    assert list(map(canonical_bytes, sent)) == list(map(canonical_bytes, received))
+    assert list(map(canonical_text, sent)) == list(map(canonical_text, received))
 
 
 def test_direct_gateway_calls_have_access_lines_and_a_run_poll_has_none(hermes_bin, tmp_path):
