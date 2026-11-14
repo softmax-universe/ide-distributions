@@ -28,11 +28,15 @@ MAX_LINE_BYTES = 4096
 CHUNK_MAX_BODY_BYTES = 3000
 
 
-def canonical_bytes(value: Any) -> bytes:
-    """The only serialization digests rely on. Readers hash what they receive."""
+def canonical_text(value: Any) -> str:
+    """The only serialization digests rely on, as text. Readers hash what they receive."""
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
-    ).encode("utf-8")
+    )
+
+
+def canonical_bytes(value: Any) -> bytes:
+    return canonical_text(value).encode("utf-8")
 
 
 def line_bytes(record: Mapping[str, Any]) -> bytes:
@@ -171,17 +175,17 @@ class ContentObject:
     size_bytes: int
 
 
-def _utf8_object(kind: str, data: bytes) -> ContentObject:
-    digest = hashlib.sha256(data).hexdigest()
-    return ContentObject(kind, data.decode("utf-8"), digest, len(data))
+def _utf8_object(kind: str, body: str) -> ContentObject:
+    data = body.encode("utf-8")
+    return ContentObject(kind, body, hashlib.sha256(data).hexdigest(), len(data))
 
 
 def text_object(text: str) -> ContentObject:
-    return _utf8_object("part", text.encode("utf-8"))
+    return _utf8_object("part", text)
 
 
 def json_object(value: Any, kind: str = "part") -> ContentObject:
-    return _utf8_object(kind, canonical_bytes(value))
+    return _utf8_object(kind, canonical_text(value))
 
 
 def content_records(obj: ContentObject, base: Mapping[str, Any]) -> Iterator[dict[str, Any]]:

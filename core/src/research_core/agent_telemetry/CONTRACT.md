@@ -61,8 +61,9 @@ To read an object, join its chunks by `chunk_index` and check the digest and the
 **The pieces depend on the body alone.** So `content_digest` and `chunk_index` name a chunk wherever and whenever it was sent,
 and two sendings of one object are interchangeable, chunk by chunk.
 
-An `operation` or `context` line is never split. If its metadata would pass the limit, that is a bug in the record, and the
-writer logs a warning and drops that line.
+An `operation` or `context` line is never split. If its metadata would pass the limit, the writer logs a warning and drops
+that line. The model can choose a tool name or call ID, and a client the IDs of a refused request, so a long one costs its
+record.
 
 ### Duplicates
 

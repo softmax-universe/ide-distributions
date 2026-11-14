@@ -127,7 +127,6 @@ class FakeDatadog:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.entries: list[dict[str, Any]] = []
-        self.bytes_taken = 0
         self.searches: list[dict[str, Any]] = []
         self.rate_limit_next = 0
         self.rate_limited = 0
@@ -136,6 +135,8 @@ class FakeDatadog:
         self.brokers: list[ThreadingHTTPServer] = []
         # A hosted session's agent proxy adds the token to what goes to the broker.
         self.agent_proxy_adds_token = False
+        # The broker's own 429, for this many requests.
+        self.broker_rate_limit_next = 0
         datadog = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -169,9 +170,7 @@ class FakeDatadog:
 
     def take_lines(self, lines: Iterable[bytes]) -> None:
         """What the Agent collected from a container's stream."""
-        lines = list(lines)
         with self.lock:
-            self.bytes_taken += sum(len(line) for line in lines)
             self.entries.extend(entry_of(line) for line in lines)
 
     def take(self, entries: Iterable[dict[str, Any]]) -> None:
@@ -270,6 +269,9 @@ class FakeDatadog:
     def _proxy(self, path: str, headers: Any, request: dict[str, Any]) -> tuple[int, Any]:
         if path != "/proxy":
             return 404, {"detail": "Not Found"}
+        if self.broker_rate_limit_next > 0:
+            self.broker_rate_limit_next -= 1
+            return 429, {"detail": "rate limited"}
         authorization = headers.get("Authorization")
         if authorization is None and self.agent_proxy_adds_token:
             authorization = "Bearer tbk_test"

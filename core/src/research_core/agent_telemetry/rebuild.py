@@ -7,9 +7,7 @@ the bodies and the joins. ``docs/agent-telemetry.md`` says how to run it and wha
 from __future__ import annotations
 
 import base64
-import email.message
 import hashlib
-import io
 import json
 import time
 import urllib.error
@@ -40,6 +38,16 @@ SEARCH_WINDOW_S = 15 * 24 * 3600
 
 class AmbiguousSession(Exception):
     """More than one workspace has records under this Session ID."""
+
+
+class SearchRefused(Exception):
+    """Datadog or the broker answered a search with an error. ``detail`` is the start of the answer,
+    which says what was wrong with the query, and a query holds only IDs and digests."""
+
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(f"HTTP {status}: {detail}")
+        self.status = status
+        self.detail = detail
 
 
 class IncompleteSearch(Exception):
@@ -82,39 +90,32 @@ class BrokerLogsSearch:
             "headers": {"Content-Type": "application/json"},
         }
 
-    def _send(self, body: dict[str, Any]) -> dict[str, Any]:
-        """One search. The broker answers Datadog's own error, a 429 too, as a 200 that names
-        ``upstream_status``, and that raises the ``HTTPError`` Datadog would have."""
+    def _send(self, body: dict[str, Any]) -> tuple[int, dict[str, str], bytes]:
+        """One search: the status, headers and body of Datadog's answer, which the broker passes on
+        as ``upstream_status``, or of the broker's own refusal."""
         payload = {
             **self._request,
             "body_b64": base64.b64encode(json.dumps(body).encode()).decode(),
         }
         request = urllib.request.Request(self._url, json.dumps(payload).encode(), self._headers)
-        with urllib.request.urlopen(request, timeout=120) as response:
-            answer = json.load(response)
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                answer = json.load(response)
+        except urllib.error.HTTPError as error:
+            return error.code, dict(error.headers), error.read()
         data = base64.b64decode(answer["body_b64"])
-        status = int(answer["upstream_status"])
-        if status >= 400:
-            headers = email.message.Message()
-            for name, value in answer["headers"].items():
-                headers[name] = value
-            raise urllib.error.HTTPError(
-                SEARCH_PATH,
-                status,
-                "Datadog's answer through the broker",
-                headers,
-                io.BytesIO(data),
-            )
-        return json.loads(data)
+        return int(answer["upstream_status"]), answer["headers"], data
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         while True:
-            try:
-                return self._send(body)
-            except urllib.error.HTTPError as error:
-                if error.code != 429:
-                    raise
-                self._sleep(max(1.0, float(error.headers.get("X-RateLimit-Reset") or 1)))
+            status, headers, data = self._send(body)
+            if status == 429:
+                reset = {name.lower(): value for name, value in headers.items()}
+                self._sleep(max(1.0, float(reset.get("x-ratelimit-reset") or 1)))
+            elif status >= 400:
+                raise SearchRefused(status, " ".join(data[:300].decode("utf-8", "replace").split()))
+            else:
+                return json.loads(data)
 
     def entries(self, query: str) -> Iterator[dict[str, Any]]:
         """Each log entry's own fields, which Datadog nests under ``attributes.attributes``."""
@@ -200,9 +201,9 @@ class _Finder:
             for batch in _batches(new):
                 self._find("(" + " OR ".join(_any_of(name, batch) for name in names) + ")")
             for record in self.records.values():
-                linked = {record.get(name) for name in names} - {None}
-                if record.get("action") == "compaction" and linked & self.session_ids:
-                    self.session_ids |= linked
+                named = {record.get(name) for name in names} - {None}
+                if record.get("action") == "compaction" and named & self.session_ids:
+                    self.session_ids |= named
                 # After a compaction in place a record names the first ID and the live one. Each
                 # leads to the other, so a lost compaction record cannot hide part of the Session.
                 else:
