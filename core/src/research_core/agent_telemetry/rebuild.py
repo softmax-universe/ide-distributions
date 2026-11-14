@@ -204,9 +204,10 @@ class _Finder:
                 named = {record.get(name) for name in names} - {None}
                 if record.get("action") == "compaction" and named & self.session_ids:
                     self.session_ids |= named
-                # After a compaction in place a record names the first ID and the live one. Each
-                # leads to the other, so a lost compaction record cannot hide part of the Session.
                 else:
+                    # After a compaction in place a record names the first ID and the live one.
+                    # Each leads to the other, so a lost compaction record cannot hide part of the
+                    # Session.
                     aliases = {record.get("session_id"), record.get("hermes_session_id")} - {None}
                     if aliases & self.session_ids:
                         self.session_ids |= aliases
@@ -542,18 +543,19 @@ def _attach_tools(finder: _Finder, operations: list[dict], requests: list[dict])
     return unattached
 
 
-def _results_of_rows(operations: list[dict]) -> dict:
-    """Each tool result by its row ID. One with none goes by ``(_scope, tool_call_id)``, and when
-    several share that nothing says which is whose, so it holds ``None``."""
-    results: dict = {}
+def _results_of_rows(operations: list[dict]) -> tuple[dict[str, dict], dict[tuple, dict | None]]:
+    """Each tool result by its row ID, and each with none by ``(_scope, tool_call_id)``. When
+    several with no row ID share that, nothing says which is whose, so it holds ``None``."""
+    by_row: dict[str, dict] = {}
+    by_call: dict[tuple, dict | None] = {}
     for record in operations:
         if (record["action"], record["stage"]) == ("tool", "result"):
-            call = (_scope(record), record.get("tool_call_id"))
             if row := record.get("hermes_message_id"):
-                results[row] = record
+                by_row[row] = record
             else:
-                results[call] = None if call in results else record
-    return results
+                call = (_scope(record), record.get("tool_call_id"))
+                by_call[call] = None if call in by_call else record
+    return by_row, by_call
 
 
 def _unlisted_message(finder: _Finder, row: dict, result: dict | None) -> dict | None:
@@ -596,7 +598,7 @@ def _rows(finder: _Finder, operations: list[dict], requests: list[dict]) -> list
             if key[1]:
                 first.setdefault(key, listed)
                 last[key] = listed
-    results = _results_of_rows(operations)
+    results_by_row, results_by_call = _results_of_rows(operations)
     rows = []
     for record in operations:
         if record["action"] != "message":
@@ -604,7 +606,7 @@ def _rows(finder: _Finder, operations: list[dict], requests: list[dict]) -> list
         row_id = record.get("hermes_message_id")
         entry = dict(record)
         call = record.get("tool_call_id")
-        result = results.get(row_id) or results.get((_scope(record), call))
+        result = results_by_row.get(row_id) or results_by_call.get((_scope(record), call))
         key = ("row", row_id) if ("row", row_id) in first else ("call", call)
         if key[0] == "call" and key in first:
             # A call ID can come back on a new row. The row's own result says which it is, or,

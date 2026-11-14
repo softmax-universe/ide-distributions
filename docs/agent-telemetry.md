@@ -176,6 +176,7 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 | Hermes's scanner has gaps: a short value under a secret-looking key inside a JSON string, so `tool` / `proposed` arguments and manifests can keep what `tool` / `completed` masks; a password in a URL; and the prefix and suffix it keeps of Bearer and AWS tokens. Writers outside the gateway have no scanner, only the Softmax token patterns. | `agent_telemetry/redaction.py` |
 | An operation or context line whose metadata would pass 4,096 bytes is dropped with a warning. The model can choose a tool name or call ID, and a client the IDs of a refused request, so a long one costs its record. | `agent_telemetry/encoder.py`, `_emit` |
 | What was sent is known only per process, so each restart sends everything the next request lists again. That costs bytes and loses nothing. | `test_a_restart_sends_a_full_manifest_and_everything_it_lists` |
+| The rebuild reads every stored copy of an object. On 2026-11-14 a rebuild of a 286-request Session read 12,002 content rows, and 6,462 of them (54%) were copies of chunks it already held. Limiting the content searches to the Session's own processes (`source_instance`) cut that only to 11,607 rows (52% copies), because the copies come from the Session's own gateways sending again after each restart, so the searches stay unscoped. | `agent_telemetry/rebuild.py`, `_Finder.load` |
 | The encoder's `_sent`, `_redacted` and `_baselines` grow for the life of a process. Nothing evicts them. In practice they are bounded because a workspace sleeps after 15 minutes with no work, which ends the process. | `agent_telemetry/encoder.py`, `RecordEncoder`; `image/control.py`, `Lifecycle.status` |
 | The seam records no read and no other POST: `GET /snapshot`, which the AIDE backend also uses to select a Session, leaves no record of its own, and neither do `/message-events`, `/input-response` and `/messages/context`. | `serve.py`, `RECORDED_ROUTES` |
 | A request the AIDE backend refuses itself leaves no record: an unknown method, invalid or multi-message params, a scope mismatch, a Coworld session with no league, inference unavailable, a stale input response, a cursor it never issued. A handler's unexpected failure answers `unavailable` and leaves only a log line. What it sends on to a route in `RECORDED_ROUTES` is recorded by the seam. A failed consumer or event watcher ends the backend and recycles the runtime, and no record here shows that it happened or why: the gateway's lines after it only carry a new `source_instance`. The backend is the only chat path (`image/README.md`). | `image/aide.py`, `Backend.answer`, `Backend.touch`, `Backend.open`, `Backend.send_chat`; `image/runtime.py`, `run` |
@@ -220,10 +221,9 @@ six-byte escapes. A 4,096-byte line with 3,000 escaped characters and 2,057 byte
 page of 1,000 real rows was refused. The broker waits at most 25
 seconds for Datadog, and a search of 1,500 digests (105,000 characters) over the 15 days took 0.5 to 1.5
 seconds. A rebuild through the broker took 8 seconds for a Session of 9 requests. For one of 286
-requests and 3,462 events it took 3 to 4.5 minutes for 187 searches, nearly all of them pages of 100
-content rows at about 1.2 seconds each. One other run took 34 minutes and ended in a read timeout
-(exit 2), and the cause was not found. The link searches send one search a round for all three fields, and that Session
-needed one, where a search per field had needed three: too few to change the time.
+requests and 3,462 events it took 3 minutes 26 seconds to 3 minutes 39 seconds on 2026-11-14, nearly
+all of it in pages of 99 content rows at about 1.2 seconds each. One other run took 34 minutes and
+ended in a read timeout (exit 2), and the cause was not found.
 
 On 2026-11-05 a gateway held 386 MiB with capture and 387 without after 100 turns, and an 8 MB request cleared the writer in 1.1 s. A request over the 64 MiB byte limit is dropped. There is no exit flush, so an exit while a request is still clearing loses what is left of it.
 

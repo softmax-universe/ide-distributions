@@ -141,15 +141,12 @@ def bind(
     db.observe_commits(observe_commit)
 
 
-def bind_command(
-    env: Mapping[str, str], trace_ids: Callable[[], Mapping[str, str]]
-) -> InlineWriter:
+def bind_command(env: Mapping[str, str], trace_ids: Callable[[], Mapping[str, str]]) -> None:
     """For a short command, which writes each record as it happens and so exits with none left.
     ``trace_ids`` names the span the command is in when it records, and the tool call it serves
     comes from its environment."""
     writer = InlineWriter(stream_path(env), Producer.for_process(COMMAND_WRITER, env))
     bind(writer, lambda: {**trace_ids(), "tool_call_id": env.get("IDE_TOOL_CALL_ID")})
-    return writer
 
 
 def record(action: str, stage: str, **fields: Any) -> None:
