@@ -132,7 +132,6 @@ class FakeDatadog:
         self.rate_limited = 0
         self.status = "done"
         self.warnings: list[dict[str, str]] | None = None
-        self.brokers: list[ThreadingHTTPServer] = []
         # A hosted session's agent proxy adds the token to what goes to the broker.
         self.agent_proxy_adds_token = False
         # The broker's own 429, for this many requests.
@@ -156,6 +155,7 @@ class FakeDatadog:
                 self.end_headers()
                 self.wfile.write(data)
 
+        self.broker = self._serve_broker()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         # Avoid a half-second shutdown poll in each function-scoped fixture.
@@ -164,7 +164,7 @@ class FakeDatadog:
         ).start()
 
     def close(self) -> None:
-        for server in (self.server, *self.brokers):
+        for server in (self.server, self.broker):
             server.shutdown()
             server.server_close()
 
@@ -223,11 +223,8 @@ class FakeDatadog:
         return 200, {"data": [self._row(entry) for entry in page], "meta": meta}, {}
 
     def broker_url(self) -> str:
-        """The URL of this search's token broker, started on first use."""
-        if not self.brokers:
-            self.serve_broker()
-        host, port = self.brokers[0].server_address[:2]
-        return f"http://{host}:{port}"
+        """The URL of the token broker in front of this search."""
+        return f"http://127.0.0.1:{self.broker.server_address[1]}"
 
     def search(self, sleep: Any = None) -> Any:
         """The rebuild's search, through this search's token broker."""
@@ -238,9 +235,9 @@ class FakeDatadog:
             self.broker_url(), "tbk_test", "a test rebuild", "session-1", **waits
         )
 
-    def serve_broker(self) -> str:
+    def _serve_broker(self) -> ThreadingHTTPServer:
         """Start the token broker's ``POST /proxy`` in front of this search, as metta's spec 0156
-        and the broker on 2026-11-13 define it, and give its URL. It takes the token ``tbk_test``
+        and the broker on 2026-11-13 define it. It takes the token ``tbk_test``
         and the scope ``datadog.content.read``, adds the keys, and refuses an answer over 2 MB."""
         datadog = self
 
@@ -263,8 +260,7 @@ class FakeDatadog:
         threading.Thread(
             target=broker.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
         ).start()
-        self.brokers.append(broker)
-        return f"http://127.0.0.1:{broker.server_address[1]}"
+        return broker
 
     def _proxy(self, path: str, headers: Any, request: dict[str, Any]) -> tuple[int, Any]:
         if path != "/proxy":

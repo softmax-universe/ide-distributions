@@ -82,12 +82,12 @@ scope: the token broker never hands out its keys, and `token_broker_client.py ex
 Datadog's answer. It finds the broker token as metta's `scripts/token_broker_client.py` does:
 `TOKEN_BROKER_TOKEN`, or else `~/.config/token-broker/token`, and `TOKEN_BROKER_URL` overrides the broker
 URL. `--reason` is the reason the broker records for each search, by default `telemetry rebuild of
-Session <id>`. In a hosted cloud session `TOKEN_BROKER_TOKEN` is `proxy-injected`: the command then
+Session <id>`. `TOKEN_BROKER_SESSION_ID`, when set, is the `session_id` the broker records the searches
+under; otherwise each run uses a fresh UUID. In a hosted cloud session `TOKEN_BROKER_TOKEN` is `proxy-injected`: the command then
 sends no `Authorization` header, and the session's agent proxy adds the token.
 
-A page is 99 rows. The broker refuses an
-answer over 2 MB (502 `upstream_response_too_large`), and a row is a line of at most 4,096 bytes plus
-Datadog's envelope and escapes, so 99 rows fit ("Proof and cost" has the measurements).
+A page is 99 rows, so that it fits in the 2 MB the broker allows an answer ("Proof and cost" has
+the arithmetic).
 
 Add `--workspace <id>` if the command says several workspaces hold that ID. `--session` takes any ID of
 the Session, first or after compaction. The command needs only the broker token: no state.db, volume or workspace API. It exits 0 when nothing was missing, 3 when something was, and 2 when
@@ -174,9 +174,10 @@ Each was checked against the pinned Hermes, which carries no telemetry patch sin
 | `redaction_version` does not tell the Softmax token patterns apart: #265 (merged 2026-11-10 22:37 Pacific) widened them from `usr_` and `ply_` to every credential prefix but `code_` and kept `_SOFTMAX_RULES` at `softmax-1`. A gateway line says `hermes-<version>+softmax-1` either way, and a line from another writer says `none`, so a line cannot show whether a `cga_` or other new-prefix token in it would have been masked. | `agent_telemetry/redaction.py`, `_SOFTMAX_RULES` |
 | `ready_for_sleep` does not prove the queues are empty. `research workspace sleep` is its own process and cannot reach them; the queues empty as records arrive, and an exit loses what they still hold. | `agent_telemetry/writer.py`; `test_the_queue_empties_with_no_flush` |
 | Hermes's scanner has gaps: a short value under a secret-looking key inside a JSON string, so `tool` / `proposed` arguments and manifests can keep what `tool` / `completed` masks; a password in a URL; and the prefix and suffix it keeps of Bearer and AWS tokens. Writers outside the gateway have no scanner, only the Softmax token patterns. | `agent_telemetry/redaction.py` |
-| An operation or context line whose metadata would pass 4,096 bytes is dropped with a warning. The model can choose a tool name or call ID, and a client the IDs of a refused request, so a long one costs its record. | `agent_telemetry/encoder.py`, `_emit` |
+| An operation or context line whose metadata would pass the line limit is dropped (`CONTRACT.md`, "Lines"). | `agent_telemetry/encoder.py`, `_emit` |
 | What was sent is known only per process, so each restart sends everything the next request lists again. That costs bytes and loses nothing. | `test_a_restart_sends_a_full_manifest_and_everything_it_lists` |
-| The rebuild reads every stored copy of an object. On 2026-11-14 a rebuild of a 286-request Session read 12,002 content rows, and 6,462 of them (54%) were copies of chunks it already held. Limiting the content searches to the Session's own processes (`source_instance`) cut that only to 11,607 rows (52% copies), because the copies come from the Session's own gateways sending again after each restart, so the searches stay unscoped. | `agent_telemetry/rebuild.py`, `_Finder.load` |
+| A request whose record and reply were both lost is named only by its call's `model_request` / `started` (`call_with_no_attempt`). When that was lost too, or for an auxiliary call, which has none, nothing reports it: its manifest still arrived, and the next request rebuilds through it as a parent. | `agent_telemetry/rebuild.py`, `_build_requests`, `_rebuild_request` |
+| The rebuild reads every stored copy of an object, about half of the content rows of a Session with restarts ("Proof and cost"). | `agent_telemetry/rebuild.py`, `_Finder.load` |
 | The encoder's `_sent`, `_redacted` and `_baselines` grow for the life of a process. Nothing evicts them. In practice they are bounded because a workspace sleeps after 15 minutes with no work, which ends the process. | `agent_telemetry/encoder.py`, `RecordEncoder`; `image/control.py`, `Lifecycle.status` |
 | The seam records no read and no other POST: `GET /snapshot`, which the AIDE backend also uses to select a Session, leaves no record of its own, and neither do `/message-events`, `/input-response` and `/messages/context`. | `serve.py`, `RECORDED_ROUTES` |
 | A request the AIDE backend refuses itself leaves no record: an unknown method, invalid or multi-message params, a scope mismatch, a Coworld session with no league, inference unavailable, a stale input response, a cursor it never issued. A handler's unexpected failure answers `unavailable` and leaves only a log line. What it sends on to a route in `RECORDED_ROUTES` is recorded by the seam. A failed consumer or event watcher ends the backend and recycles the runtime, and no record here shows that it happened or why: the gateway's lines after it only carry a new `source_instance`. The backend is the only chat path (`image/README.md`). | `image/aide.py`, `Backend.answer`, `Backend.touch`, `Backend.open`, `Backend.send_chat`; `image/runtime.py`, `run` |
@@ -224,6 +225,15 @@ seconds. A rebuild through the broker took 8 seconds for a Session of 9 requests
 requests and 3,462 events it took 3 minutes 26 seconds to 3 minutes 39 seconds on 2026-11-14, nearly
 all of it in pages of 99 content rows at about 1.2 seconds each. One other run took 34 minutes and
 ended in a read timeout (exit 2), and the cause was not found.
+
+Content is stored more than once. Each tool result is stored twice: as text on its `tool` / `result`
+record, and inside the JSON of the tool message of the next request that lists it, so a tool-heavy
+Session's content is about double its tool output. Each process also sends again what it has not sent
+itself, so every gateway restart stores the objects the next request lists again. On 2026-11-14 a
+rebuild of the 286-request Session read 12,002 content rows, and 6,462 of them (54%) were copies of
+chunks it already held. Limiting the content searches to the Session's own processes
+(`source_instance`) cut that only to 11,607 rows (52% copies), because the copies come from the
+Session's own gateways, so the searches stay unscoped.
 
 On 2026-11-05 a gateway held 386 MiB with capture and 387 without after 100 turns, and an 8 MB request cleared the writer in 1.1 s. A request over the 64 MiB byte limit is dropped. There is no exit flush, so an exit while a request is still clearing loses what is left of it.
 

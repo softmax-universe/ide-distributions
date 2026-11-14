@@ -369,7 +369,7 @@ def test_a_capture_over_the_byte_limit_is_dropped_and_its_reply_is_not(
     assert len([r for r in records if r.get("stage") == "response"]) == 5
 
 
-def test_a_deferred_job_runs_after_what_was_captured_before_it(writer, stream_file):
+def test_records_reach_the_stream_in_capture_order_with_a_rising_sequence(writer, stream_file):
     writer.capture_operation("a", "one")
     writer.capture_operation("a", "two")
     assert processed(writer, 5.0)
