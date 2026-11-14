@@ -30,6 +30,7 @@ EXPECTED = {
         "replay-diagnosis",
         "scouting",
         "analyze-opponents",
+        "minecraft-controller",
     },
     "records": {"writing-claims"},
     "platform": {
