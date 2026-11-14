@@ -2,7 +2,7 @@
 
 The pinned gateway runs the shipped plugin against a stub model that streams reasoning before a
 tool call and before its answer. The AIDE backend's relay server and its follower of the run are
-the image's own (``image/aide.py``); only the seam is a recorder of what the follower appends.
+the image's own (``image/aide.py``). The seam serves the real session snapshot and records events.
 The run is admitted to Hermes's session authority, the branch whose run stream has no reasoning.
 """
 
@@ -16,6 +16,12 @@ from itertools import groupby
 
 import httpx
 
+from research_core import layout
+from research_core.serve import SeamServer
+from research_core.store import sessions
+from research_core.store.actors import Actor
+from research_core.store.db import Store
+from research_core.watcher.hermes_api import HermesRuns
 from tests.hermes.capture_rig import (
     API_KEY,
     chunk,
@@ -77,9 +83,22 @@ def test_reasoning_streams_into_the_request_log_before_the_tool(hermes_bin, tmp_
         free_port(),
         extra_env={"IDE_REASONING_RELAY": f"127.0.0.1:{relay_port}"},
     )
+    workspace = layout.from_env({"IDE_WORKSPACE": str(gateway.workspace)})
+    with Store.open(workspace.store_path, kind="workspace") as store:
+        sessions.register(
+            store, Actor.harness(), session_id=SESSION, profile="orchestrator", kind="chat"
+        )
+    seam_server = SeamServer(
+        ws=workspace,
+        hermes=HermesRuns(
+            base_url=f"http://127.0.0.1:{gateway.port}", keys={"orchestrator": API_KEY}
+        ),
+    )
     appended: list[dict] = []
 
     def seam(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/snapshot":
+            return httpx.Response(200, json=seam_server.snapshot("workspace", requests=True))
         if request.url.path == "/message-events":
             appended.append(json.loads(request.content))
             return httpx.Response(200, json={})
@@ -96,6 +115,7 @@ def test_reasoning_streams_into_the_request_log_before_the_tool(hermes_bin, tmp_
             asyncio.TaskGroup() as work,
         ):
             backend = aide.Backend(s, native, Availability(), work)
+            await backend.snapshot()
             server = await asyncio.start_server(backend.relay, "127.0.0.1", relay_port)
             started = await native.post("v1/runs", json={"input": "hi", "session_id": SESSION})
             run_id = started.raise_for_status().json()["run_id"]
@@ -117,9 +137,10 @@ def test_reasoning_streams_into_the_request_log_before_the_tool(hermes_bin, tmp_
                 logged=None,
             )
             run = aide.Run(attempt=0, run_id=run_id, steered=False)
-            follower = asyncio.create_task(backend.follow(request, run, aide.Progress(0), 0))
-            while not backend.thinking:
-                await asyncio.sleep(0.01)
+            follower = work.create_task(backend.follow(request, run, aide.Progress(0), 0))
+            async with asyncio.timeout(30):
+                while not backend.thinking:
+                    await asyncio.sleep(0.01)
             stub.bound.set()
             assert (await follower) == (True, 0)
             status = (await native.get(f"v1/runs/{run_id}")).json()
@@ -131,6 +152,7 @@ def test_reasoning_streams_into_the_request_log_before_the_tool(hermes_bin, tmp_
     finally:
         gateway.stop()
         stub.server.shutdown()
+        seam_server._http.server_close()
     # Admitted to the session authority: the branch whose run stream carries no reasoning.
     assert status["status"] == "completed" and status["admission_id"], status
     logged = [body["event"] for body in appended]
