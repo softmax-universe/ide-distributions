@@ -102,6 +102,7 @@ def _goal_row(goal_id: str) -> dict:
     return {
         "id": goal_id,
         "title": goal["title"],
+        "kind": "outcome",
         "end_state": goal["end_state"],
         "reason": "the user asked for it",
         "status": "active",

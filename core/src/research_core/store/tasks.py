@@ -805,6 +805,11 @@ def complete(
                 "session": actor.id,
             },
         )
+        proposals = accepted.get("proposed_tasks")
+        if row["type"] == "ideation" and isinstance(proposals, str):
+            from research_core.store.goals import park_after_ideation
+
+            park_after_ideation(tx, row["goal_id"], _t(n), proposals)
         return _record(store, _row(store, n))
 
 

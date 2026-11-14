@@ -345,7 +345,10 @@ QUESTIONS: dict[str, list[Question]] = {
         q("May you patch the profile source checkout?", r"\bno\b|not|never|read-only"),
     ],
     "skill:proposing": [
-        q("How many proposals does an ideation Task deliver?", r"(two to five|2\s*(-|–|to)\s*5)"),
+        q(
+            "How many viable proposals can an ideation Task deliver?",
+            r"(one to five|1\s*(-|–|to)\s*5)",
+        ),
         q("Which type must an ideation Task never propose?", r"ideation"),
         q(
             "What must experiment.close have returned before you propose a submission?",

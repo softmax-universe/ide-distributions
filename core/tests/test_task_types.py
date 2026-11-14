@@ -65,16 +65,16 @@ def test_improvement_names_every_missing_item_at_once():
     assert len(task_types.check("improvement", {**complete, "submission_reason": "  "})) == 1
 
 
-def test_ideation_needs_two_to_five_proposed_tasks():
+def test_ideation_accepts_one_to_five_proposals_or_an_explicit_empty_result():
     item = task_types.load("ideation").checklist[0]
-    assert (item.key, item.min_items, item.max_items) == ("proposed_tasks", 2, 5)
+    assert (item.key, item.min_items, item.max_items) == ("proposed_tasks", 1, 5)
     assert task_types.check("ideation", {"proposed_tasks": ["T-2", "T-3"]}) == []
     assert task_types.check("ideation", {"proposed_tasks": [f"T-{n}" for n in range(2, 7)]}) == []
-    one = task_types.check("ideation", {"proposed_tasks": ["T-2"]})
-    assert len(one) == 1 and "at least 2" in one[0]
+    assert task_types.check("ideation", {"proposed_tasks": ["T-2"]}) == []
     six = task_types.check("ideation", {"proposed_tasks": [f"T-{n}" for n in range(2, 8)]})
     assert len(six) == 1 and "at most 5" in six[0]
-    assert task_types.check("ideation", {"proposed_tasks": "none: no ideas"})
+    assert task_types.check("ideation", {"proposed_tasks": "none: no ideas"}) == []
+    assert task_types.check("ideation", {"proposed_tasks": []})
 
 
 def test_maintenance_needs_commit_and_summary_and_capability_for_repairs():

@@ -31,6 +31,9 @@ from research_core.store import (
     settings,
     tasks,
 )
+from research_core.store import (
+    goals as goals_store,
+)
 from research_core.store._common import now_iso, parse_iso
 from research_core.store.actors import Actor
 from research_core.store.db import Store
@@ -1014,8 +1017,18 @@ class Coordinator:
                         ctx, label, store, [event], handler, session, row["attempts"], report
                     )
                 return
+        if event.kind == "goal.needs_ideation" and (
+            int(event.subject.removeprefix("G-")) not in goals_store.needs_ideation(store)
+        ):
+            events.mark_handled(store, ctx.actor, event.seq, None)
+            report["handled"].append(ref)
+            return
         open_session = self._open_wake_session(ctx, store, event)
         if open_session is not None:
+            if event.kind == "goal.needs_ideation":
+                # The previous wake has not seen the new gap in the Goal's work.
+                report["waiting"].append(ref)
+                return
             events.claim_handling(store, ctx.actor, event.seq, event.kind, open_session["id"])
             report["joined"].append(f"{ref}->{open_session['id']}")
             return
