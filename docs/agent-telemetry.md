@@ -11,7 +11,7 @@ a Session from Datadog alone. Capture is always on, and there is no setting.
 
 | Source | What |
 |---|---|
-| Gateway plugin | Each model request and reply, one per outer attempt, with reasoning and token usage (not the billed cost: see "Known holes"). System prompt sections and context parts. Tool calls as proposed, what ran, and each result as the model got it. Every committed row's ID and its text. Approvals, compaction, subagents, lifecycle, and each log line but the access line of a successful seam poll (a 200 for `GET /p/<profile>/v1/runs/<id>` from its urllib client), which comes once a second per live run. A failed poll and the AIDE backend's run read are sent. All text goes through Hermes's secret scanner first. |
+| Gateway plugin | Each model request and reply, one per outer attempt, with reasoning and token usage (not the billed cost: see "Known holes"). System prompt sections and context parts. Tool calls as proposed, what ran, and each result as the model got it. Every committed row's ID and its text. Approvals, compaction, subagents, lifecycle, and each log record at INFO or above, except the writer's own records and the access line of a successful seam poll (a 200 for `GET /p/<profile>/v1/runs/<id>` from its urllib client), which comes once a second per live run. A failed poll and the AIDE backend's run read are sent. All text goes through Hermes's secret scanner first. |
 | `research serve` | Each POST to a route in `RECORDED_ROUTES`, whatever its outcome: `/session-open`, `/message`, `/message-cancel`, `/store/apply`, `/models`. Also committed store events, coordinator passes, attachment outcomes, wakes and successors. Metadata only, with Softmax tokens masked. |
 | Other `research` commands | Their committed store events and tool completions. Metadata only, with Softmax tokens masked. |
 
@@ -51,7 +51,7 @@ not fit rather than wait. That happens at the start of each `research` command a
 at plugin registration, and otherwise at a process's first span. The gateway's
 log handler stays on the root logger, because it only enqueues.
 
-Other output shares this stream and can leave a line open at any moment, so each telemetry line starts with a newline of its own, and that output cannot join it (`test_real_prints_beside_telemetry_lines_on_one_pipe_lose_no_line`). The price is a blank line on the stream for each telemetry line: see "Proof and cost". [`stream.py`](../core/src/research_core/agent_telemetry/stream.py) says why buffering would not do.
+Each telemetry line starts with a newline, so other output on the stream cannot join it: [`CONTRACT.md`](../core/src/research_core/agent_telemetry/CONTRACT.md) ("Lines") has the rule and [`stream.py`](../core/src/research_core/agent_telemetry/stream.py) the reasons.
 
 The Agent reads the pod's log files, so a line written just before a pod goes away still arrives: real sleep and default delete
 each lost nothing with no wait, one run each. A line is searchable 12 to 27 seconds after it is written.
@@ -63,7 +63,7 @@ each lost nothing with no wait, one run each. A line is searchable 12 to 27 seco
 | Nothing confirms delivery. A line that never arrives is not noticed, and a stream that cannot be opened stays closed for the life of that process | There is no sender to tell. Rebuild reports what a surviving record refers to |
 | Any exit of the gateway or `research serve`, graceful or not, loses what the memory queue still holds: across 20 turns of a real gateway with tool results of 40,000 characters, 629 captures found at most 4 records queued (median 1), at most 945 KB. A short command has no queue. A request is written before its call, so a process killed during a call keeps the request, and with it the user's message, once the writer has written it, and rebuild lists the attempt in `unended_attempts` (`test_a_kill_during_a_call_keeps_its_request`, `test_a_kill_during_the_first_call_keeps_the_users_message`). The turn's committed rows are lost, because they are read at the turn's end. A kill while the request is still queued can leave `model_request` / `started` alone, and rebuild names that call `call_with_no_attempt` | The queue empties as records arrive, and nothing on the agent's path may wait for it |
 | The Agent falling behind by more than the retained log files would lose lines. Untested | 240 MB over about 15 rotations lost nothing with the Agent keeping up |
-| A full queue drops records, which a stream that has stopped soon causes. The writer's thread logs the count each time it changes. A capture that would take the queue past its 64 MiB byte limit is dropped, so a request over 64 MiB is always dropped, and rebuild shows `call_with_no_attempt` and, for its reply, `reply_with_no_request` | A caller must never wait |
+| A full queue drops records, which a stream that has stopped soon causes. The writer's thread logs the count each time it changes, to stderr only: the writer's own records are not captured, so no report shows it. A capture that would take the queue past its 64 MiB byte limit is dropped, so a request over 64 MiB is always dropped, and rebuild shows `call_with_no_attempt` and, for its reply, `reply_with_no_request` | A caller must never wait |
 | Any process in the workspace can write a line that looks like ours | James: restriction work matters very little here |
 
 ## Read a Session

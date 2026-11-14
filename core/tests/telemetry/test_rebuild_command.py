@@ -262,7 +262,7 @@ def test_prompt_sections_count_only_in_the_first_system_message(writer, stream_f
     assert chars["system_unattributed"] == unattributed
 
 
-def test_paging_and_a_rate_limit(writer, stream_file, datadog):
+def test_paging_and_a_rate_limit(writer, stream_file, datadog, capsys):
     bodies = two_requests(writer)
     # Many pages, written in steps the writer's 4096-item queue can hold.
     for number in range(5200):
@@ -275,6 +275,7 @@ def test_paging_and_a_rate_limit(writer, stream_file, datadog):
     search = datadog.search(waits.append)
     report = rebuild_session(search, "ses_1")
     assert waits == [1.0, 1.0]
+    assert capsys.readouterr().err == "rebuild: rate limited, waiting 1 s\n" * 2
     assert datadog.rate_limited == 2
     assert len(datadog.searches) > 3
     assert {search["page"]["limit"] for search in datadog.searches} == {PROXY_PAGE_LIMIT}
