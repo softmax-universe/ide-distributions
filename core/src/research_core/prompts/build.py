@@ -27,10 +27,11 @@ PROMPTS_DIR = Path(__file__).resolve().parent
 VOCABULARY_PATH = PROMPTS_DIR / "vocabulary.md"
 OPTIONAL_DIR = PROMPTS_DIR / "optional"
 
-# Word budgets from the design (D.7 and Appendix H).
-BUDGETS: dict[str, int] = {"orchestrator": 2500, "researcher": 2000}
+# Word budgets from the design (D.7 and Appendix H). The Orchestrator's was 2,500 there; the
+# "Know your user" section (2026-11-13) raised it by its own 150 words.
+BUDGETS: dict[str, int] = {"orchestrator": 2650, "researcher": 2000}
 # The optional brain section (IDE_BRAIN=1) is its own small allowance on top of BUDGETS: the base
-# SOULs are already at their budgets (orchestrator 2499 of 2500). Details live in the brain files.
+# SOULs are already at their budgets (orchestrator 2635 of 2650). Details live in the brain files.
 BRAIN_ALLOWANCE: dict[str, int] = {"orchestrator": 250, "researcher": 150}
 RECORDS_RANGE = (300, 500)
 VOCABULARY_BUDGET = 350

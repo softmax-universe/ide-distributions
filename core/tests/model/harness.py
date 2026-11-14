@@ -27,10 +27,13 @@ built-in tools, sorted by name as Hermes's registry does, through Hermes's own s
 would rewrite.
 
 ``hermes_builtin_tools.json`` is the Hermes tools of a real Session on the pinned image: the 14
-tools Hermes froze for it, the same for both roles, captured with ``IDE_TOOL_CALL_CONTEXT``
-(README, "Develop and test"). ``test_real_session.py`` fails when a real Session's list no longer
-matches. To regenerate after an image change, run ``-k test_a_real_session`` with that variable,
-then copy ``orchestrator.hermes_tools`` from the capture into this file.
+tools Hermes froze for both roles, captured with ``IDE_TOOL_CALL_CONTEXT`` (README, "Develop and
+test"). ``hermes_orchestrator_tools.json`` holds what only the Orchestrator gets on top: Hermes's
+``memory`` tool narrowed to the user profile (``memory.user_profile_enabled``).
+``test_real_session.py`` fails when a real Session's list no longer matches
+:func:`hermes_builtins`. To regenerate after an image change, run ``-k test_a_real_session`` with
+that variable, then copy ``researcher.hermes_tools`` from the capture into the first file and the
+Orchestrator's extra tools into the second.
 
 Real context. ``IDE_TOOL_CALL_CONTEXT`` names a file ``test_real_session.py`` captured from real
 Sessions: per role, the system prompt Hermes stored (SOUL, briefing, skill index, sections) and
@@ -71,6 +74,7 @@ URL = "https://openrouter.ai/api/v1/chat/completions"
 MODELS_URL = "https://openrouter.ai/api/v1/models"
 SHIPPED = "shipped"
 HERMES_BUILTIN_TOOLS = Path(__file__).with_name("hermes_builtin_tools.json")
+HERMES_ORCHESTRATOR_TOOLS = Path(__file__).with_name("hermes_orchestrator_tools.json")
 # What Hermes's OpenRouter profile sends to a reasoning-capable model when the config sets no
 # reasoning effort.
 HERMES_DEFAULT_REASONING = {"enabled": True, "effort": "medium"}
@@ -336,6 +340,14 @@ def session_context(role: Role) -> SessionContext | None:
     return _captured_contexts(path)[role] if path else None
 
 
+def hermes_builtins(role: Role) -> list[dict]:
+    """The snapshot of Hermes's own tools for role, sorted by name as Hermes freezes them."""
+    tools = json.loads(HERMES_BUILTIN_TOOLS.read_text())
+    if role == "orchestrator":
+        tools += json.loads(HERMES_ORCHESTRATOR_TOOLS.read_text())
+    return sorted(tools, key=lambda tool: tool["function"]["name"])
+
+
 def full_toolset(role: Role, schemas: SchemaSet, model: str) -> list[dict]:
     """Every tool a session of the role offers ``model``, as Hermes sends them: sorted by name,
     sanitized, and for a Kimi model rewritten for Moonshot's schema flavour."""
@@ -344,7 +356,7 @@ def full_toolset(role: Role, schemas: SchemaSet, model: str) -> list[dict]:
     if captured is not None:
         builtins = captured.hermes_tools
     else:
-        builtins = json.loads(HERMES_BUILTIN_TOOLS.read_text())
+        builtins = hermes_builtins(role)
     ide = [{"type": "function", "function": s} for s in schemas.tools(role)]
     tools = sanitizer.sanitize_tool_schemas(
         sorted([*builtins, *ide], key=lambda tool: tool["function"]["name"])
