@@ -22,11 +22,8 @@ from research_core.agent_telemetry.encoder import message_text
 from research_core.agent_telemetry.records import EMPTY_DIGEST, format_time
 
 SEARCH_PATH = "/api/v2/logs/events/search"
-# The token broker's ``POST /proxy`` refuses an upstream answer over 2,097,152 bytes. A row Datadog
-# returns is the line's fields plus about 2,000 bytes of envelope (1,937 to 2,057 measured on
-# 2026-11-13), and Datadog writes ``&``, ``<`` and ``>`` as six-byte escapes. A 4,096-byte line with
-# 3,000 escaped characters and 2,057 bytes of envelope is a 21,153-byte row, and 99 such rows are
-# 2,094,147 bytes.
+# The most rows whose answer fits in the 2 MB the token broker's ``POST /proxy`` allows:
+# docs/agent-telemetry.md, "Proof and cost", has the arithmetic.
 PROXY_PAGE_LIMIT = 99
 # 1,500 digests make a 105,000-character query. On 2026-11-12 Datadog answered searches of 1,500,
 # 2,000, 3,000 and 5,000 digest terms (up to 350,000 characters) with 200 and status ``done``. Those
@@ -41,13 +38,8 @@ class AmbiguousSession(Exception):
 
 
 class SearchRefused(Exception):
-    """Datadog or the broker answered a search with an error. ``detail`` is the start of the answer,
-    which says what was wrong with the query, and a query holds only IDs and digests."""
-
-    def __init__(self, status: int, detail: str) -> None:
-        super().__init__(f"HTTP {status}: {detail}")
-        self.status = status
-        self.detail = detail
+    """Datadog or the broker answered a search with an error: ``HTTP <status>: <start of the
+    answer>``, which says what was wrong with the query, and a query holds only IDs and digests."""
 
 
 class IncompleteSearch(Exception):
@@ -113,7 +105,8 @@ class BrokerLogsSearch:
                 reset = {name.lower(): value for name, value in headers.items()}
                 self._sleep(max(1.0, float(reset.get("x-ratelimit-reset") or 1)))
             elif status >= 400:
-                raise SearchRefused(status, " ".join(data[:300].decode("utf-8", "replace").split()))
+                detail = " ".join(data[:300].decode("utf-8", "replace").split())
+                raise SearchRefused(f"HTTP {status}: {detail}")
             else:
                 return json.loads(data)
 

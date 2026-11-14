@@ -229,9 +229,8 @@ class RecordEncoder:
             if len(line) <= rec.MAX_LINE_BYTES:
                 self._stream.write(line)
             else:
-                # Chunking keeps a body inside the limit, so this is metadata too large. The model
-                # can choose a tool name or call ID, and a client the IDs of a refused request, so
-                # a long one costs its record.
+                # Chunking keeps a body inside the limit, so this is metadata too large
+                # (CONTRACT.md, "Lines").
                 logger.warning("telemetry: dropped a %s line of %d bytes", row["family"], len(line))
 
     def _base(self, occurred_at: str) -> dict[str, Any]:

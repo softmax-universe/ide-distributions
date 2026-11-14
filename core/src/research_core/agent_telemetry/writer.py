@@ -225,6 +225,13 @@ class TelemetryWriter(Writer):
                 self._queue.append(job)
             self._ready.notify()
 
+    def _write_pickled(self, kind: str, occurred_at: float, blob: bytes) -> None:
+        """Something can pickle and still fail to load, so loading shares the write's handler."""
+        try:
+            self._encoder.write(kind, occurred_at, pickle.loads(blob))
+        except Exception as error:
+            logger.warning("telemetry: dropped a %s record (%s)", kind, type(error).__name__)
+
     def _run(self) -> None:
         reported = 0
         while True:
@@ -239,19 +246,11 @@ class TelemetryWriter(Writer):
                 reported = dropped
                 logger.warning("telemetry: %d records dropped so far", dropped)
             if isinstance(item, tuple):
-                kind, occurred_at, blob = item
-                try:
-                    payload = pickle.loads(blob)
-                except Exception as error:  # Something can pickle and still fail to load.
-                    logger.warning(
-                        "telemetry: dropped a %s record (%s)", kind, type(error).__name__
-                    )
-                else:
-                    self._write(kind, occurred_at, payload)
+                self._write_pickled(*item)
             elif item is not None:
                 try:
                     item()
                 except Exception as error:  # The writer's thread outlives any one job.
                     logger.warning("telemetry: a deferred job failed (%s)", type(error).__name__)
             # Let go of a request of many megabytes now, not after the next wait.
-            item = blob = payload = None
+            item = None
