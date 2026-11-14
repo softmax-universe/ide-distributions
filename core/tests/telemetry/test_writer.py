@@ -288,11 +288,10 @@ class StuckStream:
 
     def release(self, writer: TelemetryWriter) -> list[dict]:
         """Read until ``writer`` has written everything, however long its thread took to open the
-        stream."""
-        closing = threading.Thread(target=processed, args=(writer, 30.0))
-        closing.start()
-        data = b""
-        while closing.is_alive():
+        stream. A full queue drops the ``processed`` job too, so it is asked again until one runs.
+        """
+        data = self._read()
+        while not processed(writer, 0.05):
             data += self._read()
         data += self._read()
         os.close(self.writer)
@@ -300,11 +299,16 @@ class StuckStream:
         return [json.loads(line) for line in data.lstrip(b"x").splitlines() if line]
 
     def _read(self) -> bytes:
-        try:
-            return os.read(self.reader, 65536)
-        except BlockingIOError:
-            time.sleep(0.001)
-            return b""
+        """Everything the pipe holds now."""
+        data = b""
+        while True:
+            try:
+                chunk = os.read(self.reader, 65536)
+            except BlockingIOError:
+                return data
+            if not chunk:
+                return data
+            data += chunk
 
 
 def test_callers_do_not_wait_or_log_when_the_stream_is_stuck_and_a_full_queue_drops(

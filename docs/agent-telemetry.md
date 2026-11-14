@@ -120,7 +120,8 @@ each reference's name:
   holds its own IDs, and `CONTRACT.md`, "How to join them", says how they join.
 - `unattached_tools`: tool records that name no request found, by attempt, call or an earlier record
   of the same tool call. A non-empty list usually means a tool's completion record was lost, because a
-  tool's result finds its request only through that record.
+  tool's result finds its request only through that record. It is not in `missing`, so it does not
+  change the exit code.
 - `context`: where each piece of a user message came from.
 - `missing`: see below.
 

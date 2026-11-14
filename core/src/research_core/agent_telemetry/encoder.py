@@ -79,10 +79,10 @@ class _Objects:
     stay in memory, per Session, in ``plugin/capture.py``.
     """
 
-    def __init__(self, known: Mapping[bytes, str] | None = None) -> None:
+    def __init__(self, known: Mapping[bytes, str]) -> None:
         self.made: dict[str, ContentObject] = {}
         self.seen: dict[bytes, str] = {}
-        self._known = known or {}
+        self._known = known
 
     def add(self, obj: ContentObject) -> str:
         if obj.size_bytes > 0:

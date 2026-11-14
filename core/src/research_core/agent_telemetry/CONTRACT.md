@@ -72,7 +72,7 @@ The same chunk can reach Datadog more than once, because a new process knows not
 
 ## Objects
 
-Every structured body is canonical JSON: sorted keys, no spaces, UTF-8, as `records.canonical_bytes` writes it. Every text
+Every structured body is canonical JSON: sorted keys, no spaces, UTF-8, as `records.canonical_text` writes it. Every text
 in it has been through the gateway writer's redaction. Digests and byte offsets refer to the redacted form.
 
 | `content_kind`     | Holds                                                                            |
