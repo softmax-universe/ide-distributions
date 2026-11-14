@@ -705,8 +705,6 @@ def test_a_search_datadog_did_not_finish_is_could_not_start(writer, stream_file,
     two_requests(writer)
     sent(writer, stream_file, datadog)
     home = {"HOME": str(tmp_path)}
-    datadog.status = None  # An answer that gives no status is taken as it comes.
-    assert _command(datadog, "--session", "ses_1", **home).returncode == 0
     datadog.status = "timeout"
     done = _command(datadog, "--session", "ses_1", **home)
     assert done.returncode == 2 and done.stdout == ""

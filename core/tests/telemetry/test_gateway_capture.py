@@ -507,6 +507,19 @@ def test_approvals_are_recorded_with_their_text_redacted(capture, writer, stream
     assert decided["outcome"] == "deny" and decided["reason"] == "user"
 
 
+def test_a_tool_call_with_nan_or_infinity_in_its_arguments_keeps_its_record(
+    capture, writer, stream_file
+):
+    """Hermes reads arguments with ``json.loads``, which takes ``NaN`` and ``Infinity``, and
+    canonical JSON allows neither, so they are kept as text."""
+    args = json.loads('{"x": NaN, "y": [Infinity, -Infinity], "z": 1.5}')
+    capture.post_tool_call(tool_name="calc", args=args, result="{}", session_id="ses_1")
+    records = _flushed(writer, stream_file)
+    [completed] = _operations(records, "tool", "completed")
+    arguments = json.loads(objects_of(records)[_digest(completed, "arguments")])
+    assert arguments == {"x": "nan", "y": ["inf", "-inf"], "z": 1.5}
+
+
 def test_lifecycle_hooks_leave_records(capture, writer, stream_file):
     capture.on_session_start(session_id="ses_1", model="m")
     capture.on_session_end(session_id="ses_1", turn_id="t", turn_exit_reason="Stop", completed=True)

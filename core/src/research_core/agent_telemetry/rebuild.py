@@ -118,7 +118,7 @@ class BrokerLogsSearch:
             answer = self._post({"filter": filters, "page": page, "sort": "timestamp"})
             meta = answer.get("meta") or {}
             status = meta.get("status")
-            if status not in (None, "done"):
+            if status != "done":
                 raise IncompleteSearch(f"the search answered status {status!r}")
             # Datadog warns, even with status ``done``, when the results may be partial.
             if warnings := meta.get("warnings"):
@@ -656,7 +656,12 @@ def rebuild_session(
         for record in operations
         if (record["action"], record["stage"]) == ("model_request", "started")
     )
-    attempted = Counter(request.get("api_request_id") for request in requests)
+    # An auxiliary call has no ``model_request`` / ``started``, and may have no ``api_request_id``.
+    attempted = Counter(
+        request.get("api_request_id")
+        for request in requests
+        if not request["model_attempt_id"].startswith("aux-")
+    )
     for call, starts in started.items():
         if attempted[call] < starts:
             finder.missing[call] = [{"kind": "call_with_no_attempt", "api_request_id": call}]

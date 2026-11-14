@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import sqlite3
 import threading
@@ -111,7 +112,11 @@ def _numbers(**values: Any) -> dict[str, Any] | None:
 
 
 def _plain(value: Any) -> Any:
-    """A provider object as plain data: ``SimpleNamespace`` from a stream, otherwise pydantic."""
+    """A provider object as plain data: ``SimpleNamespace`` from a stream, otherwise pydantic.
+    ``NaN`` and the infinities, which ``json.loads`` takes from a model's arguments, become text:
+    canonical JSON has no form for them, and the record would be dropped."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
     if value is None or isinstance(value, str | int | float | bool):
         return value
     if isinstance(value, Mapping):
