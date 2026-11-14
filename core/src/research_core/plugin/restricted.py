@@ -62,11 +62,11 @@ def conversation_text(content: Any) -> str:
 
 
 def authorize_inference(
-    *, request: dict[str, Any], next_call: Any, session_id: str = "", task_id: str = "", **_: Any
+    *, request: dict[str, Any], next_call: Any, session_id: str = "", **_: Any
 ) -> Any:
     try:
         env = profile_env()
-        authority = bound_authority(env, task_id or session_id)
+        authority = bound_authority(env, session_id)
         if not isinstance(authority, RestrictedAuthority):
             return None
         require_active(authority, env)

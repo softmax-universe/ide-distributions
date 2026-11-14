@@ -147,20 +147,17 @@ def run_in_workspace(
 
 
 def make_handler(spec: Any, role: Role, traces: Traces) -> Callable[..., str]:
-    def handler(
-        args: dict | None = None, session_id: str = "", task_id: str = "", **_: Any
-    ) -> str:
+    def handler(args: dict | None = None, session_id: str = "", **_: Any) -> str:
         from research_core.plugin.authority import TOOL_DENIED, owner_tools
 
-        execution_id = task_id or session_id
-        if not owner_tools(profile_env(), execution_id):
+        if not owner_tools(profile_env(), session_id):
             return TOOL_DENIED
         args = dict(args or {})
         turn = traces.session_turn(session_id)
         # The native call this serves, when the turn has only one open call of this tool.
         call = traces.tool_call(session_id, spec.name)
         env = tool_env(
-            role, execution_id, turn_id=turn and turn.turn_id, tool_call_id=call and call[1]
+            role, session_id, turn_id=turn and turn.turn_id, tool_call_id=call and call[1]
         )
         from opentelemetry import trace
 

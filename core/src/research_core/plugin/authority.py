@@ -21,14 +21,11 @@ def owner_tools(env: Mapping[str, str], session_id: str) -> bool:
         return False
 
 
-def guard_tools(
-    *, args: dict[str, Any], next_call: Any, session_id: str = "", task_id: str = "", **_: Any
-) -> Any:
+def guard_tools(*, args: dict[str, Any], next_call: Any, session_id: str = "", **_: Any) -> Any:
     from research_core.plugin.executor import profile_env
 
-    execution_id = task_id or session_id
     try:
-        permitted = owner_tools(profile_env(), execution_id)
+        permitted = owner_tools(profile_env(), session_id)
     except Exception:
         return TOOL_DENIED
     if not permitted:
