@@ -45,7 +45,7 @@ defaults to `$HERMES_REAL_HOME/workspace`, so set `IDE_WORKSPACE` explicitly. It
 1. writes `<profile>/local/core-path.txt` (where the plugin finds `research_core`);
 2. creates or migrates the workspace store and every registered Coworld store;
 3. re-applies the config keys the machinery relies on (`approvals.mode: off`, no deny list,
-   memory off, `tools.tool_search.enabled: off`, the plugin and toolset, `cron.catch_up_missed`,
+   Hermes's notes memory off and its user profile on for the Orchestrator only, `tools.tool_search.enabled: off`, the plugin and toolset, `cron.catch_up_missed`,
    the Orchestrator's compaction settings, the tool-result prune trigger, the disabled Hermes
    toolsets), removes retired keys, sets the profile's `skills.external_dirs`,
    `skills.trusted_project_dirs` (every registered Coworld's code) and `terminal.cwd` (the
@@ -292,7 +292,9 @@ the volume survives losing the volume, so backups are part of the contract:
   backup API (never a raw copy of a live database and its WAL) into `<dest-dir>/<timestamp>/`
   with a `manifest.json` (sources, sizes, sha256, the workspace store's `last_seq`). Run it once
   per profile whose transcripts should be covered, or copy the other profiles' `state.db` files
-  the same way.
+  the same way. It does not copy the Orchestrator's user profile
+  (`<orchestrator profile>/memories/USER.md`, a plain file a `hermes profile update` never touches);
+  the volume snapshots cover that file.
 - `research store restore-check <backup-dir>` is the restore test: it opens every copy
   read-only, runs `PRAGMA integrity_check`, compares the manifest's checksums and checks each
   store's schema against the running release, and prints a JSON verdict (exit 1 on any

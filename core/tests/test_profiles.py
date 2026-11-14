@@ -30,7 +30,11 @@ def test_config_has_protected_keys_and_no_gates(role):
     config = yaml.safe_load((PROFILES[role] / "config.yaml").read_text())
     assert config["approvals"]["mode"] == "off"
     assert "deny" not in config["approvals"]
-    assert config["memory"] == {"memory_enabled": False, "user_profile_enabled": False}
+    # Only the Orchestrator keeps Hermes's user profile; the notes store is off for both.
+    assert config["memory"] == {
+        "memory_enabled": False,
+        "user_profile_enabled": role == "orchestrator",
+    }
     assert config["tools"]["tool_search"]["enabled"] == "off"
     assert config["plugins"]["enabled"] == [role]
     assert config["platform_toolsets"]["api_server"] == ["hermes-api-server", f"ide-{role}"]
