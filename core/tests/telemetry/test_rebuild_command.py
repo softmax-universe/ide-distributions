@@ -10,7 +10,6 @@ import os
 import subprocess
 import sys
 import time
-import urllib.error
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -22,6 +21,7 @@ from research_core.agent_telemetry.rebuild import (
     PROXY_PAGE_LIMIT,
     AmbiguousSession,
     BrokerLogsSearch,
+    SearchRefused,
     rebuild_session,
 )
 from research_core.agent_telemetry.records import canonical_bytes
@@ -298,10 +298,20 @@ def test_an_upstream_error_through_the_token_broker_raises_as_datadogs_own(datad
     datadog.answer = lambda *_: (400, {"errors": ["Limit can't be more than 5000"]}, {})
     waits = []
     search = search_of(datadog, waits.append)
-    with pytest.raises(urllib.error.HTTPError) as raised:
+    with pytest.raises(SearchRefused) as raised:
         rebuild_session(search, "ses_1")
-    assert raised.value.code == 400 and waits == []
-    assert b"more than 5000" in raised.value.read()
+    assert raised.value.status == 400 and waits == []
+    assert "more than 5000" in raised.value.detail
+
+
+def test_the_brokers_own_rate_limit_is_waited_out(writer, stream_file, datadog):
+    bodies = two_requests(writer)
+    sent(writer, stream_file, datadog)
+    datadog.broker_rate_limit_next = 2
+    waits = []
+    report = rebuild_session(search_of(datadog, waits.append), "ses_1")
+    assert waits == [1.0, 1.0]
+    assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
 
 
 def test_a_proxy_injected_token_sends_no_authorization_of_its_own(writer, stream_file, datadog):
@@ -309,9 +319,9 @@ def test_a_proxy_injected_token_sends_no_authorization_of_its_own(writer, stream
     bodies = two_requests(writer)
     sent(writer, stream_file, datadog)
     injected = BrokerLogsSearch(datadog.broker_url(), "proxy-injected", "a test", "session-1")
-    with pytest.raises(urllib.error.HTTPError) as raised:
+    with pytest.raises(SearchRefused) as raised:
         rebuild_session(injected, "ses_1")
-    assert raised.value.code == 401  # Nothing in front of this fake adds the token.
+    assert raised.value.status == 401  # Nothing in front of this fake adds the token.
     datadog.agent_proxy_adds_token = True
     report = rebuild_session(injected, "ses_1")
     assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
@@ -676,8 +686,8 @@ def test_the_command_runs_through_the_token_broker(writer, stream_file, datadog,
     reason = "Limit can't be more than 5000 " + "x" * 400
     datadog.answer = lambda *_: (400, {"errors": [reason]}, {})
     for token, error in (
-        ("tbk_revoked", 'HTTP Error 401: Unauthorized {"detail": "invalid token"}'),
-        ("tbk_test", 'HTTP Error 400: Datadog\'s answer through the broker {"errors": ["Limit'),
+        ("tbk_revoked", 'HTTP 401: {"detail": "invalid token"}'),
+        ("tbk_test", 'HTTP 400: {"errors": ["Limit'),
     ):
         done = _command(datadog, "--session", "ses_1", TOKEN_BROKER_TOKEN=token, **home)
         assert done.returncode == 2 and done.stdout == ""

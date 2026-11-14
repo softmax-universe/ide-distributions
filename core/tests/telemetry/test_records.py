@@ -40,6 +40,16 @@ def test_split_gives_the_longest_pieces_that_fit(max_bytes):
         assert rec.split_body(body, max_bytes) == slow_split(body, max_bytes)
 
 
+def test_an_objects_digest_and_size_are_of_its_utf8_bytes():
+    """Pinned: a reader hashes the joined body's UTF-8 bytes, so these may never change."""
+    text = rec.text_object("café 日本語 😀")
+    assert (text.kind, text.body, text.size_bytes) == ("part", "café 日本語 😀", 20)
+    assert text.digest == "dbcef621b3450a8fe17d56ecba2fa0b685456bccc87f5e51b9b431c6fe9162c7"
+    value = rec.json_object({"b": 1, "a": "é 😀"}, "tool_list")
+    assert (value.kind, value.body, value.size_bytes) == ("tool_list", '{"a":"é 😀","b":1}', 21)
+    assert value.digest == "79c41287d341cf0d798c932ea4a45f67a8fb85a05b9ee7126a25fa20bf74f5e0"
+
+
 def _content_lines(body: str) -> list[bytes]:
     obj = rec.text_object(body)
     producer = Producer.for_process("gateway", {"IDE_WORKSPACE_ID": "wrk-1"})

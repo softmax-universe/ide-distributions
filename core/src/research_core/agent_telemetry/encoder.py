@@ -204,7 +204,12 @@ class RecordEncoder:
 
     def write(self, kind: str, occurred_at: float, payload: Mapping[str, Any]) -> None:
         """``payload`` is the writer's own copy of what a callback saw."""
-        getattr(self, f"_write_{kind}")(payload, rec.format_time(occurred_at))
+        writers = {
+            "operation": self._write_operation,
+            "context_parts": self._write_context_parts,
+            "request": self._write_request,
+        }
+        writers[kind](payload, rec.format_time(occurred_at))
 
     def _sequence(self) -> int:
         self._next_sequence += 1
@@ -224,7 +229,9 @@ class RecordEncoder:
             if len(line) <= rec.MAX_LINE_BYTES:
                 self._stream.write(line)
             else:
-                # Chunking keeps a body inside the limit, so this is metadata too large: a bug.
+                # Chunking keeps a body inside the limit, so this is metadata too large. The model
+                # can choose a tool name or call ID, and a client the IDs of a refused request, so
+                # a long one costs its record.
                 logger.warning("telemetry: dropped a %s line of %d bytes", row["family"], len(line))
 
     def _base(self, occurred_at: str) -> dict[str, Any]:
@@ -253,9 +260,9 @@ class RecordEncoder:
         event_id, action, stage = str(uuid.uuid4()), payload["action"], payload["stage"]
         base = self._base(occurred_at)
         self._emit([rec.operation_record(base, event_id, action, stage, fields, refs)])
-        self._sent.update(objects.made)
         # Requests fill ``_redacted``, which an operation only reads, so that every distinct log
         # or error text does not grow it.
+        self._sent.update(objects.made)
 
     def _write_context_parts(self, payload: Mapping[str, Any], occurred_at: str) -> None:
         """Say where each part sits in the redacted target. A reader counts what no part covers.
