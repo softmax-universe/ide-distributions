@@ -8,6 +8,7 @@ import json
 from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict
 
+from research_core.authority import OWNER, Authority, require_same
 from research_core.store import admissions, sessions
 from research_core.store.actors import Actor
 from research_core.store.db import Store
@@ -22,6 +23,7 @@ class OpenRegistration(BaseModel):
     session_context: dict | None
     client_capabilities: dict | list | None
     client: dict | None = None
+    authority: dict = {"mode": "owner"}
 
 
 class Receipt(BaseModel):
@@ -44,20 +46,28 @@ def accept(
     message: str,
     payload: str,
     registration: OpenRegistration | None = None,
+    authority: Authority = OWNER,
 ) -> Receipt:
     current = trace.get_current_span()
     current.set_attributes({"op.id": op_id, "session.id": session_id})
     current.add_event("writer.wait")
     with store.tx(actor) as tx:
         current.add_event("writer.acquired")
-        existing = admissions.read(store, op_id, kind, request)
+        registered = tx.one("SELECT authority,profile FROM sessions WHERE id=?", (session_id,))
+        if registered is not None:
+            require_same(json.loads(registered["authority"]), authority)
+        if registration is not None:
+            require_same(registration.authority, authority)
+        profile = registration.profile if registration is not None else registered["profile"]
+        existing = admissions.read(store, op_id, kind, request, authority)
         if existing is None:
             if kind == "message":
                 payload = json.dumps({**json.loads(payload), "trace_context": trace_carrier()})
             tx.execute(
                 "INSERT INTO client_admissions"
-                " (op_id,kind,request,session_id,message,payload,status,created_at)"
-                " VALUES (?,?,?,?,?,?,?,?)",
+                " (op_id,kind,request,session_id,message,payload,status,created_at,"
+                "authority,profile)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     op_id,
                     kind,
@@ -67,6 +77,8 @@ def accept(
                     payload,
                     "queued",
                     tx.at,
+                    authority.model_dump_json(),
+                    profile,
                 ),
             )
             tx.event("client.accepted", op_id, {"kind": kind, "session_id": session_id})

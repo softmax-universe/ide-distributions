@@ -80,6 +80,8 @@ def test_both_tool_boundaries_name_the_same_call_and_only_a_short_error_class(
 ):
     """A native and a distribution span of one failed call carry the same identity, an
     ``error.type`` read from structured fields, and log one payload-free line each."""
+    from research_core.store import sessions
+    from research_core.store.actors import Actor
     from research_core.tools.base import ToolContext, run_tool
 
     hooks, _ = tracing.make_instrumentation("researcher")
@@ -93,6 +95,9 @@ def test_both_tool_boundaries_name_the_same_call_and_only_a_short_error_class(
     }
     env = {"IDE_WORKSPACE": str(tmp_path), "IDE_SESSION_ID": "ses_1", "IDE_TURN_ID": "turn_1"}
     ctx = ToolContext.from_env("researcher", {**env, "IDE_TOOL_CALL_ID": "c4"})
+    sessions.register(
+        ctx.wstore, Actor.harness(), session_id="ses_1", profile="researcher", kind="chat"
+    )
     caplog.set_level("INFO", logger="research_core.tool_call")
     for call_id, (name, result) in calls.items():
         hooks["pre_tool_call"](turn_id="turn_1", tool_call_id=call_id)

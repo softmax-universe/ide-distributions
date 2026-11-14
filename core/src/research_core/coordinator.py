@@ -11,7 +11,7 @@ import hashlib
 import json
 import logging
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -22,6 +22,15 @@ from opentelemetry.trace import StatusCode
 
 from research_core import brain, inference, layout, run_failures, transitions
 from research_core.agent_telemetry import observed
+from research_core.authority import (
+    Authority,
+    AuthorityDenied,
+    AuthorityUnavailable,
+    OwnerAuthority,
+    parse_authority,
+    require_active,
+    require_same,
+)
 from research_core.store import (
     admissions,
     chat_updates,
@@ -58,6 +67,7 @@ from research_core.watcher.hermes_api import (
     RunsBusy,
     RunsError,
     RunsNotSent,
+    RunsUnavailable,
     mint_session_id,
 )
 from research_core.watcher.resume import (
@@ -120,6 +130,7 @@ class Coordinator:
         *,
         inference_lease_file: Path | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        authority_env: Mapping[str, str] | None = None,
     ):
         self.ws = ws
         self.native = native
@@ -128,6 +139,7 @@ class Coordinator:
         # The inference state beside this file classifies a failed chat run (``run_failures``).
         self.inference_lease_file = inference_lease_file
         self.clock = clock
+        self.authority_env = authority_env
         # The last report recorded per Coworld: this loop can run twice a second with nothing new.
         self._last_reports: dict[str | None, dict[str, Any]] = {}
 
@@ -139,6 +151,32 @@ class Coordinator:
 
     def steer(self, run_id: str, text: str | list[dict], *, profile: str):
         return self.native.steer(run_id, text, profile=profile)
+
+    def check_authority(self, store: Store, row) -> Authority:
+        authority = parse_authority(json.loads(row["authority"]))
+        session = sessions.read(store, row["session_id"])
+        if session is None:
+            raise RunsError("Execution conversation is missing", code="authorization_denied")
+        try:
+            require_same(session["authority"], authority)
+            require_active(authority, self.authority_env)
+        except AuthorityUnavailable as error:
+            raise RunsUnavailable(str(error), code="authorization_unavailable") from error
+        except AuthorityDenied as error:
+            raise RunsError(str(error), code="authorization_denied", retryable=False) from error
+        return authority
+
+    def defer_authority(self, store: Store, row, error: RunsUnavailable) -> None:
+        authority = parse_authority(json.loads(row["authority"]))
+        backoff = int(settings.get(store, "recovery.delivery_backoff_seconds"))
+        retry_at = parse_iso(store.now()) + timedelta(seconds=backoff)
+        if not isinstance(authority, OwnerAuthority):
+            retry_at = min(retry_at, datetime.fromtimestamp(authority.expires_at, UTC))
+        with store.tx(ACTOR) as tx:
+            tx.execute(
+                "UPDATE client_admissions SET retry_at=?,error=? WHERE op_id=?",
+                (retry_at.isoformat(), error.detail, row["op_id"]),
+            )
 
     def start(
         self,
@@ -169,6 +207,7 @@ class Coordinator:
                 )
             )
             row = store.one("SELECT * FROM client_admissions WHERE op_id=?", (op_id,))
+            authority = self.check_authority(store, row)
             payload = json.loads(row["payload"])
             if (row["session_id"], payload["input"], payload["instructions"]) != (
                 session_id,
@@ -209,7 +248,8 @@ class Coordinator:
                         snapshot["run_id"], profile=profile
                     )
                 if (
-                    row["origin"] in {"client", "answer", "continuation"}
+                    isinstance(authority, OwnerAuthority)
+                    and row["origin"] in {"client", "answer", "continuation"}
                     and (
                         isinstance(text, str)
                         or isinstance(text[-1]["content"], str)
@@ -541,6 +581,7 @@ class Coordinator:
                 text=text,
                 instructions=instructions,
                 idempotency_key=idempotency_key,
+                **({"authority": authority} if not isinstance(authority, OwnerAuthority) else {}),
             )
             with admissions.dispatch_lock(store), store.tx(ACTOR) as tx:
                 current = tx.one("SELECT * FROM client_admissions WHERE op_id=?", (op_id,))
@@ -1252,6 +1293,20 @@ class Coordinator:
         resume is a new one. The admitted input stays in ``request``; attachments are never
         prepared again. Caller holds the admission lock.
         """
+        try:
+            self.check_authority(store, row)
+        except RunsUnavailable as error:
+            self.defer_authority(store, row, error)
+            return None
+        except RunsError as error:
+            with store.tx(ACTOR) as tx:
+                tx.execute(
+                    "UPDATE client_admissions SET status='failed',error=?,resume_after=NULL"
+                    " WHERE op_id=?",
+                    (error.detail, row["op_id"]),
+                )
+                tx.event("client.finished", row["op_id"], {"status": "failed"})
+            return None
         now = self.clock()
         if (
             parse_iso(row["resume_after"]) > now

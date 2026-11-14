@@ -588,7 +588,14 @@ def test_a_workspace_tool_subprocess_records_its_work_and_stdout_stays_its_resul
         STREAM_VARIABLE: str(stream),
     }
     ws = layout.from_env(env)
-    Store.open(ws.store_path, kind="workspace").close()
+    with Store.open(ws.store_path, kind="workspace") as store:
+        sessions.register(
+            store,
+            Actor.harness(),
+            session_id="ses_1",
+            profile="orchestrator",
+            kind="chat",
+        )
     args = {"action": "update", "key": "max_researchers", "value": 2, "cites": "a test"}
     assert json.loads(executor.run_in_workspace("settings", args, env))["ok"] is True
     assert '"name": "execute_tool"' not in capfd.readouterr().err

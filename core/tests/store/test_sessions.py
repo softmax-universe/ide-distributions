@@ -44,6 +44,7 @@ def test_register_inserts_and_emits_session_started(workspace_store, harness):
         "session_context": None,
         "client_capabilities": None,
         "client": None,
+        "authority": {"mode": "owner"},
         "drained": False,
         "stopped_by": None,
         "created": True,

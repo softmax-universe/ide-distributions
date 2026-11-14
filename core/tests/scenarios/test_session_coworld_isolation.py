@@ -117,6 +117,213 @@ def test_unbound_session_cannot_inherit_retained_coworld(tmp_path):
         ctx.wstore.close()
 
 
+def test_granted_conversation_keeps_its_authority_after_restart_and_revocation(tmp_path):
+    import asyncio
+    from uuid import uuid4
+
+    from research_core.authority import AuthorityDenied
+    from research_core.store import admissions
+    from tests.authority_service import authority_service
+
+    with authority_service() as grants:
+        authorization = grants.issue()
+        proof = authorization.model_dump(mode="json")
+        other = grants.issue(
+            client_id="game-b", player_id=authorization.player_id, grant_id=authorization.grant_id
+        ).model_dump(mode="json")
+        ws = layout.from_env({"IDE_WORKSPACE": str(tmp_path)})
+        ws.ensure_dirs()
+        native = FakeHermesRuns()
+        server = SeamServer(ws=ws, hermes=native, env=grants.env)
+        try:
+            opening = {
+                "op_id": str(uuid4()),
+                "client": {"id": "softmax", "kind": "web"},
+                "session_context": {"contract_version": 1, "scope": "workspace"},
+                "authority": proof,
+            }
+            opened = server.session_open(opening)
+            body = {
+                "op_id": str(uuid4()),
+                "session_id": opened["session_id"],
+                "message": {"role": "user", "content": "Only this conversation"},
+                "authority": proof,
+            }
+            admitted = server.message(body)
+            renewed = grants.issue(
+                player_id=authorization.player_id, grant_id=authorization.grant_id
+            ).model_dump(mode="json")
+            assert server.session_open({**opening, "authority": renewed}) == opened
+            assert server.message({**body, "authority": renewed})["op_id"] == admitted["op_id"]
+            for authority in ({"mode": "owner"}, other):
+                with pytest.raises(AuthorityDenied):
+                    server.session_open({**opening, "authority": authority})
+                with pytest.raises(AuthorityDenied):
+                    server.message({**body, "op_id": str(uuid4()), "authority": authority})
+                with pytest.raises(AuthorityDenied):
+                    server.message_cancel({"op_id": admitted["op_id"], "authority": authority})
+            with Store.open(ws.store_path, kind="workspace") as store:
+                session = sessions.read(store, opened["session_id"])
+                assert session["profile"] == "restricted"
+                assert not sessions.opened_by_human_chat(session)
+                assert "authorization_id" not in session["authority"]
+                receipts = store.q("SELECT authority FROM client_admissions")
+                assert len(receipts) == 2
+                assert all(json.loads(row["authority"]) == proof for row in receipts)
+                with pytest.raises(AuthorityDenied):
+                    admissions.enqueue(
+                        store,
+                        ACTOR,
+                        key="background-upgrade",
+                        session_id=opened["session_id"],
+                        profile="orchestrator",
+                        text="use the owner's tools",
+                        origin="followup",
+                    )
+            grants.revoke(authorization)
+        finally:
+            server._http.server_close()
+        recovered = SeamServer(ws=ws, hermes=native, env=grants.env)
+        try:
+            asyncio.run(recovered.dispatch_messages())
+            with Store.open(ws.store_path, kind="workspace") as store:
+                result = admissions.snapshot(store, opened["session_id"])
+                assert result[0]["status"] == "failed"
+            assert not native.runs
+        finally:
+            recovered._http.server_close()
+
+
+def test_renewed_grant_waits_until_revoked_native_execution_stops(tmp_path):
+    import asyncio
+    from uuid import uuid4
+
+    from research_core.authority import execution_authority
+    from tests.authority_service import authority_service
+
+    with authority_service() as grants:
+        original = grants.issue()
+        ws = layout.from_env({"IDE_WORKSPACE": str(tmp_path)})
+        ws.ensure_dirs()
+        native = FakeHermesRuns()
+        server = SeamServer(ws=ws, hermes=native, env=grants.env)
+        try:
+            opened = server.session_open(
+                {
+                    "op_id": str(uuid4()),
+                    "client": {"id": "game-a", "kind": "test"},
+                    "session_context": {"contract_version": 1, "scope": "workspace"},
+                    "authority": original.model_dump(mode="json"),
+                }
+            )
+            body = {
+                "op_id": str(uuid4()),
+                "session_id": opened["session_id"],
+                "message": {"role": "user", "content": "First authorization"},
+                "authority": original.model_dump(mode="json"),
+            }
+            server.message(body)
+            asyncio.run(server.dispatch_messages())
+            assert len(native.runs) == 1
+            renewed = grants.issue(player_id=original.player_id, grant_id=original.grant_id)
+            server.message(
+                {
+                    **body,
+                    "op_id": str(uuid4()),
+                    "message": {"role": "user", "content": "Renewed authorization"},
+                    "authority": renewed.model_dump(mode="json"),
+                }
+            )
+            grants.revoke(original)
+            asyncio.run(server.dispatch_messages())
+            with Store.open(ws.store_path, kind="workspace") as store:
+                assert execution_authority(store, opened["session_id"]) == original
+            assert len(native.runs) == 1
+            asyncio.run(server.dispatch_messages())
+            asyncio.run(server.dispatch_messages())
+            assert len(native.runs) == 2
+            assert not native.steered
+            with Store.open(ws.store_path, kind="workspace") as store:
+                assert execution_authority(store, opened["session_id"]) == renewed
+        finally:
+            server._http.server_close()
+
+
+def test_authority_redirect_cannot_relay_workspace_credential():
+    from research_core.authority import AuthorityDenied, require_active
+    from tests.authority_service import authority_service
+
+    with authority_service() as grants, authority_service() as destination:
+        proof = grants.issue()
+        grants.redirect_to = destination.env["IDE_AUTHORITY_CHECK_URL"]
+        with pytest.raises(AuthorityDenied):
+            require_active(proof, grants.env)
+        assert not destination.checks
+
+
+def test_authority_outage_preserves_running_receipt_but_cannot_extend_expiry(tmp_path, monkeypatch):
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from research_core.store import admissions
+    from tests.authority_service import authority_service
+
+    with authority_service() as grants:
+        proof = grants.issue()
+        ws = layout.from_env({"IDE_WORKSPACE": str(tmp_path)})
+        ws.ensure_dirs()
+        native = FakeHermesRuns()
+        server = SeamServer(ws=ws, hermes=native, env=grants.env)
+        try:
+            opened = server.session_open(
+                {
+                    "op_id": str(uuid4()),
+                    "client": {"id": "game-a", "kind": "test"},
+                    "session_context": {"contract_version": 1, "scope": "workspace"},
+                    "authority": proof.model_dump(mode="json"),
+                }
+            )
+            body = {
+                "op_id": str(uuid4()),
+                "session_id": opened["session_id"],
+                "message": {"role": "user", "content": "Keep this admitted work"},
+                "authority": proof.model_dump(mode="json"),
+            }
+            server.message(body)
+            asyncio.run(server.dispatch_messages())
+            (run_id,) = native.runs
+            grants.unavailable = True
+            asyncio.run(server.dispatch_messages())
+            with Store.open(ws.store_path, kind="workspace") as store:
+                assert admissions.snapshot(store)[0]["status"] == "running"
+                assert not any(method == "stop" for method, _ in native.calls)
+                with store.tx(ACTOR) as tx:
+                    tx.execute(
+                        "UPDATE client_admissions SET retry_at=? WHERE op_id=?",
+                        ((datetime.now(UTC) - timedelta(seconds=1)).isoformat(), body["op_id"]),
+                    )
+            grants.unavailable = False
+            native.complete(run_id, "The already admitted request completed")
+            asyncio.run(server.dispatch_messages())
+            with Store.open(ws.store_path, kind="workspace") as store:
+                assert admissions.snapshot(store)[0]["status"] == "completed"
+                stored = store.one(
+                    "SELECT authority FROM client_admissions WHERE op_id=?", (body["op_id"],)
+                )
+                assert json.loads(stored["authority"]) == proof.model_dump(mode="json")
+            pending = {**body, "op_id": str(uuid4())}
+            server.message(pending)
+            grants.unavailable = True
+            monkeypatch.setattr("research_core.authority.time.time", lambda: proof.expires_at + 1)
+            asyncio.run(server.dispatch_messages())
+            with Store.open(ws.store_path, kind="workspace") as store:
+                assert admissions.snapshot(store)[1]["status"] == "failed"
+            assert len(native.runs) == 1
+        finally:
+            server._http.server_close()
+
+
 def test_canonical_session_binding_is_immutable(tmp_path):
     from research_core.serve import Refused
 

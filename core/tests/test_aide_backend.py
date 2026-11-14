@@ -26,6 +26,7 @@ from research_core.serve import SeamServer
 from research_core.store import admissions, goals, sessions, settings, tasks
 from research_core.store.db import DEFAULT_MAX_HOLD_S, quiesce_busy_timeout_ms
 from research_core.watcher.hermes_api import FakeHermesRuns
+from tests.authority_service import authority_service
 from tests.test_serve import COWORLD_ID, HARNESS, make_ctx
 
 IMAGE = Path(__file__).resolve().parents[2] / "image"
@@ -134,7 +135,8 @@ class Gateway:
         ]
 
     async def handle(self, request: httpx.Request) -> httpx.Response:
-        path = request.url.path.removeprefix("/p/orchestrator/")
+        _, prefix, profile, path = request.url.path.split("/", 3)
+        assert prefix == "p" and profile in {"orchestrator", "restricted"}
         if path.startswith("api/sessions/"):
             session_id = path.split("/")[2]
             if session_id not in self.hermes.sessions:
@@ -220,7 +222,7 @@ def system(tmp_path):
     worker.join(timeout=10)
 
 
-def run(system, scenario, inference=None, seam_transport=None, gateway=None):
+def run(system, scenario, inference=None, seam_transport=None, gateway=None, authority_env=None):
     ctx, hermes, server = system
     gateway = gateway or Gateway(hermes)
 
@@ -258,7 +260,9 @@ def run(system, scenario, inference=None, seam_transport=None, gateway=None):
             async def restart():
                 """A new backend process: every worker of the previous one has exited."""
                 await stop()
-                backend = aide.Backend(seam, native, inference or Availability(), work)
+                backend = aide.Backend(
+                    seam, native, inference or Availability(), work, authority_env=authority_env
+                )
                 backend.socket = Socket()
                 backend.restart = restart
                 backends.append(backend)
@@ -392,11 +396,15 @@ def _validate_every_aide_frame(monkeypatch):
     real_answer = aide.Backend.answer
     real_call = call
 
-    async def checked_call(backend, method, params, *, request_id=None, frontend=FRONTEND):
+    async def checked_call(
+        backend, method, params, *, request_id=None, frontend=FRONTEND, authority=aide.OWNER
+    ):
         rid = request_id or str(uuid4())
         methods[rid] = method
         request = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
-        reply = await real_call(backend, method, params, request_id=rid, frontend=frontend)
+        reply = await real_call(
+            backend, method, params, request_id=rid, frontend=frontend, authority=authority
+        )
         if "result" in reply:
             contract.validate_request(request)
         return reply
@@ -473,10 +481,14 @@ def test_aide_contract_validator_rejects_invalid_frames():
         )
 
 
-async def call(backend, method, params, *, request_id=None, frontend=FRONTEND):
+async def call(
+    backend, method, params, *, request_id=None, frontend=FRONTEND, authority=aide.OWNER
+):
     request_id = request_id or str(uuid4())
     message = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-    await backend.answer(backend.socket, aide.Frame(frontend_id=frontend, message=message))
+    await backend.answer(
+        backend.socket, aide.Frame(frontend_id=frontend, message=message, authority=authority)
+    )
     replies = [f["message"] for f in backend.socket.frames if f["message"].get("id") == request_id]
     return replies[-1]
 
@@ -497,6 +509,127 @@ def say(text):
 
 def code(reply):
     return reply["error"]["data"]["code"]
+
+
+def test_relay_keeps_app_conversations_private_across_reconnect_and_revocation(system):
+    with authority_service() as grants:
+        system[2].env.update(grants.env)
+        app = grants.issue()
+        other_app = grants.issue(client_id="game-b", player_id=app.player_id, grant_id=app.grant_id)
+
+        async def scenario(backend, gateway, ctx, hermes):
+            owner_id = await opened(backend)
+            app_frontend = uuid4()
+            open_id, send_id = str(uuid4()), str(uuid4())
+            open_params = {
+                "scope": WORKSPACE,
+                "client": {"id": "softmax", "kind": "web"},
+            }
+            missing = await call(
+                backend, "session.open", {"scope": WORKSPACE}, authority=None, frontend=uuid4()
+            )
+            assert code(missing) == "forbidden"
+            opened_app = await call(
+                backend,
+                "session.open",
+                open_params,
+                request_id=open_id,
+                authority=app,
+                frontend=app_frontend,
+            )
+            app_id = opened_app["result"]["session"]["id"]
+            hermes.busy = True
+            send_params = {"session_id": app_id, "scope": WORKSPACE, "messages": say("Hello")}
+            admitted = await call(
+                backend,
+                "chat.send",
+                send_params,
+                request_id=send_id,
+                authority=app,
+                frontend=app_frontend,
+            )
+            assert admitted["result"]["accepted"]
+            for authority, frontend, session_id in (
+                (app, app_frontend, owner_id),
+                (other_app, uuid4(), app_id),
+                (aide.OWNER, FRONTEND, app_id),
+            ):
+                denied = await call(
+                    backend,
+                    "chat.history",
+                    {"session_id": session_id, "scope": WORKSPACE},
+                    authority=authority,
+                    frontend=frontend,
+                )
+                assert code(denied) == "forbidden"
+            denied = await call(
+                backend,
+                "state.list",
+                {"resource": "sessions"},
+                authority=app,
+                frontend=app_frontend,
+            )
+            assert code(denied) == "forbidden"
+
+            racing_frontend = uuid4()
+            racing_proofs = [
+                grants.issue(client_id=client_id, player_id=app.player_id, grant_id=app.grant_id)
+                for client_id in ("game-a", "game-b")
+            ]
+            barrier = threading.Barrier(2)
+            grants.check_barriers.update(
+                {str(proof.authorization_id): barrier for proof in racing_proofs}
+            )
+            raced = await asyncio.gather(
+                *(
+                    call(
+                        backend,
+                        "session.open",
+                        {"scope": WORKSPACE},
+                        authority=authority,
+                        frontend=racing_frontend,
+                    )
+                    for authority in racing_proofs
+                )
+            )
+            assert sum("result" in reply for reply in raced) == 1
+            assert [code(reply) for reply in raced if "error" in reply] == ["forbidden"]
+
+            backend.closed(app_frontend)
+            renewed = grants.issue(player_id=app.player_id, grant_id=app.grant_id)
+            reconnect = uuid4()
+            reopened = await call(
+                backend,
+                "session.open",
+                open_params,
+                request_id=open_id,
+                authority=renewed,
+                frontend=reconnect,
+            )
+            assert reopened["result"]["session"]["id"] == app_id
+            retried = await call(
+                backend,
+                "chat.send",
+                send_params,
+                request_id=send_id,
+                authority=renewed,
+                frontend=reconnect,
+            )
+            assert retried["result"] == admitted["result"]
+            history = {"session_id": app_id, "scope": WORKSPACE}
+            read = await call(
+                backend, "chat.history", history, authority=renewed, frontend=reconnect
+            )
+            assert read["result"]["items"] == []
+            grants.revoke(renewed)
+            await backend.changed(app_id)
+            assert reconnect not in backend.subscribers[app_id].frontends
+            denied = await call(
+                backend, "chat.history", history, authority=renewed, frontend=reconnect
+            )
+            assert code(denied) == "forbidden"
+
+        run(system, scenario, authority_env=grants.env)
 
 
 def test_session_open_replays_its_session_and_refuses_reused_ids(system):
@@ -2262,7 +2395,11 @@ def test_tasks_and_goals_carry_monotonic_item_revisions(system):
         assert t_rev_1 > g_rev_1 >= 1
 
         tasks.update(ctx.store, HARNESS, task["id"], title="Task v2")
-        await until(lambda: backend.socket.notes("state.changed"))
+        await until(
+            lambda: any(
+                note["resource"] == "tasks" for note in backend.socket.notes("state.changed")
+            )
+        )
         t_pushed = [n for n in backend.socket.notes("state.changed") if n["resource"] == "tasks"][
             -1
         ]
@@ -2813,12 +2950,13 @@ def test_cancel_merged_steered_followup_and_waiting_request(system):
 def test_cached_hermes_title_skips_repeat_gateway_gets(system, monkeypatch):
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)
+        await until(lambda: session_id in hermes.sessions)
         title_gets = 0
         real_get = backend.gateway.get
 
         async def counted_get(url, *args, **kwargs):
             nonlocal title_gets
-            if url == f"api/sessions/{session_id}":
+            if httpx.URL(url).path == f"/p/orchestrator/api/sessions/{session_id}":
                 title_gets += 1
             return await real_get(url, *args, **kwargs)
 

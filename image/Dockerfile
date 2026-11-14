@@ -24,6 +24,7 @@ RUN uv sync --frozen --no-dev --project /opt/distribution \
     && rm -rf /tmp/uv-cache
 COPY orchestrator /opt/distribution/orchestrator
 COPY researcher /opt/distribution/researcher
+COPY restricted /opt/distribution/restricted
 COPY image /opt/distribution/image
 RUN bash /opt/distribution/image/install-native-attachments.sh \
     && /opt/hermes/.venv/bin/python -m compileall -q -l /opt/hermes \
@@ -46,7 +47,7 @@ RUN mkdir /opt/workspace-plugins \
 # What names this image on every telemetry record: a hash of the sources it was built from, because
 # the build has no git history. image/runtime.py passes it on as IDE_IMAGE.
 RUN cd /opt/distribution \
-    && find pyproject.toml uv.lock core orchestrator researcher image -type f \
+    && find pyproject.toml uv.lock core orchestrator researcher restricted image -type f \
          ! -path '*/__pycache__/*' -print0 \
        | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16 > image-id
 ENV PYTHONUNBUFFERED=1 \

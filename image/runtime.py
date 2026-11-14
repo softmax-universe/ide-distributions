@@ -107,6 +107,10 @@ async def run(stack: AsyncExitStack) -> None:
         # Where the gateway plugin relays reasoning deltas to the AIDE backend (image/aide.py).
         "IDE_REASONING_RELAY": "127.0.0.1:8651",
         "SOFTMAX_PLAYER_CREDENTIAL": bootstrap.credential.get_secret_value(),
+        "IDE_AUTHORITY_CHECK_URL": (
+            f"{bootstrap.platform_url.rstrip('/')}/v2/workspaces/"
+            f"{bootstrap.workspace_id}/authority/check"
+        ),
         "COGAMES_API_URL": bootstrap.platform_url.removesuffix("/observatory"),
     }
     # Multiplexed gateway startup reads the host profile's dotenv after scoping its environment.
@@ -166,11 +170,13 @@ async def run(stack: AsyncExitStack) -> None:
                     "API_SERVER_HOST",
                     "API_SERVER_PORT",
                     "IDE_WORKSPACE",
+                    "IDE_WORKSPACE_ID",
                     "IDE_WORKSPACE_ENV",
                     "BUILDKIT_HOST",
                     "IDE_RESEARCHER_PROFILES",
                     "IDE_INFERENCE_LEASE_FILE",
                     "SOFTMAX_PLAYER_CREDENTIAL",
+                    "IDE_AUTHORITY_CHECK_URL",
                     "COGAMES_API_URL",
                     "OPENROUTER_API_KEY",
                 }
@@ -194,6 +200,10 @@ async def run(stack: AsyncExitStack) -> None:
         pending.write_text(image_id + "\n")
         pending.replace(applied)
 
+    from research_core.restricted_profile import prepare_restricted_profile
+
+    prepare_restricted_profile(HOME / "profiles/restricted", SOURCE, common)
+
     async def observe_ready(phase: str, ready: asyncio.Event) -> None:
         with telemetry.span(f"workspace.{phase}", context=startup_context):
             await ready.wait()
@@ -208,7 +218,7 @@ async def run(stack: AsyncExitStack) -> None:
                 platform_url=bootstrap.platform_url,
                 workspace_id=bootstrap.workspace_id,
                 credential=bootstrap.credential.get_secret_value(),
-                homes=(HOME, *(HOME / "profiles" / role for role in PROFILES)),
+                homes=(HOME, *(HOME / "profiles" / role for role in (*PROFILES, "restricted"))),
                 availability=inference,
                 lease_file=lease_file,
                 ready=inference_ready,

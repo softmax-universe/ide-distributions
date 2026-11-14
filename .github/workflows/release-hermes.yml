@@ -9,6 +9,7 @@ on:
       - "core/**"
       - "orchestrator/**"
       - "researcher/**"
+      - "restricted/**"
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/release-hermes.yml"

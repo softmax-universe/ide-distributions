@@ -63,12 +63,19 @@ def test_workspace_process_env_drops_hermes_interpreter_variables(tmp_path):
 def test_workspace_tools_inherit_logs_and_propagate_standard_context(tmp_path, monkeypatch):
     from research_core import layout, telemetry
     from research_core.plugin import tracing
+    from research_core.store import sessions
+    from research_core.store.actors import Actor
+    from research_core.store.db import Store
 
     env = {"IDE_WORKSPACE": str(tmp_path / "ws")}
     monkeypatch.setenv("IDE_WORKSPACE", env["IDE_WORKSPACE"])
     ws = layout.from_env(env)
     ws.venv_python.parent.mkdir(parents=True)
     ws.venv_python.touch()
+    with Store.open(ws.store_path, kind="workspace") as store:
+        sessions.register(
+            store, Actor.harness(), session_id="s1", profile="researcher", kind="chat"
+        )
     calls = []
 
     def run(*args, **kwargs):

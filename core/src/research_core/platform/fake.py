@@ -59,7 +59,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from research_core.platform.identity import IdentityAccessToken
 
 from research_core.locks import file_lock
 from research_core.platform.errors import (
@@ -243,6 +246,9 @@ class FakePlatform:
 
     def close(self) -> None:
         """The fake opens files only for individual operations."""
+
+    def identity_token(self, resource: str, scope: str) -> IdentityAccessToken:
+        raise PlatformError("Identity tokens require the live workspace binding", retryable=False)
 
     # --- state plumbing ---------------------------------------------------------------------
 

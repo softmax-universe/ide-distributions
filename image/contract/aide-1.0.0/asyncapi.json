@@ -145,7 +145,7 @@
     "backend": {
       "address": "/v2/workspaces/{workspace_id}/aide/1.0.0/backend",
       "title": "AIDE backend connection",
-      "description": "Authenticated workspace bridge. Application frames wrap JSON-RPC as {frontend_id,message}. Endpoint is relative to the platform API base URL.",
+      "description": "Authenticated workspace bridge. Relay frames wrap JSON-RPC with frontend routing, optional tracing and trusted execution authority. Endpoint is relative to the platform API base URL. See protocol.md for capability-dependent authorization requirements.",
       "parameters": {
         "workspace_id": {
           "description": "Workspace identifier bound by authenticated transport. Never authorization by itself."
@@ -160,6 +160,11 @@
               "Sec-WebSocket-Protocol": {
                 "type": "string",
                 "const": "aide.1.0.0"
+              },
+              "X-Softmax-Execution-Authority": {
+                "type": "string",
+                "const": "restricted-conversations",
+                "description": "Advertises native enforcement of restricted conversation authority on this authenticated backend connection."
               }
             },
             "required": [
@@ -6659,6 +6664,99 @@
             "additionalProperties": false
           }
         ]
+      },
+      "OwnerAuthority": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "const": "owner",
+            "default": "owner",
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "title": "OwnerAuthority",
+        "type": "object",
+        "required": [
+          "mode"
+        ]
+      },
+      "RestrictedAuthority": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "const": "restricted",
+            "default": "restricted",
+            "title": "Mode",
+            "type": "string"
+          },
+          "issuer": {
+            "minLength": 1,
+            "title": "Issuer",
+            "type": "string"
+          },
+          "subject": {
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          },
+          "subject_type": {
+            "enum": [
+              "person",
+              "cogent"
+            ],
+            "title": "Subject Type",
+            "type": "string"
+          },
+          "client_id": {
+            "minLength": 1,
+            "title": "Client Id",
+            "type": "string"
+          },
+          "player_id": {
+            "pattern": "^ply_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Player Id",
+            "type": "string"
+          },
+          "grant_id": {
+            "format": "uuid",
+            "title": "Grant Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "exclusiveMinimum": 0,
+            "title": "Expires At",
+            "type": "integer"
+          },
+          "authorization_id": {
+            "format": "uuid",
+            "title": "Authorization Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "issuer",
+          "subject",
+          "subject_type",
+          "client_id",
+          "player_id",
+          "grant_id",
+          "expires_at",
+          "authorization_id"
+        ],
+        "title": "RestrictedAuthority",
+        "type": "object"
+      },
+      "ExecutionAuthority": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/OwnerAuthority"
+          },
+          {
+            "$ref": "#/components/schemas/RestrictedAuthority"
+          }
+        ]
       }
     },
     "messages": {
@@ -6688,6 +6786,23 @@
             },
             "message": {
               "$ref": "#/components/schemas/Error"
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -6756,6 +6871,23 @@
             },
             "message": {
               "$ref": "#/components/schemas/session_openMessage"
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -6868,6 +7000,23 @@
             },
             "message": {
               "$ref": "#/components/schemas/chat_sendMessage"
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -6980,6 +7129,23 @@
             },
             "message": {
               "$ref": "#/components/schemas/state_listMessage"
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -7092,6 +7258,23 @@
             },
             "message": {
               "$ref": "#/components/schemas/state_getMessage"
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -7246,6 +7429,23 @@
             },
             "message": {
               "$ref": "#/components/schemas/chat_historyMessage"
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -7316,6 +7516,23 @@
             },
             "message": {
               "$ref": "#/components/schemas/chat_eventsMessage"
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -7428,6 +7645,23 @@
             },
             "message": {
               "$ref": "#/components/schemas/task_cancelMessage"
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -7510,6 +7744,23 @@
             },
             "message": {
               "$ref": "#/components/schemas/chat_cancelMessage"
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -7578,6 +7829,23 @@
             },
             "message": {
               "$ref": "#/components/schemas/input_respondMessage"
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -7734,6 +8002,23 @@
                 "result"
               ],
               "additionalProperties": false
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -7846,6 +8131,23 @@
                 "result"
               ],
               "additionalProperties": false
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -8041,6 +8343,23 @@
             },
             "message": {
               "$ref": "#/components/schemas/browser_changedMessage"
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -8082,6 +8401,23 @@
             },
             "message": {
               "$ref": "#/components/schemas/frontend_closedMessage"
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -8156,6 +8492,23 @@
             },
             "message": {
               "$ref": "#/components/schemas/session_pageMessage"
+            },
+            "trace_context": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "authority": {
+              "description": "Relay-owned authority, outside application JSON. Required for frontend requests delivered to a capability-advertising runtime; relay-only errors and closure may omit it or use null.",
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ExecutionAuthority"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [

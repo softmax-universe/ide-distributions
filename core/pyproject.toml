@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "opentelemetry-exporter-otlp-proto-http==1.45.1",
     "opentelemetry-sdk==1.45.1",
+    "pydantic>=2,<3",
 ]
 
 [project.optional-dependencies]
@@ -14,7 +15,6 @@ dependencies = [
 # environment (the repository root project), never inside Hermes.
 platform = [
     "openai>=2,<3",
-    "pydantic>=2,<3",
     "coworld>=0.1.66,<0.2",
     "softmax-cli>=0.26.40,<0.27",
     "PyYAML>=6",

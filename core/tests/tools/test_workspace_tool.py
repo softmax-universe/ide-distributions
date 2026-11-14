@@ -294,8 +294,10 @@ def register_session(ctx_factory):
     return register
 
 
-def identity(call, session_id="c1", **args):
-    return call("workspace", {"action": "identity", **args}, session_id=session_id)
+def identity(call, session_id="c1", *, registered=True, **args):
+    return call(
+        "workspace", {"action": "identity", **args}, session_id=session_id, registered=registered
+    )
 
 
 def test_identity_names_once_then_the_user_rewrites_once(call, register_session, transcript):
@@ -464,10 +466,10 @@ def test_wakes_and_unknown_sessions_write_nothing_but_the_first_name(
         "met_user": False,
         "offer_made": False,
     }
-    unknown = identity(call, "nobody", offer_made=True)
-    assert unknown["ok"] is False and "not registered" in str(unknown)
-    assert identity(call, "nobody", name="Zed")["ok"] is False
-    assert identity(call, "nobody")["identity"]["name"] == "Pip"
+    unknown = identity(call, "nobody", offer_made=True, registered=False)
+    assert unknown["kind"] == "authority_denied"
+    assert identity(call, "nobody", name="Zed", registered=False)["ok"] is False
+    assert identity(call, "nobody", registered=False)["kind"] == "authority_denied"
 
 
 def test_a_nameless_existing_workspace_is_named_by_a_user_cited_call_then_locked(

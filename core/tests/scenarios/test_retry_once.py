@@ -76,14 +76,15 @@ def messages(ctx):
 @pytest.fixture
 def ctx(tmp_path):
     context = make_ctx(tmp_path)
-    sessions.register(
-        context.wstore,
-        HARNESS,
-        session_id="planner",
-        profile="orchestrator",
-        kind="wake",
-        coworld_id=context.coworld.coworld_id,
-    )
+    for session_id in ("planner", "other"):
+        sessions.register(
+            context.wstore,
+            HARNESS,
+            session_id=session_id,
+            profile="orchestrator",
+            kind="wake",
+            coworld_id=context.coworld.coworld_id,
+        )
     return context
 
 

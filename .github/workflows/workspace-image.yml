@@ -1,7 +1,7 @@
 name: Workspace image smoke
 on:
   pull_request:
-    paths: ['.dockerignore', 'image/**', 'core/**', 'orchestrator/**', 'researcher/**', 'pyproject.toml', 'uv.lock', '.github/workflows/workspace-image.yml']
+    paths: ['.dockerignore', 'image/**', 'core/**', 'orchestrator/**', 'researcher/**', 'restricted/**', 'pyproject.toml', 'uv.lock', '.github/workflows/workspace-image.yml']
 permissions:
   contents: read
 jobs:

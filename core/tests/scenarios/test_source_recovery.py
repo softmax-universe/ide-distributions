@@ -78,6 +78,14 @@ def new_pod(root: Path) -> Pod:
     folder = ctx.workspace.coworld(COWORLD_ID).folder_name
     coworlds.register(ctx.wstore, HARNESS, COWORLD_ID, folder=folder)
     coworlds.activate(ctx.wstore, HARNESS, COWORLD_ID)
+    sessions.register(
+        ctx.wstore,
+        HARNESS,
+        session_id="s1",
+        profile="orchestrator",
+        kind="wake",
+        coworld_id=COWORLD_ID,
+    )
     ctx.coworld().ensure_dirs()
     setup_code_repo(ctx)
     return pod

@@ -16,6 +16,8 @@ from pydantic import BaseModel, SecretStr, TypeAdapter
 # beside this folder but does not install into Hermes's interpreter.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core" / "src"))
 from research_core import inference as state  # noqa: E402
+from research_core.restricted_profile import INFERENCE_KEY  # noqa: E402
+from research_core.restricted_profile import PROFILE as RESTRICTED_PROFILE  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +112,12 @@ async def maintain(
                     pending.touch(mode=0o600)
                     pending.chmod(0o600)
                     pending.write_text((home / ".env").read_text())
-                    set_key(pending, "OPENROUTER_API_KEY", result.key.get_secret_value())
+                    name = (
+                        INFERENCE_KEY
+                        if home.name == RESTRICTED_PROFILE
+                        else "OPENROUTER_API_KEY"
+                    )
+                    set_key(pending, name, result.key.get_secret_value())
                     pending.replace(home / ".env")
                 refill_at = result.expires_at - state.RENEWAL_GRACE
                 # Renew by the refill even if the platform's renew_at lands later, so a
