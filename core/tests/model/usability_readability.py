@@ -226,6 +226,13 @@ def q(text: str, *patterns: str) -> Question:
 
 
 QUESTIONS: dict[str, list[Question]] = {
+    "skill:minecraft-controller": [
+        q("May a controller import an async Mineflayer skill?", r"no|not|cannot", r"sync"),
+        q("What observation field invalidates action state after respawn?", r"sessionId"),
+        q("What receipt completion proves a mutating action's effect?", r"observed_effect"),
+        q("Does a Practice Yard score prove live movement?", r"no|not|cannot"),
+        q("Where may the terrain-changing E2E fixtures run?", r"disposable", r"loopback"),
+    ],
     "skill:analyze-opponents": [
         q("How old can a profile claim be and still count as fresh?", r"week|7 days"),
         q("With what words must the body of a profile claim end?", r"policy version changes"),
