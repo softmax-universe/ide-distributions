@@ -2826,10 +2826,14 @@ def test_cached_hermes_title_skips_repeat_gateway_gets(system, monkeypatch):
 
         # Untitled at first: fallback is not cached so Hermes can supply a title later.
         await backend.changed(session_id)
+        assert title_gets >= 1
         gateway.titles[session_id] = "Settled Hermes Title"
         await backend.changed(session_id)
+        # The live watcher can also read an untitled session before the title resolves.
+        # Once cached, neither an explicit notification nor the watcher may fetch it again.
+        cached_gets = title_gets
         await backend.changed(session_id)
-        assert title_gets == 2
+        assert title_gets == cached_gets
 
         changed_titles = [
             note["item"].get("title")
