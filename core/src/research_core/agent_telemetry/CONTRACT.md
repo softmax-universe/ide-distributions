@@ -197,7 +197,7 @@ reader follows `parent_session_id` on the `compaction` records.
 | `approval` / `requested`, `decided`                   | `command`, `description`     | A human approval                                                      |
 | `compaction` / `committed`                            |                              | The history was rewritten                                             |
 | `session` / `started`, `turn` / `ended`, `subagent` / `started`, `stopped` | | Lifecycle |
-| `diagnostic` / `<log level>`                          | `message`                    | One log record, other than the access line of a successful seam poll (a 200 for `GET /p/<profile>/v1/runs/<id>` from its urllib client). `native_event_type` is the logger |
+| `diagnostic` / `<log level>`                          | `message`                    | One log record at INFO or above, except the writer's own records and the access line of a successful seam poll (a 200 for `GET /p/<profile>/v1/runs/<id>` from its urllib client). `native_event_type` is the logger |
 
 `tool_call_id` is the provider's on `proposed`. When a provider reuses an ID, as Kimi does across turns, Hermes renames the
 repeat to `<id>_d<n>` after the attempt ends, so every later record has the new one. Join those through `api_request_id`.

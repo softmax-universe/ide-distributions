@@ -1,7 +1,7 @@
 """Turn one capture into lines on the stream: redaction, hashing, manifests, chunks, the write.
 
-The writer's thread calls this. It is the only place that redacts, so raw text never reaches the
-stream.
+One thread at a time calls this: the writer's thread, or a short command's caller under its lock.
+It is the only place that redacts, so raw text never reaches the stream.
 
 A request becomes a manifest that lists it by reference. Bodies are sent once by digest, and each
 manifest after the first names only the messages that are new. Cache markers sit in the manifest and

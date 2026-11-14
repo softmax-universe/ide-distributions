@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -103,7 +104,9 @@ class BrokerLogsSearch:
             status, headers, data = self._send(body)
             if status == 429:
                 reset = {name.lower(): value for name, value in headers.items()}
-                self._sleep(max(1.0, float(reset.get("x-ratelimit-reset") or 1)))
+                wait = max(1.0, float(reset.get("x-ratelimit-reset") or 1))
+                print(f"rebuild: rate limited, waiting {wait:g} s", file=sys.stderr)
+                self._sleep(wait)
             elif status >= 400:
                 detail = " ".join(data[:300].decode("utf-8", "replace").split())
                 raise SearchRefused(f"HTTP {status}: {detail}")
