@@ -682,6 +682,7 @@ SESSION = _spec(
         _f("session_context", "json", "The client's session context block."),
         _f("client_capabilities", "json", "What the client said it can show."),
         _f("client", "json", "The client ({id, kind}) that opened the Session, if one did."),
+        _f("authority", "json", "The immutable execution identity; no bearer authorization."),
         _f("drained", "bool", "Whether a pause or switch stopped it, to resume later."),
         _f("stopped_by", "text", "The watcher's reason when it stopped the run on purpose."),
         _f("status", "text", "running, waiting or stopped, from GET /v1/runs/{id}.", computed=True),

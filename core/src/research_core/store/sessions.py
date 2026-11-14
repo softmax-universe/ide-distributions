@@ -21,6 +21,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+from research_core.authority import OWNER, SESSION_IDENTITY, OwnerAuthority, SessionIdentity
 from research_core.store._common import json_field, require
 from research_core.store.actors import Actor
 from research_core.store.db import Store, Tx
@@ -48,7 +49,9 @@ UNKNOWN_CLIENT = {"id": "unknown", "kind": "unknown"}
 def opened_by_human_chat(session: dict[str, Any] | None) -> bool:
     """Whether ``session`` was opened by a human IDE chat client. Fails closed: no session, no
     recorded client or any other client is refused."""
-    client = (session or {}).get("client")
+    if session is None or session.get("authority") != {"mode": "owner"}:
+        return False
+    client = session.get("client")
     return isinstance(client, dict) and (client.get("id"), client.get("kind")) in HUMAN_CHAT_CLIENTS
 
 
@@ -67,6 +70,7 @@ def register(
     session_context: dict[str, Any] | None = None,
     client_capabilities: dict[str, Any] | list[Any] | None = None,
     client: dict[str, Any] | None = None,
+    authority: SessionIdentity | dict | None = None,
 ) -> dict[str, Any]:
     with store.tx(actor) as tx:
         return register_in_transaction(
@@ -82,6 +86,7 @@ def register(
             session_context=session_context,
             client_capabilities=client_capabilities,
             client=client,
+            authority=authority,
         )
 
 
@@ -99,6 +104,7 @@ def register_in_transaction(
     session_context: dict[str, Any] | None = None,
     client_capabilities: dict[str, Any] | list[Any] | None = None,
     client: dict[str, Any] | None = None,
+    authority: SessionIdentity | dict | None = None,
 ) -> dict[str, Any]:
     """Upsert a Session; ``session.started`` on insert. The record carries ``created``."""
     _require_workspace(tx.store)
@@ -129,9 +135,27 @@ def register_in_transaction(
     context = None if session_context is None else json_field(session_context)
     capabilities = None if client_capabilities is None else json_field(client_capabilities)
     existing = tx.one(
-        "SELECT coworld_id, session_context FROM sessions WHERE id = ?", (session_id,)
+        "SELECT coworld_id, session_context, authority FROM sessions WHERE id = ?", (session_id,)
     )
+    if authority is not None:
+        execution_identity = SESSION_IDENTITY.validate_python(authority)
+    elif existing is not None:
+        execution_identity = SESSION_IDENTITY.validate_json(existing["authority"])
+    else:
+        execution_identity = OWNER
+    if not isinstance(execution_identity, OwnerAuthority) and (
+        kind != "chat" or parent is not None or profile != "restricted"
+    ):
+        raise StoreError(["restricted conversations cannot create background sessions"])
+    if parent is not None:
+        source = tx.one("SELECT authority FROM sessions WHERE id=?", (parent,))
+        if source is not None and not isinstance(
+            SESSION_IDENTITY.validate_json(source["authority"]), OwnerAuthority
+        ):
+            raise StoreError(["restricted conversations cannot create child sessions"])
     if existing is not None:
+        if SESSION_IDENTITY.validate_json(existing["authority"]) != execution_identity:
+            raise StoreError(["a session's execution identity cannot change"])
         if coworld_id is not None and coworld_id != existing["coworld_id"]:
             raise StoreError(["a session's Coworld cannot change; open a new session"])
         previous_context = json.loads(existing["session_context"] or "{}")
@@ -143,8 +167,8 @@ def register_in_transaction(
     if created:
         tx.execute(
             "INSERT INTO sessions(id, profile, kind, coworld_id, task_id, goal_id, event,"
-            " parent, started, last_seen, session_context, client_capabilities, client)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " parent, started, last_seen, session_context, client_capabilities, client, authority)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id,
                 profile,
@@ -159,6 +183,7 @@ def register_in_transaction(
                 context,
                 capabilities,
                 client_json,
+                execution_identity.model_dump_json(),
             ),
         )
         tx.event(

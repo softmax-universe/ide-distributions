@@ -78,6 +78,16 @@ from research_core import (
 )
 from research_core.agent_telemetry import Producer, TelemetryWriter, observed, stream_path
 from research_core.attachments import AttachmentError
+from research_core.authority import (
+    OWNER,
+    AuthorityDenied,
+    AuthorityUnavailable,
+    OwnerAuthority,
+    identity,
+    parse_authority,
+    require_active,
+    require_same,
+)
 from research_core.coordinator import Coordinator, ownership
 from research_core.messages import UserMessage
 from research_core.platform import experience_changes
@@ -254,6 +264,7 @@ class SeamServer:
             self.env.get("IDE_RUNTIME_ID"),
             inference_lease_file=self.inference_lease_file,
             clock=clock,
+            authority_env=self.env,
         )
         self.config_runner = config_runner
         self.catalog = catalog or Catalog()
@@ -503,6 +514,8 @@ class SeamServer:
     def session_open(self, body: dict) -> dict:
         """Mint a session id and register a chat Session with the client's context (A.2)."""
         current = trace.get_current_span()
+        authority = parse_authority(body.get("authority", OWNER))
+        require_active(authority, self.env)
         client = _object(body, "client")
         kept, problems = contract.validate_context(
             {"contract_version": contract.CONTRACT_VERSION, "client": client}
@@ -523,6 +536,10 @@ class SeamServer:
         problems.extend(context_problems)
         coworld_id = session_context.get("coworld")
         scope = session_context.get("scope")
+        if not isinstance(authority, OwnerAuthority) and (
+            scope != "workspace" or coworld_id is not None
+        ):
+            raise Refused(HTTPStatus.FORBIDDEN, "Restricted conversations require workspace scope")
         if scope == "workspace" and (
             coworld_id is not None or session_context.get("league") is not None
         ):
@@ -545,6 +562,7 @@ class SeamServer:
             )
             existing = sessions.read(stores.wstore, session_id)
             if existing is not None:
+                require_same(existing["authority"], authority)
                 previous_context = existing["session_context"] or {}
                 if (existing["coworld_id"], previous_context.get("league")) != (
                     coworld_id,
@@ -557,7 +575,7 @@ class SeamServer:
                         code="forbidden",
                     )
             registration = intake.OpenRegistration(
-                profile=self.profile,
+                profile=self.profile if isinstance(authority, OwnerAuthority) else "restricted",
                 coworld_id=stores.coworld_id,
                 session_context=session_context,
                 client_capabilities=body.get("capabilities"),
@@ -566,6 +584,7 @@ class SeamServer:
                     if body.get("client_declared") is False
                     else {"id": client["id"], "kind": client["kind"]}
                 ),
+                authority=identity(authority).model_dump(mode="json"),
             )
             current.add_event("metadata.prepared")
             receipt = intake.accept(
@@ -578,6 +597,7 @@ class SeamServer:
                 message="",
                 payload="",
                 registration=registration,
+                authority=authority,
             )
             session_id = receipt.session_id
             self._clients[session_id] = client
@@ -599,6 +619,8 @@ class SeamServer:
     def message(self, body: dict) -> dict:
         """Confirm a durable input once; dispatch serially with Hermes's durable run key."""
         current = trace.get_current_span()
+        authority = parse_authority(body.get("authority", OWNER))
+        require_active(authority, self.env)
         session_id = _text(body, "session_id")
         raw_message = body.get("message")
         if (
@@ -613,6 +635,12 @@ class SeamServer:
             )
         message = UserMessage.model_validate(body["message"])
         content = message.root["content"]
+        if not isinstance(authority, OwnerAuthority) and not isinstance(content, str):
+            raise Refused(HTTPStatus.FORBIDDEN, "Restricted conversations accept text only")
+        if not isinstance(authority, OwnerAuthority) and body.get("instructions") is not None:
+            raise Refused(
+                HTTPStatus.FORBIDDEN, "Restricted conversations do not accept instructions"
+            )
         text = (
             content
             if isinstance(content, str)
@@ -631,7 +659,8 @@ class SeamServer:
         log.info("Message admission started: op_id=%s", op_id)
         with self.stores() as stores:
             current.add_event("store.opened")
-            self._require_session(stores, session_id)
+            session = self._require_session(stores, session_id)
+            require_same(session["authority"], authority)
             block, problems = self._context_block(stores, session_id, body.get("context"))
             payload = json.dumps(
                 {
@@ -650,6 +679,7 @@ class SeamServer:
                 session_id=session_id,
                 message=text,
                 payload=payload,
+                authority=authority,
             )
             current.set_attributes({"session.id": receipt.session_id, "replayed": receipt.replayed})
             return {
@@ -666,12 +696,31 @@ class SeamServer:
             actor = Actor.user("client-dispatch")
             self.coordinator.reconcile_inputs(stores.wstore)
             for opening in stores.wstore.q(
-                "SELECT op_id,session_id FROM client_admissions"
+                "SELECT * FROM client_admissions"
                 " WHERE kind='open' AND status='queued' ORDER BY rowid"
             ):
+                if opening["retry_at"] and parse_iso(stores.wstore.now()) < parse_iso(
+                    opening["retry_at"]
+                ):
+                    continue
+                try:
+                    self.coordinator.check_authority(stores.wstore, opening)
+                except RunsUnavailable as error:
+                    self.coordinator.defer_authority(stores.wstore, opening, error)
+                    continue
+                except RunsError as error:
+                    with stores.wstore.tx(actor) as tx:
+                        tx.execute(
+                            "UPDATE client_admissions SET status='failed',error=? WHERE op_id=?",
+                            (error.detail, opening["op_id"]),
+                        )
+                        tx.event("client.open_failed", opening["op_id"], {"retryable": False})
+                    continue
                 (created,) = await asyncio.gather(
                     asyncio.to_thread(
-                        self.hermes.create_session, opening["session_id"], profile=self.profile
+                        self.hermes.create_session,
+                        opening["session_id"],
+                        profile=opening["profile"],
                     ),
                     return_exceptions=True,
                 )
@@ -717,6 +766,54 @@ class SeamServer:
             }
             for row in pending:
                 if row["session_id"] in reserved:
+                    continue
+                if row["retry_at"] and parse_iso(stores.wstore.now()) < parse_iso(row["retry_at"]):
+                    reserved.add(row["session_id"])
+                    continue
+                try:
+                    self.coordinator.check_authority(stores.wstore, row)
+                except RunsUnavailable as error:
+                    self.coordinator.defer_authority(stores.wstore, row, error)
+                    reserved.add(row["session_id"])
+                    continue
+                except RunsError as error:
+                    reserved.add(row["session_id"])
+                    if row["dispatch_started"] and row["run_id"] is None:
+                        self.coordinator.close_unreplayable(
+                            stores.wstore, row, error.detail, execution_unknown=True
+                        )
+                        continue
+                    if row["run_id"]:
+                        with stores.wstore.tx(actor) as tx:
+                            tx.execute(
+                                "UPDATE client_admissions SET cancel_requested=1,error=?"
+                                " WHERE op_id=?",
+                                (error.detail, row["op_id"]),
+                            )
+                        (stopped,) = await asyncio.gather(
+                            asyncio.to_thread(
+                                self.hermes.stop, row["run_id"], profile=row["profile"]
+                            ),
+                            return_exceptions=True,
+                        )
+                        if isinstance(stopped, RunsError) or (
+                            isinstance(stopped, hermes_api.RunStatus) and not stopped.terminal
+                        ):
+                            continue
+                        if isinstance(stopped, BaseException):
+                            raise stopped from None
+                        if stopped.status == "unknown":
+                            self.coordinator.close_unreplayable(
+                                stores.wstore, row, error.detail, execution_unknown=True
+                            )
+                            continue
+                    with stores.wstore.tx(actor) as tx:
+                        tx.execute(
+                            "UPDATE client_admissions SET status='failed',error=?,resume_after=NULL"
+                            " WHERE op_id=?",
+                            (error.detail, row["op_id"]),
+                        )
+                        tx.event("client.finished", row["op_id"], {"status": "failed"})
                     continue
                 if row["resume_after"] is not None:
                     # A held (``waiting``) message keeps its Session's place until it resumes.
@@ -769,10 +866,6 @@ class SeamServer:
                             (row["op_id"],),
                         )
                         tx.event("client.cancelled", row["op_id"], {})
-                    continue
-                if row["retry_at"] and parse_iso(stores.wstore.now()) < parse_iso(row["retry_at"]):
-                    # A refused start waits out its backoff and keeps its Session's place.
-                    reserved.add(row["session_id"])
                     continue
                 if settings.get(stores.wstore, "paused") and not row["dispatch_started"]:
                     continue
@@ -998,12 +1091,16 @@ class SeamServer:
         """Cancel a chat admission: settle queued/waiting rows cleanly and stop any live run,
         stopping the shared host run when cancelling a merged steered follow-up."""
         op_id = str(UUID(_text(body, "op_id")))
+        authority = parse_authority(body.get("authority", OWNER))
+        require_active(authority, self.env)
         with self._deliver_lock, self.stores() as stores:
             row = stores.wstore.one(
                 "SELECT * FROM client_admissions WHERE op_id=? AND kind='message'", (op_id,)
             )
             if row is None:
                 raise Refused(HTTPStatus.NOT_FOUND, "Unknown message admission")
+            session = self._require_session(stores, row["session_id"])
+            require_same(session["authority"], authority)
             active = row["status"] in {"queued", "running"}
             run_id = row["run_id"] or row["target_run_id"]
             if active:
@@ -1026,7 +1123,7 @@ class SeamServer:
                         )
                     tx.event("client.cancel_requested", op_id, {})
                 if run_id:
-                    self.hermes.stop(run_id, profile=self.profile)
+                    self.hermes.stop(run_id, profile=row["profile"])
             return {"op_id": op_id, "stop_requested": active}
 
     def input_response(self, op_id: str) -> dict:
@@ -1539,6 +1636,13 @@ class _Handler(BaseHTTPRequestHandler):
         headers = None
         if isinstance(error, Refused):
             status, body, headers = error.status, error.body, error.headers
+        elif isinstance(error, AuthorityUnavailable):
+            status = HTTPStatus.SERVICE_UNAVAILABLE
+            body = {"ok": False, "error": str(error), "problems": [], "code": "unavailable"}
+            headers = {"Retry-After": str(RETRY_AFTER_S)}
+        elif isinstance(error, AuthorityDenied):
+            status = HTTPStatus.FORBIDDEN
+            body = {"ok": False, "error": str(error), "problems": [], "code": "forbidden"}
         elif isinstance(error, ValueError):
             status = HTTPStatus.BAD_REQUEST
             body = {"ok": False, "error": str(error), "problems": []}

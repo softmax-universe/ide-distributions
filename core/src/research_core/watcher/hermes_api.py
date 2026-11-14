@@ -1,9 +1,9 @@
-"""The Hermes runs API (``/p/<profile>/v1/runs``) as a small stdlib client, plus an in-memory fake.
+"""The Hermes runs API (``/p/<profile>/v1/runs``) as a small client, plus an in-memory fake.
 
 The watcher starts, polls, steers and stops agent runs through the Hermes gateway's HTTP API
 (read against Hermes v0.21.6, plan ``reads/6.md`` section B; v0.22.6's
 ``gateway/platforms/api_server_runs.py`` still has the responses and error codes below). This
-module is deliberately free of third-party imports so it loads anywhere the watcher or a test does.
+module owns transport and failure classification for the watcher and its tests.
 
 Facts the client relies on:
 
@@ -41,6 +41,7 @@ from typing import Any
 from opentelemetry import trace
 
 from research_core import inference
+from research_core.authority import Authority, OwnerAuthority
 from research_core.platform.errors import PlatformError
 from research_core.telemetry import span
 
@@ -288,6 +289,7 @@ class HermesRuns:
         text: str | list[dict],
         instructions: str | None = None,
         idempotency_key: str | None = None,
+        authority: Authority | None = None,
     ) -> str:
         """``POST /p/<profile>/v1/runs``; the run id (a replayed key gives the stored run's id).
 
@@ -295,6 +297,11 @@ class HermesRuns:
         inference gate closed: no lease, or a block in the inference state),
         :class:`RunsAuthError` (401/403) and :class:`RunsConflict` (409).
         """
+        if authority is not None and not isinstance(authority, OwnerAuthority):
+            if profile != "restricted":
+                raise RunsError("Restricted conversation requires its own profile", retryable=False)
+        elif profile == "restricted":
+            raise RunsAuthError("Restricted profile requires execution authority", retryable=False)
         self.require_inference()
         body: dict[str, Any] = {"input": text, "session_id": session_id}
         if instructions is not None:
@@ -560,6 +567,7 @@ class FakeHermesRuns(HermesRuns):
         text: str | list[dict],
         instructions: str | None = None,
         idempotency_key: str | None = None,
+        authority: Authority | None = None,
     ) -> str:
         self.calls.append(
             (

@@ -23,6 +23,9 @@ def toolset_name(role: Role) -> str:
 
 def make_register(role: Role) -> Callable[[Any], None]:
     def register(ctx: Any) -> None:
+        from research_core.plugin.authority import guard_tools
+
+        ctx.register_middleware("tool_execution", guard_tools)
         from research_core.plugin.advisory import make_hooks
         from research_core.plugin.executor import make_handler
         from research_core.plugin.messages import record_native_message

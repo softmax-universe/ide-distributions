@@ -90,6 +90,8 @@ async def main() -> None:
 
     async def socket(request: web.Request) -> web.WebSocketResponse:
         aide = request.path.endswith("/aide/1.0.0/backend")
+        if aide:
+            assert request.headers["X-Softmax-Execution-Authority"] == "restricted-conversations"
         response = web.WebSocketResponse(protocols=("aide.1.0.0",) if aide else ())
         await response.prepare(request)
         if aide:
@@ -219,7 +221,9 @@ async def main() -> None:
         async def request(method: str, params: dict) -> dict:
             request_id = str(uuid4())
             message = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-            await relay.send_json({"frontend_id": frontend, "message": message})
+            await relay.send_json(
+                {"frontend_id": frontend, "message": message, "authority": {"mode": "owner"}}
+            )
             while True:
                 received = await relay.receive()
                 assert received.type == WSMsgType.TEXT, received

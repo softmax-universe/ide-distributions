@@ -17,7 +17,7 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Annotated, Literal
@@ -37,6 +37,17 @@ from pydantic import (
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
+from research_core.authority import (
+    OWNER,
+    Authority,
+    AuthorityDenied,
+    AuthorityUnavailable,
+    RestrictedAuthority,
+    SessionIdentity,
+    identity,
+    require_active,
+    require_same,
+)
 from research_core.run_failures import CONTINUATION_PREFIX
 from research_core.store.db import DEFAULT_MAX_HOLD_S
 from research_core.store.migrate import BUSY_TIMEOUT_MS
@@ -57,6 +68,10 @@ COMMANDS = frozenset(
 # Each answer() runs in its own task, so COMMITTING is per request; it marks the point after
 # which the outcome of a state-changing command is unknown.
 COMMITTING: ContextVar[bool] = ContextVar("committing", default=False)
+CURRENT_AUTHORITY: ContextVar[Authority] = ContextVar("execution_authority", default=OWNER)
+RESTRICTED_METHODS = frozenset(
+    {"session.open", "chat.send", "chat.history", "chat.events", "chat.cancel"}
+)
 RECENT_TERMINAL = 10  # terminal requests a Session embeds beside its open ones
 EMBEDDED_ACTIVE = 1000  # open requests a Session embeds at most
 ERROR_CHARS = 4000  # RequestError.message
@@ -217,12 +232,14 @@ class Context(BaseModel):
 
 class SessionRow(BaseModel):
     id: str
+    profile: str
     kind: str
     parent: str | None
     started: str
     ended: str | None
     coworld_id: str | None
     session_context: Context | None
+    authority: SessionIdentity
 
     def scope(self) -> Scope | None:
         """The AIDE scope, or ``None`` for a Coworld session without a league (not exposed)."""
@@ -587,6 +604,7 @@ class Frame(BaseModel):
     frontend_id: UUID
     message: dict[str, JsonValue]
     trace_context: dict[str, str] = Field(default_factory=dict)
+    authority: Authority | None = None
 
 
 class Refusal(Exception):
@@ -853,8 +871,12 @@ class Backend:
         gateway: httpx.AsyncClient,
         inference: Availability,
         work: asyncio.TaskGroup,
+        authority_env: Mapping[str, str] | None = None,
     ):
         self.seam, self.gateway, self.inference, self.work = seam, gateway, inference, work
+        self.authority_env = authority_env
+        self.frontend_authorities: dict[UUID, Authority] = {}
+        self.profiles: dict[str, str] = {}
         self.epoch, self.revision = str(uuid4()), 0
         self.socket: ClientConnection | None = None
         self.subscribers: dict[str, Subscription] = {}
@@ -928,7 +950,13 @@ class Backend:
             self.start.set_result(snapshot.seq)
         for request in snapshot.records.requests:
             self.requests[request.op_id] = request.session_id
+        for session in snapshot.records.sessions:
+            self.profiles[session.id] = session.profile
         return snapshot
+
+    def native_url(self, session_id: str, path: str) -> httpx.URL:
+        profile = quote(self.profiles[session_id], safe="")
+        return self.gateway.base_url.copy_with(path=f"/p/{profile}/{path}")
 
     async def scoped(self, scope: Scope, **selection: str) -> Snapshot:
         """One session's rows; the seam refuses a scope that differs from the stored one."""
@@ -953,7 +981,9 @@ class Backend:
             }
         )
         for run_id in running:
-            response = await self.gateway.get(f"v1/runs/{quote(run_id, safe='')}", timeout=30)
+            response = await self.gateway.get(
+                self.native_url(session_id, f"v1/runs/{quote(run_id, safe='')}"), timeout=30
+            )
             if response.status_code == 404:
                 continue  # a retired run has no prompts left
             if not response.is_success:
@@ -992,7 +1022,7 @@ class Backend:
         headers: dict[str, str] = {}
         propagator.inject(headers)
         response = await self.gateway.get(
-            f"api/sessions/{quote(session_id, safe='')}/messages",
+            self.native_url(session_id, f"api/sessions/{quote(session_id, safe='')}/messages"),
             params={"order": "latest", "limit": limit, "offset": offset},
             headers=headers,
             timeout=30,
@@ -1072,7 +1102,10 @@ class Backend:
 
         replies = await asyncio.gather(
             *(
-                self.gateway.get(f"api/sessions/{quote(session.id, safe='')}", timeout=3)
+                self.gateway.get(
+                    self.native_url(session.id, f"api/sessions/{quote(session.id, safe='')}"),
+                    timeout=3,
+                )
                 for session in uncached
             ),
             return_exceptions=True,
@@ -1234,6 +1267,16 @@ class Backend:
 
     # --- notifications ----------------------------------------------------------------------
 
+    async def authorize(self, authority: Authority) -> None:
+        if authority.mode == "owner":
+            return
+        try:
+            await asyncio.to_thread(require_active, authority, self.authority_env)
+        except AuthorityUnavailable as error:
+            raise Refusal("unavailable", str(error)) from error
+        except AuthorityDenied as error:
+            raise Refusal("forbidden", str(error)) from error
+
     async def touch(self, session_id: str, scope: Scope, frontend_id: UUID) -> None:
         """Subscribe a frontend to a session, once this is the session's own scope.
 
@@ -1241,13 +1284,15 @@ class Backend:
         wrong scope is refused to its request and leaves nothing behind. Every caller reads what
         it returns after this, so its reply holds any change made before the subscription began.
         """
-        subscription = self.subscribers.get(session_id)
-        if subscription is None or subscription.scope != scope:
-            (row,) = (await self.scoped(scope, session_id=session_id)).records.sessions
-            # The seam compares only Coworld and league; a Coworld session with no league has no
-            # scope, and projecting one fails validation.
-            if row.scope() != scope:
-                raise Refusal("forbidden", "This session does not have that scope")
+        authority = CURRENT_AUTHORITY.get()
+        (row,) = (await self.scoped(scope, session_id=session_id)).records.sessions
+        try:
+            require_same(row.authority, authority)
+        except AuthorityDenied as error:
+            raise Refusal("forbidden", str(error)) from error
+        if row.scope() != scope:
+            raise Refusal("forbidden", "This session does not have that scope")
+        self.frontend_authorities[frontend_id] = authority
         self.subscribers.setdefault(session_id, Subscription(scope)).frontends.add(frontend_id)
 
     async def send(self, socket: ClientConnection, frontend_id: UUID, message: dict) -> None:
@@ -1269,6 +1314,15 @@ class Backend:
         if isinstance(params, BaseModel):
             params = params.model_dump(mode="json")
         for frontend_id in list(self.subscribers[session_id].frontends):
+            authority = self.frontend_authorities.get(frontend_id)
+            if authority is None:
+                continue
+            try:
+                await self.authorize(authority)
+            except Refusal as refusal:
+                if refusal.code == "forbidden":
+                    self.closed(frontend_id)
+                continue
             message = {"jsonrpc": "2.0", "method": method, "params": params}
             await self.send(self.socket, frontend_id, message)
 
@@ -1457,7 +1511,8 @@ class Backend:
             while True:
                 try:
                     state = await self.gateway.get(
-                        f"v1/runs/{quote(run.run_id, safe='')}", timeout=30
+                        self.native_url(session_id, f"v1/runs/{quote(run.run_id, safe='')}"),
+                        timeout=30,
                     )
                     if state.status_code == 404:
                         # Gone with its gateway: the seam settles the request as interrupted.
@@ -1468,7 +1523,7 @@ class Backend:
                     self.thinking[native] = thoughts
                     async with self.gateway.stream(
                         "GET",
-                        f"v1/runs/{quote(run.run_id, safe='')}/events",
+                        self.native_url(session_id, f"v1/runs/{quote(run.run_id, safe='')}/events"),
                         params={"last_seq": last_seq},
                         timeout=httpx.Timeout(30, read=None),
                     ) as response:
@@ -1638,12 +1693,19 @@ class Backend:
     # --- methods ------------------------------------------------------------------------------
 
     async def open(self, frontend_id: UUID, request_id: str, params: Open) -> dict:
+        authority = CURRENT_AUTHORITY.get()
+        if isinstance(authority, RestrictedAuthority) and params.scope != Scope(
+            scope="workspace", coworld=None, league=None
+        ):
+            raise Refusal("forbidden", "Restricted conversations have no Coworld access")
         if params.scope.scope == "coworld" and params.scope.league is None:
             # The seam would store this as a session with no AIDE scope, and start its opening.
             raise Refusal("forbidden", "A Coworld session needs a league")
         client = (
             DEFAULT_CLIENT if params.client is None else params.client.model_dump(exclude_none=True)
         )
+        if isinstance(authority, RestrictedAuthority):
+            client = {"id": authority.client_id, "kind": "external"}
         body = {
             "op_id": request_id,
             "client": client,
@@ -1651,6 +1713,7 @@ class Backend:
             # the seam must not take it for the human IDE.
             "client_declared": params.client is not None,
             "actor": "user:aide",
+            "authority": authority.model_dump(mode="json"),
             "session_context": {"contract_version": 1, **params.scope.model_dump()},
         }
         opened = Opened.model_validate_json(
@@ -1685,6 +1748,7 @@ class Backend:
             row
             for row in snapshot.records.sessions
             if row.parent is None
+            and row.authority == identity(CURRENT_AUTHORITY.get())
             and row.coworld_id in uploads
             and (scope := row.scope()) is not None
             and scope.league == params.page.league
@@ -1714,6 +1778,13 @@ class Backend:
         await self.touch(params.session_id, params.scope, frontend_id)
         if len(params.messages) != 1 or params.messages[0]["role"] != "user":
             raise Refusal("unsupported", "Send exactly one user message")
+        authority = CURRENT_AUTHORITY.get()
+        if isinstance(authority, RestrictedAuthority) and params.instructions is not None:
+            raise Refusal("forbidden", "Restricted conversations do not accept system instructions")
+        if isinstance(authority, RestrictedAuthority) and not isinstance(
+            params.messages[0].get("content"), str
+        ):
+            raise Refusal("forbidden", "Restricted conversations accept text messages only")
         snapshot = await self.scoped(params.scope, session_id=params.session_id)
         replay = any(r.op_id == request_id for r in snapshot.records.requests)
         if not replay and not self.inference.available():
@@ -1731,6 +1802,7 @@ class Backend:
             "session_id": params.session_id,
             "message": params.messages[0],
             "actor": "user:aide",
+            "authority": authority.model_dump(mode="json"),
         } | params.model_dump(mode="json", include={"context", "instructions"}, exclude_none=True)
         await self.call(self.seam, "POST", "/message", command=True, json=body)
         if not replay:
@@ -1809,7 +1881,11 @@ class Backend:
     async def cancel_chat(self, frontend_id: UUID, request_id: str, params: ChatCancel) -> dict:
         await self.touch(params.session_id, params.scope, frontend_id)
         target = await self.request(params.session_id, params.scope, str(params.request_id))
-        body = {"op_id": str(params.request_id), "actor": "user:aide"}
+        body = {
+            "op_id": str(params.request_id),
+            "actor": "user:aide",
+            "authority": CURRENT_AUTHORITY.get().model_dump(mode="json"),
+        }
         await self.call(self.seam, "POST", "/message-cancel", command=True, json=body)
         return {"requested": target.status in ACTIVE}
 
@@ -1831,6 +1907,7 @@ class Backend:
                 row
                 for row in snapshot.records.sessions
                 if (scope := row.scope()) is not None
+                and row.authority == identity(CURRENT_AUTHORITY.get())
                 and (params.scope is None or scope == params.scope)
                 and (params.scope_id is None or scope.coworld == params.scope_id)
             ]
@@ -1958,7 +2035,7 @@ class Backend:
         propagator.inject(headers)
         COMMITTING.set(True)
         response = await self.gateway.post(
-            f"v1/runs/{quote(run_id, safe='')}/{action}",
+            self.native_url(params.session_id, f"v1/runs/{quote(run_id, safe='')}/{action}"),
             json={
                 "request_id": control.prompt_id,
                 "execution_generation": control.execution_generation,
@@ -2010,8 +2087,23 @@ class Backend:
                 await self.send(socket, frame.frontend_id, reply)
                 return
             COMMITTING.set(False)
+            authority_token = None
             try:
+                if frame.authority is None:
+                    raise Refusal("forbidden", "The gateway must provide execution authority")
+                if (
+                    isinstance(frame.authority, RestrictedAuthority)
+                    and method not in RESTRICTED_METHODS
+                ):
+                    raise Refusal("forbidden", "This operation requires workspace owner access")
+                await self.authorize(frame.authority)
+                previous = self.frontend_authorities.get(frame.frontend_id)
+                if previous is not None and identity(previous) != identity(frame.authority):
+                    raise Refusal("forbidden", "A connection cannot change execution identity")
+                self.frontend_authorities[frame.frontend_id] = frame.authority
+                authority_token = CURRENT_AUTHORITY.set(frame.authority)
                 reply["result"] = await handler(frame.frontend_id, request_id, params)
+                await self.authorize(frame.authority)
             except Refusal as refusal:  # the contract's typed application errors
                 reply["error"] = refusal.error()
             except httpx.TransportError as error:  # the seam or gateway dropped mid-request
@@ -2024,10 +2116,16 @@ class Backend:
                     reply["error"] = Refusal("unavailable", "Internal error", unknown=True).error()
                 else:
                     reply["error"] = Refusal("internal", "Internal error").error()
+            finally:
+                if authority_token is not None:
+                    CURRENT_AUTHORITY.reset(authority_token)
+            if "error" in reply:
+                reply.pop("result", None)
             await self.send(socket, frame.frontend_id, reply)
 
     def closed(self, frontend_id: UUID) -> None:
         """The relay reports a frontend connection ended: its subscriptions end with it."""
+        self.frontend_authorities.pop(frontend_id, None)
         for subscription in self.subscribers.values():
             subscription.frontends.discard(frontend_id)
         for coworld, feed in list(self.boards.items()):
@@ -2042,7 +2140,10 @@ class Backend:
     async def connect(self, url: str, credential: str) -> None:
         async with connect(
             url,
-            additional_headers={"Authorization": f"Bearer {credential}"},
+            additional_headers={
+                "Authorization": f"Bearer {credential}",
+                "X-Softmax-Execution-Authority": "restricted-conversations",
+            },
             subprotocols=["aide.1.0.0"],
             max_size=2 * MAX_BYTES,
         ) as socket:
@@ -2050,6 +2151,7 @@ class Backend:
             # Frontends subscribe through one binding; after a rebind they subscribe again by
             # reading their sessions, so the last binding's frontends are stale.
             self.subscribers.clear()
+            self.frontend_authorities.clear()
             self.titles.clear()
             self.socket = socket
             try:
@@ -2092,7 +2194,7 @@ async def serve(
         ) as gateway,
         asyncio.TaskGroup() as work,
     ):
-        backend = Backend(seam, gateway, inference, work)
+        backend = Backend(seam, gateway, inference, work, authority_env=env)
         host, port = env["IDE_REASONING_RELAY"].rsplit(":", 1)
         # A relay connection's failure ends that connection alone; the plugin reconnects.
         relay = await asyncio.start_server(backend.relay, host, int(port), limit=MAX_BYTES)

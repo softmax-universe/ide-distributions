@@ -32,8 +32,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 import yaml
+from pydantic import BaseModel, ConfigDict, Field
 from softmax_client import credentials as softmax_credentials
 
 from research_core.platform.errors import IdentityUnavailable, PlatformError
@@ -53,6 +55,14 @@ class PlayerCredential:
     expires_at: str | None = None  # ISO 8601, when the credential is a minted player session
 
 
+class IdentityAccessToken(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    access_token: str = Field(min_length=1, repr=False)
+    token_type: Literal["Bearer"]
+    expires_in: int = Field(gt=0, le=300)
+
+
 def server(env: Mapping[str, str]) -> str:
     """The Softmax API server (``COGAMES_API_URL``), without a trailing slash."""
     return (env.get(SERVER_VAR) or DEFAULT_SERVER).rstrip("/")
@@ -60,6 +70,7 @@ def server(env: Mapping[str, str]) -> str:
 
 def player_credential(env: Mapping[str, str]) -> PlayerCredential:
     """Parse ``SOFTMAX_PLAYER_CREDENTIAL``; an expired player session is refused outright."""
+    require_owner_credentials(env)
     raw = (env.get(PLAYER_CREDENTIAL_VAR) or "").strip()
     if not raw:
         raise IdentityUnavailable("player")
@@ -105,6 +116,7 @@ def user_token(env: Mapping[str, str]) -> str | None:
     token equal to the Player credential is not a User identity: hosts write the Player token
     into that slot so the CLIs act as the Player (see :func:`write_credentials_dir`).
     """
+    require_owner_credentials(env)
     token = (env.get(USER_CREDENTIAL_VAR) or "").strip()
     if token:
         return token
@@ -125,6 +137,16 @@ def token_for(env: Mapping[str, str], identity: Identity) -> str:
     if token is None:
         raise IdentityUnavailable("user")
     return token
+
+
+def require_owner_credentials(env: Mapping[str, str]) -> None:
+    session_id = env.get("IDE_SESSION_ID") or env.get("HERMES_SESSION_ID")
+    if not session_id:
+        return
+    from research_core.authority import OwnerAuthority, bound_authority
+
+    if not isinstance(bound_authority(env, session_id), OwnerAuthority):
+        raise PlatformError("This conversation has no workspace credentials", retryable=False)
 
 
 def write_credentials_dir(env: Mapping[str, str], dest: Path) -> Path:

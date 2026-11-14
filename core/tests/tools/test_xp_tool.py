@@ -171,7 +171,6 @@ def test_request_creates_one_request_per_seed_and_arm(run, ctx, running):
     assert result["credits"].startswith("credits: 96 available of 100")
     assert result["estimate"] == {"episodes": 4, "credits": 4.0}
     assert result["warnings"] == []
-    assert "xp.status" in result["next"]
     assert [i["state"] for i in (intents.read(ctx.store, n) for n in range(1, 5))] == ["done"] * 4
 
     again = run("xp", {"action": "request", "experiment": "X-1", **ROSTER})

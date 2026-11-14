@@ -710,8 +710,19 @@ def run_tool(name: str, args: Mapping[str, Any], ctx: ToolContext) -> str:
     from opentelemetry import trace
 
     from research_core import telemetry
+    from research_core.authority import OwnerAuthority, execution_authority
     from research_core.tools.catalog import _load_tool_modules
 
+    session_id = ctx.hermes_session_id()
+    if session_id:
+        try:
+            owner = isinstance(execution_authority(ctx.wstore, session_id), OwnerAuthority)
+        except Exception:
+            owner = False
+        if not owner:
+            return json.dumps(
+                error_payload(["This conversation has no tool access"], kind="authority_denied")
+            )
     parent = (
         trace.set_span_in_context(trace.get_current_span())
         if trace.get_current_span().get_span_context().is_valid

@@ -1,0 +1,6 @@
+name: restricted
+version: 1.0.0
+description: Model-only conversations authorized by an immutable product grant.
+author: ide-distributions
+kind: standalone
+requires_hermes: ">=0.22.6"

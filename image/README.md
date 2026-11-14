@@ -51,8 +51,9 @@ workspace connection above carries hosting control alone, and refuses any other 
 one input; reconnecting with that ID cannot create a second run. Messages wait behind the
 previous run in their session, and queued messages survive sleep and restart.
 
-Session opening and message intake perform only local validation and durable writes. They
-never acquire the execution lock. One serial dispatcher creates native sessions, prepares
+Owner session opening and message intake perform local validation and durable writes.
+Restricted intake also checks its original authorization with the product gateway. Neither
+acquires the execution lock. One serial dispatcher creates native sessions, prepares
 attachments and starts Hermes runs after intake. A newly accepted session has an empty
 transcript until its native session is ready.
 The open receipt and local session registration commit in one transaction. A temporary native
@@ -98,8 +99,27 @@ the lease is only missing). Work resumes on its own once the state clears or lap
 (`/v2/workspaces/{id}/aide/1.0.0/backend`, subprotocol `aide.1.0.0`, the bootstrap credential)
 and answers the [AIDE 1.0.0](https://softmax.com/docs/aide) JSON-RPC methods. It runs beside the
 control connection, gates neither readiness nor sleep, and reconnects forever; it is the only path
-chat takes into the image (#236). The contract stays in Metta; this image does not
-bundle or validate it, the relay does.
+chat takes into the image. The canonical contract stays in the Softmax repository; a
+[vendored copy](contract/aide-1.0.0/README.md) supports this repository's contract tests.
+The relay validates public messages before forwarding them.
+
+Deploy the product gateway's explicit `authority: {"mode": "owner"}` envelope before
+activating this image. The backend refuses every execution request with missing authority,
+including owner requests. Older runtimes tolerate the additive envelope. This runtime also
+announces `X-Softmax-Execution-Authority: restricted-conversations` on its authenticated
+backend connection; the gateway must bind that capability to the current connection before
+forwarding restricted work.
+
+The gateway attaches authority outside browser JSON. Restricted conversations use the
+dedicated `restricted` profile and can only open, send text, read their history/events, and
+cancel. They have no owner profile, other history, tools, or workspace credentials. The
+original admission authorization is checked at intake, native inference, and recovery;
+responses require a current same-grant reader authorization. Reconnection cannot renew old
+work. See the [execution authority contract](../.contracts/001-execution-authority/CONTRACT.md).
+
+Server integrations can call `Platform.identity_token(resource, scope)` for a short-lived
+cogent token. The product derives its subject from the current workspace binding. The method
+is unavailable to restricted conversations and is not a model tool.
 
 Each method maps to seam and gateway calls. The AIDE request id
 is the seam `op_id` or gateway `Idempotency-Key`, so retries need no new tables. The gateway
@@ -145,7 +165,7 @@ are logged with a traceback and answered with JSON-RPC `-32603` (`Internal error
 and may have taken effect. The backend keeps serving.
 
 A frontend subscribes to a session's pushes through any request naming that session, once the
-backend has read the session and its scope is that session's own. A wrong scope is refused
+backend has checked its immutable execution identity and scope. A wrong scope is refused
 (`forbidden`) to that request alone and is not recorded, because the event watcher reads with the
 recorded scope and a refusal there would end the backend.
 

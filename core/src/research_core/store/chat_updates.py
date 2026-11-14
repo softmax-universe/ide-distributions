@@ -51,6 +51,7 @@ _PENDING = (
 # the Coworld, by the later of its start and its latest user message, then start and id.
 _TARGET_CHAT = (
     "SELECT s.id, s.profile FROM sessions s WHERE s.kind='chat' AND s.parent IS NULL"
+    " AND json_extract(s.authority, '$.mode')='owner'"
     " AND s.coworld_id IS ? ORDER BY max(s.started, COALESCE((SELECT max(a.created_at)"
     " FROM client_admissions a WHERE a.session_id=s.id AND a.kind='message'"
     " AND a.origin IN ('client','answer')), '')) DESC, s.started DESC, s.id DESC LIMIT 1"

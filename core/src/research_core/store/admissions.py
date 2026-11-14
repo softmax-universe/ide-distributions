@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Literal, get_args
 from uuid import NAMESPACE_URL, uuid5
 
+from research_core.authority import OWNER, Authority, identity, parse_authority, require_same
 from research_core.run_failures import ErrorClass
 from research_core.store import settings
 from research_core.store.actors import Actor
@@ -76,11 +77,17 @@ class Admission:
     client_id: str | None
 
 
-def read(store: Store, op_id: str, kind: str, request: dict) -> dict | None:
+def read(
+    store: Store, op_id: str, kind: str, request: dict, authority: Authority
+) -> dict | None:
     row = store.one("SELECT * FROM client_admissions WHERE op_id = ?", (op_id,))
     if row is None:
         return None
-    if row["kind"] != kind or json.loads(row["request"]) != request:
+    require_same(identity(parse_authority(json.loads(row["authority"]))), authority)
+    original = json.loads(row["request"])
+    original.pop("authority", None)
+    content = {key: value for key, value in request.items() if key != "authority"}
+    if row["kind"] != kind or original != content:
         raise IdReused(["op_id was already used for different input"])
     return dict(row)
 
@@ -252,6 +259,9 @@ def enqueue_in_transaction(
 ) -> str:
     if origin not in get_args(Origin):
         raise StoreError([f"origin must be one of {', '.join(get_args(Origin))}"])
+    session = tx.one("SELECT authority FROM sessions WHERE id=?", (session_id,))
+    if session is not None:
+        require_same(json.loads(session["authority"]), OWNER)
     op_id = str(uuid5(NAMESPACE_URL, f"research:{profile}:{key}"))
     request = {
         "key": key,

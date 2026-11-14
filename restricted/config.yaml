@@ -1,0 +1,35 @@
+model:
+  default: moonshotai/kimi-k3.1-pro
+  provider: openrouter
+fallback_providers: []
+toolsets: []
+platform_toolsets:
+  api_server: []
+  cron: []
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+compression:
+  enabled: false
+plugins:
+  enabled: [restricted]
+  stream_reasoning_deltas: true
+skills:
+  external_dirs: []
+  trusted_project_dirs: []
+auxiliary:
+  background_review:
+    enabled: false
+  title_generation:
+    enabled: false
+tools:
+  tool_search:
+    enabled: "off"
+terminal:
+  env_passthrough: []
+updates:
+  check: false
+provider_routing:
+  models:
+    moonshotai/kimi-k3.1-pro:
+      only: [moonshotai]

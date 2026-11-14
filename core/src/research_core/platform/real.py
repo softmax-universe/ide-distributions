@@ -112,6 +112,7 @@ class RealPlatform:
     def _client[T](
         self, cache: dict[Identity, T], identity: Identity, build: Callable[[str], T]
     ) -> T:
+        identities.require_owner_credentials(self._env)
         with self._client_lock:
             self.last_identity = identity
             if identity not in cache:
@@ -175,6 +176,17 @@ class RealPlatform:
         raise PlatformError(f"listing ran past {MAX_PAGES} pages", route=route, retryable=False)
 
     # -- identity and credits ----------------------------------------------------------------
+
+    def identity_token(self, resource: str, scope: str) -> identities.IdentityAccessToken:
+        """Mint this workspace cogent's resource token through its verified product binding."""
+        identities.require_owner_credentials(self._env)
+        workspace_id = UUID(self._env["IDE_WORKSPACE_ID"])
+        result = self.request(
+            "POST",
+            f"/v2/workspaces/{workspace_id}/identity/token",
+            json={"resource": resource, "scope": scope},
+        )
+        return identities.IdentityAccessToken.model_validate(result)
 
     def _player_id(self) -> str | None:
         """``SOFTMAX_PLAYER_ID``, else what one ``whoami`` names: hosting does not set the variable.

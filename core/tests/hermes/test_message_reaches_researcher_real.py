@@ -13,7 +13,8 @@ import json
 import threading
 import time
 
-from research_core.store import tasks
+from research_core.store import sessions, tasks
+from research_core.store.actors import Actor
 from research_core.watcher.hermes_api import HermesRuns
 from tests.hermes.test_frozen_sessions_real import ROLES, FakeModel, Workspace
 from tests.scenarios.test_retry_once import call_applied
@@ -58,6 +59,14 @@ def run_scenario(tmp_path, hermes_bin, monkeypatch, first_reply: dict):
     workspace = Workspace(tmp_path, hermes_bin, monkeypatch, model)
     host = workspace.host
     ctx = make_ctx(tmp_path)
+    sessions.register(
+        ctx.wstore,
+        Actor.harness(),
+        session_id="planner",
+        profile="orchestrator",
+        kind="wake",
+        coworld_id=ctx.coworld.coworld_id,
+    )
     host.workspace = ctx.ws.root
     host.write_host_dotenv()
     workspace.publish()

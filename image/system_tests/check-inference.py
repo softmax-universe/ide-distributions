@@ -19,6 +19,7 @@ from research_core.plugin.inference_hook import (  # noqa: E402
     KEY_CHANGE_GRACE,
     record_api_error,
 )
+from research_core.restricted_profile import INFERENCE_KEY, INFERENCE_SENTINEL  # noqa: E402
 
 
 def lease(key: str, expires: datetime) -> tuple[str, str, bytes]:
@@ -36,10 +37,11 @@ async def main(tmp_path: Path):
     requests = []
     expires = datetime.now(UTC) + timedelta(hours=1)
     refill = expires - state.RENEWAL_GRACE
-    homes = (tmp_path / "host", tmp_path / "profile")
+    homes = (tmp_path / "host", tmp_path / "profile", tmp_path / "restricted")
     for home in homes:
         home.mkdir()
         (home / ".env").write_text("PRESERVED=original\nOPENROUTER_API_KEY=expired\n")
+    (homes[-1] / ".env").write_text(f"OPENROUTER_API_KEY={INFERENCE_SENTINEL}\n")
     marker = tmp_path / "lease"
     availability = Availability(marker)
     ready = asyncio.Event()
@@ -129,11 +131,15 @@ async def main(tmp_path: Path):
             print(f"Inference retry interval: {requests[1] - requests[0]:.3f}s")
             assert availability.available()
             assert state.read_lease(marker).expires_at == expires
-            for home in homes:
+            for home in homes[:-1]:
                 assert dotenv_values(home / ".env") == {
                     "PRESERVED": "original",
                     "OPENROUTER_API_KEY": "fixture-key",
                 }
+            assert dotenv_values(homes[-1] / ".env") == {
+                "OPENROUTER_API_KEY": INFERENCE_SENTINEL,
+                INFERENCE_KEY: "fixture-key",
+            }
             async with asyncio.timeout(15):
                 await done.wait()
                 while not availability.available():
@@ -141,8 +147,12 @@ async def main(tmp_path: Path):
             # The new key alone ended the block: the state still names the spent key.
             assert state.read_lease(marker).key_id == state.key_id("fresh-key")
             assert state.read_state(marker).blocked_key_id == state.key_id("fixture-key")
-            for home in homes:
+            for home in homes[:-1]:
                 assert dotenv_values(home / ".env")["OPENROUTER_API_KEY"] == "fresh-key"
+            assert dotenv_values(homes[-1] / ".env") == {
+                "OPENROUTER_API_KEY": INFERENCE_SENTINEL,
+                INFERENCE_KEY: "fresh-key",
+            }
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)

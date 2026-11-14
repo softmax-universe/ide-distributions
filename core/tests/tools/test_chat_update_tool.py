@@ -40,8 +40,8 @@ def test_refused_in_a_chat_and_outside_a_wake(call, ctx_factory, register_sessio
     args = {"category": category, "text": "T-3 finished"}
     in_chat = call("chat_update", args, session_id="s1")
     assert in_chat["ok"] is False and "you are in the chat; reply here" in in_chat["error"]
-    unknown = call("chat_update", args, session_id="nobody")
-    assert unknown["ok"] is False and "not one" in unknown["error"]
+    unknown = call("chat_update", args, session_id="nobody", registered=False)
+    assert unknown["kind"] == "authority_denied"
     assert chat_updates.pending(ctx_factory().wstore, "cow_fake") == []
     assert unread(ctx_factory) == []
 

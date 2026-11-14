@@ -1,5 +1,39 @@
 # The client contract (version 1)
 
+## Execution authority
+
+Hosted requests carry gateway-verified execution authority outside client context. A person or
+cogent admitted under a product grant receives an isolated `restricted` conversation in the same
+Hermes gateway. Its immutable identity includes issuer, subject, subject kind, OAuth client, local Player
+and product grant. Session metadata and SQL triggers prevent that identity from changing. Existing
+stored conversations remain owner conversations.
+
+Each message admission retains its own authorization handle and expiry. Renewing a token can
+continue the same granted conversation, but cannot renew queued work, change another grant's
+conversation, or steer into an already running restricted admission. The dispatcher checks the
+original authorization before every start or recovery. An unavailable authorization service
+denies new effects and retains the original receipt and proof for retry. The existing retry
+deadline never passes the proof's expiry. Expired proofs, revoked grants and authoritative
+inactive responses end work. Restricted background and child admissions are refused; they never
+inherit ambient owner authority.
+
+A reconnect may retry the same operation ID with a new authorization handle under the same
+immutable grant. Receipt matching compares that identity and the unchanged request content,
+excluding the connection's authorization field. It returns the original receipt without changing
+the original admission's proof, expiry or execution state.
+
+Restricted conversations accept text and workspace scope only. They cannot enter owner history,
+use Coworld state, run tools, or acquire owner credentials. AIDE authorizes reads and pushes;
+the native restricted profile enforces model execution. Caller-supplied client names, instructions
+and context are presentation data and cannot authorize an operation. The local seam remains a
+trusted process boundary; omitted authority there means owner and cannot access a restricted
+conversation. Hosted deliveries must carry explicit authority.
+
+Checks: `core/tests/scenarios/test_session_coworld_isolation.py` exercises persisted grant
+isolation and revoked work after restart. `sessions_authority_immutable` and
+`client_admissions_authority_immutable` protect stored identity. The native restricted-profile
+checks cover tool and credential denial separately.
+
 The profiles own one small contract with clients: the IDE, the site, coplay, and any scripted
 client. It is published here as two JSON Schema files plus this note. The design calls it
 **the seam** (design §10); what is still to build is listed at the end and extends these files

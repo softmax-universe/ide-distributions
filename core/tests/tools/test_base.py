@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from research_core.store import sessions
 from research_core.store.actors import Actor
 from research_core.store.errors import StoreError
 from research_core.tools import _args, base, catalog
@@ -9,7 +10,10 @@ from research_core.tools.base import ActionSpec, ToolCall, ToolContext, ToolErro
 
 
 def make_ctx(tmp_path, role="orchestrator"):
-    return ToolContext.from_env(role, {"IDE_WORKSPACE": str(tmp_path), "IDE_SESSION_ID": "s1"})
+    ctx = ToolContext.from_env(role, {"IDE_WORKSPACE": str(tmp_path), "IDE_SESSION_ID": "s1"})
+    ctx.workspace.ensure_dirs()
+    sessions.register(ctx.wstore, Actor.harness(), session_id="s1", profile=role, kind="chat")
+    return ctx
 
 
 @pytest.fixture
@@ -219,6 +223,10 @@ def test_a_long_result_goes_to_a_file_with_its_outline(tmp_path):
             "IDE_TOOL_CALL_ID": "call/7",
             "HERMES_HOME": str(tmp_path / "home"),
         },
+    )
+    ctx.workspace.ensure_dirs()
+    sessions.register(
+        ctx.wstore, Actor.harness(), session_id="s1", profile="orchestrator", kind="chat"
     )
     try:
         out = json.loads(base.run_tool("big", {}, ctx))

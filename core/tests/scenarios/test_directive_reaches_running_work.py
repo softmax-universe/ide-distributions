@@ -8,8 +8,10 @@ last step on a real gateway.
 
 import json
 
+import pytest
+
 from research_core.plugin import briefing
-from research_core.store import tasks
+from research_core.store import sessions, tasks
 from research_core.store.actors import Actor
 from research_core.tools.base import ToolContext, run_tool
 from tests.scenarios.test_retry_once import call_applied
@@ -24,6 +26,20 @@ from tests.watcher._support import (
 )
 
 TEXT = "never touch the opening book"
+
+
+@pytest.fixture
+def ctx(tmp_path):
+    context = make_ctx(tmp_path)
+    sessions.register(
+        context.wstore,
+        HARNESS,
+        session_id="planner",
+        profile="orchestrator",
+        kind="wake",
+        coworld_id=context.coworld.coworld_id,
+    )
+    return context
 
 
 def add_directive(ctx) -> dict:
@@ -52,8 +68,7 @@ def delivered_text(ctx, run_id) -> str:
     return "\n".join(ctx.hermes.steered[run_id])
 
 
-def test_a_running_researcher_gets_the_directive_through_task_message(tmp_path):
-    ctx = make_ctx(tmp_path)
+def test_a_running_researcher_gets_the_directive_through_task_message(ctx):
     row = assigned(ctx)
     claim(ctx, row["session_id"], 1)
 
@@ -72,8 +87,7 @@ def test_a_running_researcher_gets_the_directive_through_task_message(tmp_path):
     assert not tasks.pending_messages(ctx.store, 1, "to_researcher")
 
 
-def test_a_researcher_on_a_wait_gets_it_when_the_wait_resolves(tmp_path):
-    ctx = make_ctx(tmp_path)
+def test_a_researcher_on_a_wait_gets_it_when_the_wait_resolves(ctx):
     row = assigned(ctx)
     claim(ctx, row["session_id"], 1)
     tasks.wait(ctx.store, Actor.session(row["session_id"]), 1, kind="user", detail="an answer")
@@ -92,10 +106,18 @@ def test_a_researcher_on_a_wait_gets_it_when_the_wait_resolves(tmp_path):
     assert TEXT in json.loads(resume["payload"])["input"]
 
 
-def test_a_task_started_later_has_it_in_its_briefing(tmp_path):
-    ctx = make_ctx(tmp_path)
+def test_a_task_started_later_has_it_in_its_briefing(ctx):
     make_task(ctx, type="maintenance")
     add_directive(ctx)
+    sessions.register(
+        ctx.wstore,
+        HARNESS,
+        session_id="later",
+        profile="researcher",
+        kind="task",
+        task_id=1,
+        coworld_id=ctx.coworld.coworld_id,
+    )
     tool_ctx = ToolContext.from_env(
         "researcher",
         {

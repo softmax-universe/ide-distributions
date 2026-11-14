@@ -72,7 +72,16 @@ class Scenario:
         return sum(1 for method, _ in self.hermes.calls if method == "start")
 
     def ctx(self) -> ToolContext:
-        return ToolContext.from_env("orchestrator", {**self.env, "IDE_SESSION_ID": "test-harness"})
+        ctx = ToolContext.from_env("orchestrator", {**self.env, "IDE_SESSION_ID": "test-harness"})
+        sessions.register(
+            ctx.wstore,
+            Actor.harness(),
+            session_id="test-harness",
+            profile="orchestrator",
+            kind="chat",
+            coworld_id=COWORLD_ID,
+        )
+        return ctx
 
     def platform(self) -> FakePlatform:
         return FakePlatform(self.ws.state / "fake_platform.json", self.env)

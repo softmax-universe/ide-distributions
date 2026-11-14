@@ -14,6 +14,11 @@ from pathlib import Path
 
 import pytest
 
+from research_core import layout
+from research_core.store import sessions
+from research_core.store.actors import Actor
+from research_core.store.db import Store
+
 REPO = Path(__file__).resolve().parents[3]
 CORE_SRC = REPO / "core" / "src"
 
@@ -33,6 +38,13 @@ class Host:
             "HERMES_REAL_HOME": str(self.home),
             "IDE_WORKSPACE": str(self.workspace),
         }
+
+    def register_chat(self, session_id: str, role: str = "orchestrator") -> None:
+        workspace = layout.from_env(self.env(role))
+        with Store.open(workspace.store_path, kind="workspace") as store:
+            sessions.register(
+                store, Actor.harness(), session_id=session_id, profile=role, kind="chat"
+            )
 
 
 def run(argv, env, timeout=120):
@@ -276,7 +288,7 @@ class Provider(BaseHTTPRequestHandler):
 server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 db = acquire()
-sid = "openai-text-proof-" + sys.argv[1]
+sid = sys.argv[2]
 prior = []
 if sys.argv[1] == "1":
     db.create_session(sid, "api_server", model="proof")
@@ -324,8 +336,10 @@ finally:
     from opentelemetry import trace
     assert trace.get_tracer_provider().force_flush(timeout_millis=5000)
 """
+    session_id = f"openai-text-proof-{int(existing_history)}"
+    host.register_chat(session_id)
     result = run(
-        [hermes_python(hermes_bin), "-c", script, str(int(existing_history))],
+        [hermes_python(hermes_bin), "-c", script, str(int(existing_history)), session_id],
         host.env("orchestrator"),
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -359,7 +373,6 @@ def test_installed_agent_reads_attachment_after_resume(hermes_bin, host, prepare
     """A real native read_file call, repeated after rebuilding the agent on retained history."""
     import base64
 
-    from research_core import layout
     from research_core.attachments import prepare as prepare_attachment
     from research_core.messages import UserMessage
 
@@ -390,6 +403,7 @@ import json, sys, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from hermes_state_registry import acquire, release
 from run_agent import AIAgent
+session_id = sys.argv[3]
 reads = []
 class Provider(BaseHTTPRequestHandler):
     def do_POST(self):
@@ -429,10 +443,10 @@ try:
         agent = AIAgent(model="proof",provider="custom",api_mode="chat_completions",
             base_url=f"http://127.0.0.1:{server.server_port}/v1",api_key="fixture",
             enabled_toolsets=["file"],quiet_mode=True,skip_context_files=True,skip_memory=True,
-            skip_background_review=True,session_id="native-attachment-read-proof",session_db=db,max_iterations=3)
+            skip_background_review=True,session_id=session_id,session_db=db,max_iterations=3)
         result = agent.run_conversation(content,
             conversation_history=db.get_messages_as_conversation(
-            "native-attachment-read-proof",include_row_ids=True))
+            session_id,include_row_ids=True))
         assert result["final_response"] == "Attachment read", result
     assert len(reads) == 2, reads
     print("PASS native file read before and after agent resume")
@@ -441,8 +455,13 @@ finally:
     from opentelemetry import trace
     assert trace.get_tracer_provider().force_flush(timeout_millis=5000)
 """
+    session_id = "native-attachment-read-proof"
+    host.register_chat(session_id)
     result = run(
-        [hermes_python(hermes_bin), "-c", script, str(target), message.model_dump_json()],
+        [
+            hermes_python(hermes_bin), "-c", script,
+            str(target), message.model_dump_json(), session_id,
+        ],
         host.env("orchestrator"),
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -586,7 +605,7 @@ class Provider(BaseHTTPRequestHandler):
 server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 db = acquire()
-session = "prune-proof"
+session = sys.argv[2]
 try:
     agent = AIAgent(model="proof", provider="custom", api_mode="chat_completions",
         base_url=f"http://127.0.0.1:{server.server_port}/v1", api_key="fixture",
@@ -614,8 +633,10 @@ finally:
     server.server_close()
     release(db)
 """
+    session_id = "prune-proof"
+    host.register_chat(session_id)
     result = run(
-        [hermes_python(hermes_bin), "-c", script, str(tmp_path)],
+        [hermes_python(hermes_bin), "-c", script, str(tmp_path), session_id],
         host.env("orchestrator"),
         timeout=300,
     )

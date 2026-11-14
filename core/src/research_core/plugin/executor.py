@@ -148,6 +148,10 @@ def run_in_workspace(
 
 def make_handler(spec: Any, role: Role, traces: Traces) -> Callable[..., str]:
     def handler(args: dict | None = None, session_id: str = "", **_: Any) -> str:
+        from research_core.plugin.authority import TOOL_DENIED, owner_tools
+
+        if not owner_tools(profile_env(), session_id):
+            return TOOL_DENIED
         args = dict(args or {})
         turn = traces.session_turn(session_id)
         # The native call this serves, when the turn has only one open call of this tool.

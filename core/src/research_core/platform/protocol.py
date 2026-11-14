@@ -12,9 +12,12 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from research_core.platform.errors import PlatformError
+
+if TYPE_CHECKING:
+    from research_core.platform.identity import IdentityAccessToken
 
 Identity = Literal["player", "user"]
 AutoChampion = Literal["always", "never", "lineage"]
@@ -114,6 +117,8 @@ class EpisodePage:
 
 class Platform(Protocol):
     def close(self) -> None: ...
+
+    def identity_token(self, resource: str, scope: str) -> IdentityAccessToken: ...
 
     def whoami(self, identity: Identity = "player") -> WhoAmI: ...
 
