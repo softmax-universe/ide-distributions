@@ -9,10 +9,13 @@ transaction inside the same file, after a copy of the original is saved next to 
 
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -20,9 +23,12 @@ from pathlib import Path
 
 from research_core.store.errors import SchemaNewer
 
+log = logging.getLogger(__name__)
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 KINDS = ("coworld", "workspace")
 BUSY_TIMEOUT_MS = 5000
+# A wait for, or a hold of, the write lock longer than this is logged (``lock_wait``).
+LOCK_LOG_S = 1.0
 WAL_SWITCH_POLL_S = 0.01
 # The repair renames the tables it keeps rows from to this prefix while it copies them.
 OLD_PREFIX = "old_"
@@ -37,6 +43,47 @@ _TIMESTAMP_SQL = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 def _check_kind(kind: str) -> None:
     if kind not in KINDS:
         raise ValueError(f"not a store kind: {kind!r} (one of {', '.join(KINDS)})")
+
+
+def store_name(conn: sqlite3.Connection) -> str:
+    """The folder that holds a store's ``.state``: the workspace's or a Coworld's. Never the path
+    (B.10)."""
+    file = conn.execute("PRAGMA database_list").fetchone()[2]
+    return Path(file).parents[1].name if file else ":memory:"
+
+
+@contextmanager
+def lock_wait(conn: sqlite3.Connection, operation: str) -> Iterator[None]:
+    """Log a statement that waited over ``LOCK_LOG_S`` for the store's locks, or failed waiting.
+
+    ``operation`` is ``wal_switch``, ``migration`` or ``begin_immediate``. A ``BEGIN IMMEDIATE``
+    that ends in "database is locked" after the busy timeout is logged ``failed`` with its wait,
+    then its error propagates unchanged.
+    """
+    started = time.monotonic()
+    outcome = "failed"
+    try:
+        yield
+        outcome = "acquired"
+    finally:
+        waited_s = time.monotonic() - started
+        if outcome == "failed" or waited_s > LOCK_LOG_S:
+            store = store_name(conn)
+            log.warning(
+                "store %s: %s %s after waiting %.2fs for its lock",
+                store,
+                operation,
+                outcome,
+                waited_s,
+                extra={
+                    "attributes": {
+                        "store": store,
+                        "store.operation": operation,
+                        "store.lock_outcome": outcome,
+                        "store.lock_wait_s": round(waited_s, 3),
+                    }
+                },
+            )
 
 
 def connect_writable(path: Path, busy_timeout_ms: int | None = None) -> sqlite3.Connection:
@@ -67,18 +114,19 @@ def _enable_wal(conn: sqlite3.Connection, busy_timeout_ms: int) -> None:
     """
     deadline = time.monotonic() + busy_timeout_ms / 1000
     try:
-        while True:
-            left_ms = max(0, int((deadline - time.monotonic()) * 1000))
-            conn.execute(f"PRAGMA busy_timeout = {left_ms}")
-            try:
-                conn.execute("PRAGMA journal_mode = WAL").fetchone()
-                return
-            except sqlite3.OperationalError as error:
-                # sqlite_errorcode is the extended code; its low byte is the primary one.
-                busy = error.sqlite_errorcode & 0xFF == sqlite3.SQLITE_BUSY
-                if not busy or time.monotonic() >= deadline:
-                    raise
-            time.sleep(min(WAL_SWITCH_POLL_S, left_ms / 1000))
+        with lock_wait(conn, "wal_switch"):
+            while True:
+                left_ms = max(0, int((deadline - time.monotonic()) * 1000))
+                conn.execute(f"PRAGMA busy_timeout = {left_ms}")
+                try:
+                    conn.execute("PRAGMA journal_mode = WAL").fetchone()
+                    return
+                except sqlite3.OperationalError as error:
+                    # sqlite_errorcode is the extended code; its low byte is the primary one.
+                    busy = error.sqlite_errorcode & 0xFF == sqlite3.SQLITE_BUSY
+                    if not busy or time.monotonic() >= deadline:
+                        raise
+                time.sleep(min(WAL_SWITCH_POLL_S, left_ms / 1000))
     finally:
         conn.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
 
@@ -129,7 +177,8 @@ def apply_migrations(conn: sqlite3.Connection, kind: str) -> int:
     A failing migration rolls back whole. Calling this on a current store is a no-op.
     """
     for number, path in migration_files(kind):
-        conn.execute("BEGIN IMMEDIATE")
+        with lock_wait(conn, "migration"):
+            conn.execute("BEGIN IMMEDIATE")
         try:
             if user_version(conn) >= number:
                 conn.execute("COMMIT")

@@ -472,6 +472,7 @@ class SeamServer:
                 "contract_version": contract.CONTRACT_VERSION,
             }
 
+    @span("workspace.status")
     def status(self) -> dict:
         """What ``research watcher status`` prints (``watcher/cli.py``): the last heartbeat and
         its age, the has-work signal with its reasons, and the pause state, from the workspace
@@ -484,7 +485,10 @@ class SeamServer:
             if heartbeat is not None:
                 age_s = round((datetime.now(UTC) - parse_iso(heartbeat)).total_seconds(), 1)
             pending_transitions = []
-            for registered in coworlds.list(wstore):
+            registered_coworlds = coworlds.list(wstore)
+            # /status opens every Coworld store, so its span says how many it opened.
+            trace.get_current_span().set_attribute("coworld.count", len(registered_coworlds))
+            for registered in registered_coworlds:
                 coworld = self.ws.coworld(registered["coworld_id"])
                 store = context._open_coworld_store(coworld)
                 if store is None:

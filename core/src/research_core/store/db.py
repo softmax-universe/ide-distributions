@@ -14,9 +14,11 @@ Error messages never name the store path (B.10).
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import sqlite3
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
@@ -29,6 +31,8 @@ from research_core.store._common import Clock, json_field, now_iso, parse_iso
 from research_core.store.actors import Actor
 from research_core.store.errors import SchemaMismatch, SchemaNewer
 from research_core.store.events import Event
+
+log = logging.getLogger(__name__)
 
 # In-process wakeups are hints. SQLite event cursors remain the durable source of truth.
 _changes = threading.Condition()
@@ -300,6 +304,7 @@ class Tx:
         self.token = secrets.token_hex(8)
         self.at = store.now()
         self._open = False
+        self._locked_at = 0.0
         self._start_id = 0
         self._start_event = 0
         self._events: list[tuple[int, str, str, dict]] = []
@@ -308,7 +313,9 @@ class Tx:
         if self.store._tx is not None:
             raise RuntimeError("a transaction is already open on this store")
         conn = self.store.conn
-        conn.execute("BEGIN IMMEDIATE")
+        with migrate.lock_wait(conn, "begin_immediate"):
+            conn.execute("BEGIN IMMEDIATE")
+        self._locked_at = time.monotonic()
         self.store._tx = self
         self._open = True
         self._start_event = self.store.last_seq()
@@ -339,6 +346,23 @@ class Tx:
         finally:
             self._open = False
             self.store._tx = None
+            # Who keeps the others waiting: a writer that held the lock for over a second.
+            held_s = time.monotonic() - self._locked_at
+            if held_s > migrate.LOCK_LOG_S:
+                store = migrate.store_name(conn)
+                log.warning(
+                    "store %s: %s held the write lock for %.2fs",
+                    store,
+                    self.actor,
+                    held_s,
+                    extra={
+                        "attributes": {
+                            "store": store,
+                            "store.actor": str(self.actor),
+                            "store.lock_held_s": round(held_s, 3),
+                        }
+                    },
+                )
         if exc_type is None and self._events and _commit_observer is not None:
             _commit_observer(self.store, self.actor, self._events)
         return False
