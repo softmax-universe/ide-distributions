@@ -142,3 +142,20 @@ def test_uncertain_execution_reserves_capacity_after_delivery_closes(workspace_s
         tx.execute("UPDATE client_admissions SET execution_uncertain=0 WHERE op_id=?", (op_id,))
     assert admissions.reserved_workers(workspace_store) == 0
     assert not admissions.restart_required(workspace_store)
+
+
+def test_work_status_finds_open_admissions_through_an_index(workspace_store, harness):
+    """``/status`` asks for this every second. Without the index it reads every stored admission
+    with its message text: 0.4 s on a workspace holding 7,000 of them. The index holds only the
+    rows that match its own condition, so a condition added to the query alone scans again."""
+    op_id = enqueue(workspace_store, harness)
+    statements = []
+    workspace_store.conn.set_trace_callback(statements.append)
+    try:
+        obligations = admissions.work_status(workspace_store)
+    finally:
+        workspace_store.conn.set_trace_callback(None)
+    assert [row["attempt_id"] for row in obligations] == [op_id]
+    (query,) = [sql for sql in statements if "FROM client_admissions a" in sql]
+    plan = [row[3] for row in workspace_store.conn.execute("EXPLAIN QUERY PLAN " + query)]
+    assert any("client_admissions_open" in step for step in plan), plan
