@@ -494,6 +494,32 @@ class SeamServer:
                 "runtime_recovery_count": int(wstore.get_meta("runtime_recovery_count") or "0"),
             }
 
+    def scheduler_status(self) -> dict:
+        """Expose scheduler state without prompts, provider errors, or coordinator paths."""
+        with self.stores() as stores, stores.wstore.read_tx() as wstore:
+            heartbeat = wstore.get_meta(HEARTBEAT_KEY)
+            work = admissions.work_status(wstore, self.inference_lease_file)
+            blocked = inference.blocking_state(self.inference_lease_file)
+            inference_state = "available"
+            if not inference.available(self.inference_lease_file):
+                inference_state = (
+                    blocked.blocked if blocked is not None else "inference_lease_unavailable"
+                )
+            return {
+                "inference_state": inference_state,
+                "paused": bool(settings.get(wstore, "paused")),
+                "heartbeat": heartbeat,
+                "restart_required": admissions.restart_required(wstore),
+                "researcher_limit": settings.get(wstore, "max_researchers"),
+                "researcher_slots_reserved": admissions.reserved_workers(wstore),
+                "reservations": admissions.worker_reservations(wstore),
+                "work_count": len(work),
+                "work": [
+                    {key: item[key] for key in ("attempt_id", "session_id", "state", "reason_code")}
+                    for item in reversed(work[-100:])
+                ],
+            }
+
     @staticmethod
     def page() -> bytes:
         """The client page, read from the package on each request so edits show on reload."""
@@ -1419,6 +1445,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, seam.health())
             elif url.path == "/status":
                 self._json(HTTPStatus.OK, seam.status())
+            elif url.path == "/scheduler-status":
+                self._json(HTTPStatus.OK, seam.scheduler_status())
             elif url.path == "/command":
                 self._json(
                     HTTPStatus.OK, seam.command_status(query["coworld_id"], query["command_id"])

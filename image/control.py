@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 class ControlRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: UUID
-    control: Literal["status", "sleep_request"]
+    control: Literal["status", "sleep_request", "scheduler_status"]
 
 
 class Lifecycle:
@@ -87,6 +87,8 @@ async def reply(
         result = httpx.Response(422, json={"kind": "invalid", "detail": str(request)})
     elif isinstance(request, BaseException):
         raise request
+    elif request.control == "scheduler_status":
+        result = await seam.get("/scheduler-status")
     else:
         result = httpx.Response(200, json=await lifecycle.status(request, seam))
     frame = {
