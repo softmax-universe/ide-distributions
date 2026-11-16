@@ -117,7 +117,8 @@ def test_reasoning_streams_into_the_request_log_before_the_tool(hermes_bin, tmp_
                 logged=None,
             )
             run = aide.Run(attempt=0, run_id=run_id, steered=False)
-            follower = asyncio.create_task(backend.follow(request, run, aide.Progress(0), 0))
+            scope = aide.Scope(scope="workspace", coworld=None, league=None)
+            follower = asyncio.create_task(backend.follow(request, scope, run, aide.Progress(0), 0))
             while not backend.thinking:
                 await asyncio.sleep(0.01)
             stub.bound.set()
