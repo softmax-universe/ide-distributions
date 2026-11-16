@@ -499,6 +499,7 @@ class SeamServer:
         with self.stores() as stores, stores.wstore.read_tx() as wstore:
             heartbeat = wstore.get_meta(HEARTBEAT_KEY)
             work = admissions.work_status(wstore, self.inference_lease_file)
+            reservations = admissions.worker_reservations(wstore)
             blocked = inference.blocking_state(self.inference_lease_file)
             inference_state = "available"
             if not inference.available(self.inference_lease_file):
@@ -512,10 +513,20 @@ class SeamServer:
                 "restart_required": admissions.restart_required(wstore),
                 "researcher_limit": settings.get(wstore, "max_researchers"),
                 "researcher_slots_reserved": admissions.reserved_workers(wstore),
-                "reservations": admissions.worker_reservations(wstore),
+                "reservations": reservations[:100],
+                "reservations_truncated": len(reservations) > 100,
                 "work_count": len(work),
                 "work": [
-                    {key: item[key] for key in ("attempt_id", "session_id", "state", "reason_code")}
+                    {
+                        key: item[key]
+                        for key in (
+                            "attempt_id",
+                            "session_id",
+                            "state",
+                            "reason_code",
+                            "blocked_by_attempt_id",
+                        )
+                    }
                     for item in reversed(work[-100:])
                 ],
             }

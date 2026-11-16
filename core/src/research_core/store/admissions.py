@@ -21,6 +21,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from research_core.run_failures import ErrorClass
 from research_core.store import settings
+from research_core.store._common import parse_iso
 from research_core.store.actors import Actor
 from research_core.store.db import Store, Tx
 from research_core.store.errors import IdReused, StoreError
@@ -324,7 +325,7 @@ def worker_reservations(store: Store) -> list[dict]:
             "SELECT a.op_id AS attempt_id,a.session_id,s.task_id,s.coworld_id,a.run_id,"
             "a.status,a.dispatch_started,a.resolution_required,a.execution_uncertain"
             + _WORKER_RESERVATIONS
-            + " ORDER BY a.rowid DESC LIMIT 100"
+            + " ORDER BY a.rowid DESC LIMIT 101"
         )
     ]
 
@@ -373,6 +374,8 @@ def work_status(store: Store, lease_file: Path | None = None) -> list[dict]:
     owner = store.get_meta("coordinator_instance") or "workspace coordinator awaiting startup"
     paused = settings.get(store, "paused")
     result = []
+    now = parse_iso(store.now())
+    session_holds: dict[str, tuple[str, str]] = {}
     for row in store.q(
         "SELECT a.*,t.state AS assignment_state FROM client_admissions a"
         " LEFT JOIN task_assignments t ON t.current_attempt_id=a.op_id"
@@ -380,6 +383,7 @@ def work_status(store: Store, lease_file: Path | None = None) -> list[dict]:
         " OR a.execution_uncertain=1 OR a.resolution_required=1 OR a.advanced_at IS NULL"
         " OR a.disposition='delivery retries exhausted') ORDER BY a.rowid"
     ):
+        blocker_id = None
         phase = row["status"]
         responsible = row["owner_instance"] or owner
         reason = row["error"]
@@ -393,14 +397,24 @@ def work_status(store: Store, lease_file: Path | None = None) -> list[dict]:
             trigger = "private runtime namespace replaced; coordinator reconciles evidence"
         elif phase == "queued":
             responsible = owner
-            if row["resume_after"]:
+            session_id = row["session_id"]
+            if session_id in session_holds:
+                blocker_id, reason_code = session_holds[session_id]
+                phase, reason = "waiting", reason_code
+                trigger = f"earlier attempt {blocker_id} must resume or finish"
+            elif row["resume_after"]:
                 reason_code = row["error_class"] or "retry_scheduled"
                 phase, reason = "waiting", row["error_class"]
                 trigger = f"coordinator resumes this message after {row['resume_after']}"
+                session_holds[session_id] = (row["op_id"], reason_code)
             elif row["retry_at"]:
                 reason_code = "retry_scheduled"
                 phase, reason = "waiting", "transient steering rejection"
                 trigger = f"coordinator retries this delivery at {row['retry_at']}"
+                if now < parse_iso(row["retry_at"]) and (
+                    not row["cancel_requested"] or row["dispatch_started"]
+                ):
+                    session_holds[session_id] = (row["op_id"], reason_code)
             elif paused and not row["dispatch_started"]:
                 reason_code = "workspace_paused"
                 phase, reason, trigger = "waiting", "workspace paused", "workspace resume"
@@ -443,6 +457,7 @@ def work_status(store: Store, lease_file: Path | None = None) -> list[dict]:
                 "owner": responsible,
                 "reason": reason,
                 "reason_code": reason_code,
+                "blocked_by_attempt_id": blocker_id,
                 "trigger": trigger,
                 "outcome": row["status"],
                 "disposition": row["disposition"],
