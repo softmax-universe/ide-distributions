@@ -24,7 +24,19 @@ async def main():
     async def seam(reader, writer):
         nonlocal statuses
         headers = await reader.readuntil(b"\r\n\r\n")
-        assert headers.split(b" ")[1] == b"/status", headers
+        endpoint = headers.split(b" ")[1]
+        if endpoint == b"/scheduler-status":
+            body = b'{"paused":true,"researcher_slots_reserved":2}'
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+                + body
+            )
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+            return
+        assert endpoint == b"/status", headers
         statuses += 1
         index = statuses
         if index == 1:
@@ -79,6 +91,8 @@ async def main():
         assert status == 200 and body["ready"] and not body["ready_for_sleep"], body
         status, body = await reply(socket, await send(socket, control(), "4-0"))
         assert status == 200 and body["ready"], body
+        status, body = await reply(socket, await send(socket, control("scheduler_status"), "5-0"))
+        assert status == 200 and body == {"paused": True, "researcher_slots_reserved": 2}, body
         finished.set()
         await socket.wait_closed()
 
