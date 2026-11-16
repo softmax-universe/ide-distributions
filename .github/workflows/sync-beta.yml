@@ -26,12 +26,12 @@ jobs:
       SYNC_BRANCH: sync/main-into-beta
     steps:
       # BETA_SYNC_TOKEN must bypass the beta ruleset, and a push made with it (unlike one made
-      # with GITHUB_TOKEN) triggers release-hermes.yml on beta.
+      # with GITHUB_TOKEN) triggers release-hermes.yml on beta. Until an admin adds it and creates
+      # beta, the checkout falls back to GITHUB_TOKEN and the step below does nothing.
       - uses: actions/checkout@v4
         with:
-          ref: beta
           fetch-depth: 0
-          token: ${{ secrets.BETA_SYNC_TOKEN }}
+          token: ${{ secrets.BETA_SYNC_TOKEN || github.token }}
       - name: Merge main into beta
         env:
           GH_TOKEN: ${{ secrets.BETA_SYNC_TOKEN }}
@@ -39,6 +39,15 @@ jobs:
           SLACK_MENTION: ${{ vars.BETA_SYNC_SLACK_MENTION }}
         run: |
           set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "BETA_SYNC_TOKEN is not set; nothing merged into beta" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! git show-ref --verify --quiet refs/remotes/origin/beta; then
+            echo "The beta branch does not exist yet; nothing merged into beta" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git checkout -B beta origin/beta
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           main=$(git rev-parse origin/main)
@@ -55,12 +64,15 @@ jobs:
           fi
           git merge --abort
 
-          # A sync branch a human already merged beta into is not an ancestor of main; leave it
-          # alone and let its open pull request carry the resolution.
+          # A sync branch that main or beta already contains holds nothing new: either it is an
+          # older main, or its pull request was merged and the branch was left behind. Move it to
+          # main. One a human merged beta into is contained by neither; leave it alone and let its
+          # open pull request carry the resolution.
           if git ls-remote --exit-code --heads origin "$SYNC_BRANCH" >/dev/null; then
             git fetch origin "$SYNC_BRANCH"
-            if git merge-base --is-ancestor FETCH_HEAD "$main"; then
-              git push origin "$main:refs/heads/$SYNC_BRANCH"
+            if git merge-base --is-ancestor FETCH_HEAD "$main" || git merge-base --is-ancestor FETCH_HEAD HEAD; then
+              git push --force-with-lease="refs/heads/$SYNC_BRANCH:$(git rev-parse FETCH_HEAD)" \
+                origin "$main:refs/heads/$SYNC_BRANCH"
             else
               echo "$SYNC_BRANCH has resolution commits; not moving it to $main" >> "$GITHUB_STEP_SUMMARY"
             fi
@@ -82,6 +94,6 @@ jobs:
           # beta stops receiving main's fixes until it is merged.
           if [ "$opened" = true ] || [ "$GITHUB_EVENT_NAME" = schedule ]; then
             state=$([ "$opened" = true ] && echo "conflicts" || echo "still conflicts")
-            jq -n --arg text "<@${SLACK_MENTION:?}> Merging \`main\` into \`beta\` $state, so beta is not getting main's changes. Resolve <$pr|the sync PR>." \
+            jq -n --arg text "${SLACK_MENTION:+<@$SLACK_MENTION> }Merging \`main\` into \`beta\` $state, so beta is not getting main's changes. Resolve <$pr|the sync PR>." \
               '{text: $text}' | curl -fsS -X POST -H 'Content-Type: application/json' --data @- "${SLACK_WEBHOOK_URL:?}"
           fi
