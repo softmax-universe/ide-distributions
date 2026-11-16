@@ -27,12 +27,13 @@ async def managed_process(
 @asynccontextmanager
 async def ready_process(
     *args: str, env: dict[str, str], timeout: float
-) -> AsyncIterator[asyncio.subprocess.Process]:
+) -> AsyncIterator[tuple[asyncio.subprocess.Process, socket.socket]]:
     """Wait for this boot's owned listener to announce readiness, or fail on exit/timeout.
 
     The child gets systemd's ``NOTIFY_SOCKET``. Hermes's gateway sends ``READY=1`` and a
     ``STATUS=`` line on it once it runs (``gateway/systemd_notify.py``); ``research serve`` sends
-    ``READY=1`` alone. Later datagrams (the gateway's ``WATCHDOG=1``) queue unread."""
+    ``READY=1`` alone. Later datagrams queue on the yielded socket, open while the child is: the
+    gateway's ``WATCHDOG=1`` unread, ``research serve``'s restart notice for its caller."""
     with tempfile.TemporaryDirectory(prefix="ready-") as directory:
         address = f"{directory}/notify.sock"
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as receiver:
@@ -52,7 +53,7 @@ async def ready_process(
                             )
                         if received.result().split(b"\n")[0] != b"READY=1":
                             raise RuntimeError(f"{args[0]} sent an invalid readiness notification")
-                    yield child
+                    yield child, receiver
                 finally:
                     received.cancel()
                     exited.cancel()

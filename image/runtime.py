@@ -229,7 +229,7 @@ async def run(stack: AsyncExitStack) -> None:
                     or gateway_config.get("systemd_watchdog_seconds") != WATCHDOG_SECONDS
                 ):
                     set_config_value("gateway.systemd_watchdog_seconds", str(WATCHDOG_SECONDS))
-                gateway = await stack.enter_async_context(
+                gateway, _ = await stack.enter_async_context(
                     ready_process(
                         PYTHON,
                         "-m",
@@ -241,7 +241,7 @@ async def run(stack: AsyncExitStack) -> None:
                 # One contract check after the listener's notification, never a readiness poll.
                 (await client.get("/v1/capabilities")).raise_for_status()
             with telemetry.span("workspace.application_startup", context=startup_context):
-                seam = await stack.enter_async_context(
+                seam, seam_notices = await stack.enter_async_context(
                     ready_process(
                         RESEARCH,
                         "serve",
@@ -252,33 +252,29 @@ async def run(stack: AsyncExitStack) -> None:
                         timeout=30,
                     )
                 )
-                async with httpx.AsyncClient(base_url="http://127.0.0.1:8650") as seam_client:
+                # One contract check after the listener's notification, never a readiness poll.
+                # It takes no write lock, so it waits out a busy seam (SEAM_TIMEOUT_S, as the
+                # AIDE backend does) and an error answer is a broken seam, not contention.
+                async with httpx.AsyncClient(
+                    base_url="http://127.0.0.1:8650", timeout=SEAM_TIMEOUT_S
+                ) as seam_client:
                     (await seam_client.get("/health")).raise_for_status()
 
             async def reconcile_uncertain_execution() -> None:
-                # A reply slower than httpx's 5 s default is a busy seam, not a dead one: /status
-                # opens every Coworld store and shares the seam's interpreter with its other work.
-                async with httpx.AsyncClient(
-                    base_url="http://127.0.0.1:8650", timeout=SEAM_TIMEOUT_S
-                ) as observer:
-                    while True:
-                        response = await observer.get("/status")
-                        response.raise_for_status()
-                        activity = response.json()
-                        if activity["restart_required"]:
-                            print(
-                                RuntimeRecovery(
-                                    workspace_id=bootstrap.workspace_id,
-                                    boot_id=boot_id,
-                                    completed_recoveries=activity["runtime_recovery_count"],
-                                    timestamp=datetime.now(UTC),
-                                ).model_dump_json(),
-                                flush=True,
-                            )
-                            raise RuntimeError(
-                                "Recycling runtime to settle an uncertain native execution"
-                            )
-                        await asyncio.sleep(1)
+                # research serve sends this once it has committed an execution whose outcome is
+                # unknown (SeamServer.request_recycle); a dead seam ends seam.wait() instead.
+                notice = await asyncio.get_running_loop().sock_recv(seam_notices, 4096)
+                fields = dict(line.split("=", 1) for line in notice.decode().splitlines())
+                print(
+                    RuntimeRecovery(
+                        workspace_id=bootstrap.workspace_id,
+                        boot_id=boot_id,
+                        completed_recoveries=int(fields["X_COMPLETED_RECOVERIES"]),
+                        timestamp=datetime.now(UTC),
+                    ).model_dump_json(),
+                    flush=True,
+                )
+                raise RuntimeError("Recycling runtime to settle an uncertain native execution")
 
             recovery = group.create_task(reconcile_uncertain_execution())
             startup.set_attribute("startup.complete", True)

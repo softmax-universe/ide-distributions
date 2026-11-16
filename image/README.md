@@ -389,6 +389,10 @@ own `READY=1` once its adapters, cron and housekeeping run, which needs its syst
 application announces its bound listener after store initialization, ownership acquisition and
 dispatcher start.
 Each notification is followed by one HTTP contract check. There is no periodic startup probe.
+The application's socket stays open for the boot: once it commits an execution whose outcome is
+unknown, it sends `X_RESTART_REQUIRED=1` with `X_COMPLETED_RECOVERIES`, and the supervisor recycles
+the runtime. The supervisor does not poll `/status`, so a slow or locked store cannot end the runtime
+through it.
 
 See [the polling audit](../docs/reports/workspace-polling-audit-2026-11-09.md) for remaining work.
 

@@ -217,10 +217,12 @@ Recovery frequency is available as `runtime_recovery_count` in `/status` and `re
 The image emits a typed `workspace_runtime_recovery` event before recycling, with workspace and boot IDs.
 The packaged fault test records recovery elapsed seconds, container restart count, and validates the event.
 When it fails, the fault container's log is in the startup evidence as `recovery-container.log`.
-Other recycles, such as a failed AIDE consumer (`image/README.md`) or a failed `/status` read, emit
-no such event and are not counted. The supervisor's `/status` read waits 40 seconds
-(`SEAM_TIMEOUT_S` in `image/aide.py`), so an answer that is only slow is not a failed read; an
-error answer, such as `database is locked`, still is.
+`research serve` asks for the recycle on the supervisor's private `NOTIFY_SOCKET` when it commits
+an uncertain execution, and once after readiness if one is already recorded; the supervisor does
+not poll `/status`. Other recycles, such as a failed AIDE consumer (`image/README.md`) or an exited
+`research serve`, emit no such event and are not counted. The startup `/health` check waits 40
+seconds (`SEAM_TIMEOUT_S` in `image/aide.py`); it takes no write lock, so an error answer there is a
+broken seam.
 
 Standalone local `research serve` does not own the gateway's lifecycle. After stopping that gateway
 and its workers, use `research workspace recover --runtime-stopped` to acknowledge interruption.

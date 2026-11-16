@@ -254,7 +254,10 @@ class SeamServer:
             self.env.get("IDE_RUNTIME_ID"),
             inference_lease_file=self.inference_lease_file,
             clock=clock,
+            uncertain=self.request_recycle,
         )
+        # Set once the supervisor has READY=1: a notice before it would be read as readiness.
+        self._ready = False
         self.config_runner = config_runner
         self.catalog = catalog or Catalog()
         self._model_lock = threading.Lock()
@@ -277,6 +280,22 @@ class SeamServer:
             self.coordinator.adopt_existing_workers(self.ws, store, self.coordinator.runtime_id)
         self._http = _HttpServer((host, port), self)
 
+    def request_recycle(self, store: Store) -> None:
+        """Tell the supervisor this runtime must recycle: a committed execution's outcome is
+        unknown, and only a fresh boot settles it (``Coordinator.reconcile_inputs``).
+
+        The notice goes on the supervisor's ``NOTIFY_SOCKET`` after ``READY=1``, so the
+        supervisor waits for it instead of polling ``/status``. Unsupervised, ``/status`` and
+        ``research watcher status`` show ``restart_required``.
+        """
+        address = self.env.get("NOTIFY_SOCKET")
+        if address is None or not self._ready:
+            return
+        count = store.get_meta("runtime_recovery_count") or "0"
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sender:
+            sender.connect(address)
+            sender.send(f"X_RESTART_REQUIRED=1\nX_COMPLETED_RECOVERIES={count}".encode())
+
     @property
     def url(self) -> str:
         host, port = self._http.server_address[:2]
@@ -298,6 +317,12 @@ class SeamServer:
                     with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sender:
                         sender.connect(address)
                         sender.send(b"READY=1")
+                self._ready = True
+                # Set before this read: a commit before it shows here, one after it notifies.
+                # That covers what the constructor left uncertain (adopted workers).
+                with Store.open(self.ws.store_path, kind="workspace") as store:
+                    if admissions.restart_required(store):
+                        self.request_recycle(store)
                 try:
                     self._http.serve_forever(poll_interval=0.2)
                 finally:
