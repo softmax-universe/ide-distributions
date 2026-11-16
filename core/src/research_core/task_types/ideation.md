@@ -4,9 +4,10 @@
   "checklist": [
     {
       "key": "proposed_tasks",
-      "text": "two to five proposed Tasks for the Goal (T- ids)",
+      "text": "one to five proposed Tasks for the Goal (T- ids), or none with a reason",
       "pattern": "^T-[1-9][0-9]*$",
-      "min_items": 2,
+      "min_items": 1,
+      "none_ok": true,
       "max_items": 5
     }
   ]
@@ -15,8 +16,9 @@
 
 # Ideation Task
 
-Deliver two to five proposed Tasks for the Goal, each with reasoning grounded in the Goal's
-claims and in what was tried. No code: an ideation Task reads and proposes.
+Propose one to five viable Tasks for the Goal, grounded in its claims and prior work.
+If there are no viable Tasks, complete with `proposed_tasks: "none: <reason>"` and explain
+what evidence would make another pass worthwhile.
 
 Start: read the Task, its Goal (`goal.read`: the end state, "where it stands", the claims tagged
 `G-n` and how many Experiments it has in each status), the directives, the briefing and these
@@ -32,11 +34,10 @@ Work: for each idea, `task_propose {goal, type, title, description, reasoning, f
 end_condition, end_detail, priority}`.
 `reasoning` cites claims (C-n) and Experiments (X-n) by id; `description` is concrete enough
 that a Researcher starts cold. Types are `improvement`, `research` or `maintenance`, never
-another `ideation`. Rank them: the first is what you would run. Two strong proposals beat five
-weak ones; five is the ceiling, not the target.
+another `ideation`. Rank them: the first is what you would run. One concrete, evidence-backed proposal is enough.
 
 Ask (`task_ask`) only when the Goal's end state cannot be read; the choice of ideas is yours.
 
-End: `task_complete {task, proposed_tasks: ["T-7", "T-8"], result, merge: "no", merge_reason:
+End: `task_complete {task, proposed_tasks: ["T-7"], result, merge: "no", merge_reason:
 "ideation changes no code"}`. `result` says in two sentences what the Goal should try first and
 why.

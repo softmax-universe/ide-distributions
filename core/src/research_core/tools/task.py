@@ -44,7 +44,11 @@ CHECKLIST_FIELDS = {
     ),
     "experiment": EXPERIMENT,
     "versions": a.strings('Versions tested, such as ["V-4"].'),
-    "proposed_tasks": a.strings('An ideation Task\'s proposals, such as ["T-7"].'),
+    "proposed_tasks": a.any_of(
+        'An ideation Task\'s proposals, such as ["T-7"], or "none: <reason>".',
+        a.STRINGS,
+        a.STRING,
+    ),
     "summary": a.string("A maintenance Task's summary of the change."),
     "submission_reason": a.string("Why a Version is or is not a submission candidate."),
     "capability": a.string("The capability a repair Task restored."),

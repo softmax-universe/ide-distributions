@@ -550,8 +550,9 @@ def _goal_line(goal: dict[str, Any]) -> str:
     open_ids = tasks["open"]
     shown = f" ({', '.join(open_ids[:3])}{', …' if len(open_ids) > 3 else ''})" if open_ids else ""
     running = goal["experiments"]["running"]
+    ongoing = " (ongoing)" if goal["kind"] == "ongoing" else ""
     return (
-        f'{goal["id"]} "{_clip(goal["title"], TITLE_CHARS)}": {stands or "no status yet"};'
+        f'{goal["id"]} "{_clip(goal["title"], TITLE_CHARS)}"{ongoing}: {stands or "no status yet"};'
         f" open {len(open_ids)}{shown}, done {tasks['complete']}, {running} running"
     )
 

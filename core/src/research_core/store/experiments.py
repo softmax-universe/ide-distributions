@@ -492,6 +492,10 @@ def close(
             (verdict, json_field(results), tx.at, row["id"]),
         )
         tx.event("experiment.closed", xid, {"verdict": verdict, "reason_codes": list(reason_codes)})
+        if row["goal_id"] is not None:
+            from research_core.store.goals import resume_for_evidence
+
+            resume_for_evidence(tx, row["goal_id"], xid)
     return read(store, row["id"])
 
 

@@ -3,13 +3,14 @@
 Three conditions, each an event a management or anti-stall wake acts on; nothing here writes a
 record:
 
-* ``goal.needs_ideation`` for an active Goal with no open Task and no Task waiting on the user
+* ``goal.needs_ideation`` for an active Goal with no open work and no Task waiting on the user
   (``goals.needs_ideation``). Emitted once while the condition holds: the Coworld store's meta
   ``ideation_pending:<G-n>`` remembers it and is cleared when the Goal has an open Task again
   (or stops needing ideation for any other reason), so the next time it empties a new event
-  follows. A Goal due for parking is not also asked to ideate.
+  follows. An ongoing Goal also re-arms when work ends between scans. A Goal due for parking
+  is not also asked to ideate.
 * ``goal.park`` when ``ideation_rounds_without_progress`` reaches the Coworld setting
-  ``ideation.park_after_rounds``, once per stretch (meta ``park_pending:<G-n>``); the wake parks
+  ``ideation.park_after_rounds`` for outcome Goals, once per stretch; the wake parks
   the Goal with a reason and tells the user.
 * ``anti_stall`` once a day per Coworld with an active Goal, at the workspace setting
   ``anti_stall.hour`` (``HH:MM`` in America/Los_Angeles), in that Coworld's store, so its wake runs
@@ -34,7 +35,6 @@ if TYPE_CHECKING:  # pragma: no cover
     from research_core.watcher.context import TickContext
 
 LOCAL_ZONE = ZoneInfo("America/Los_Angeles")
-IDEATION_PENDING = "ideation_pending:"
 PARK_PENDING = "park_pending:"
 ANTI_STALL_LAST = "anti_stall_last"
 
@@ -55,8 +55,12 @@ def _goal_conditions(ctx: TickContext, report: dict[str, Any]) -> None:
         shown = goal["id"]
         n = parse_display_id(shown)[1]
         active = goal["status"] == "active"
-        rounds = goals_store.read(store, n)["ideation_rounds_without_progress"] if active else 0
-        park_due = active and rounds >= park_after
+        rounds = (
+            goals_store.read(store, n)["ideation_rounds_without_progress"]
+            if active and goal["kind"] == "outcome"
+            else 0
+        )
+        park_due = rounds >= park_after
         if _first_tick(store, f"{PARK_PENDING}{shown}", park_due):
             emit_event(
                 store,
@@ -71,14 +75,23 @@ def _goal_conditions(ctx: TickContext, report: dict[str, Any]) -> None:
                 },
             )
             report["park"].append(shown)
-        if _first_tick(store, f"{IDEATION_PENDING}{shown}", n in needs and not park_due):
-            emit_event(
-                store,
-                ctx.actor,
-                "goal.needs_ideation",
-                shown,
-                {"goal": shown, "title": goal["title"]},
-            )
+        key = f"{goals_store.IDEATION_PENDING}{shown}"
+        if n not in needs or park_due:
+            if store.get_meta(key) is not None:
+                store.delete_meta(key)
+            continue
+        revision = (
+            str(goals_store.ideation_revision(store, n)) if goal["kind"] == "ongoing" else "1"
+        )
+        if store.get_meta(key) != revision:
+            with store.tx(ctx.actor) as tx:
+                if n not in goals_store.needs_ideation(store):
+                    continue
+                if goal["kind"] == "ongoing":
+                    revision = str(goals_store.ideation_revision(store, n))
+                if store.get_meta(key) == revision:
+                    continue
+                goals_store.queue_ideation(tx, shown, goal["title"], revision)
             report["needs_ideation"].append(shown)
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from research_core.store import goals
+from research_core.store.registry import GOAL_KINDS
 from research_core.tools import _args as a
 from research_core.tools.base import ActionSpec, ToolCall, ToolSpec, tool
 
@@ -13,8 +14,13 @@ GOAL = a.string("The Goal, such as G-3.")
 STATUS = a.string("The Goal's status.", enum=["parked", "active", "completed", "abandoned"])
 # What create takes and update replaces.
 FIELDS = {
+    "kind": a.string(
+        "Use ongoing for a standing request to keep doing work. Keep the Goal active until "
+        "its stop condition is met. Use finite Tasks for each step and directives for constraints.",
+        enum=list(GOAL_KINDS),
+    ),
     "title": a.string("Short name of the outcome."),
-    "end_state": a.string("What must be true for the Goal to be complete."),
+    "end_state": a.string("Completion condition, or when to stop an ongoing commitment."),
     "reason": a.string("Why the Goal exists, usually quoting the user."),
     "description": a.string("Detail, in Markdown."),
     "judgement": a.string("How to judge the end state."),
@@ -31,6 +37,7 @@ def handle(call: ToolCall) -> dict:
             title=call.get("title"),
             end_state=call.get("end_state"),
             reason=call.get("reason"),
+            kind=call.get("kind") or "outcome",
             description=call.get("description") or "",
             judgement=call.get("judgement"),
             tags=tuple(call.get("tags") or ()),
@@ -75,7 +82,7 @@ SPEC = tool(
         actions=(
             ActionSpec(
                 "create",
-                "Create a Goal from the user's request.",
+                "Create a Goal for a requested outcome or an ongoing commitment.",
                 FIELDS,
                 ("title", "end_state", "reason"),
                 ORCHESTRATOR,

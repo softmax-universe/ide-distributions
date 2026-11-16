@@ -709,7 +709,7 @@ def test_complete_improvement_records_the_experiment_when_unset(
     assert done["experiment_id"] == experiment
 
 
-def test_complete_ideation_requires_two_to_five_proposals_for_the_goal(
+def test_complete_ideation_validates_proposals_for_the_goal(
     coworld_store, harness, researcher, goal
 ):
     task = claimed_task(coworld_store, harness, researcher, goal, type="ideation", ideation_round=1)
@@ -737,15 +737,12 @@ def test_complete_ideation_requires_two_to_five_proposals_for_the_goal(
         )
 
     with pytest.raises(StoreError) as info:
-        finish([proposals[0]])
-    assert "at least 2" in info.value.problems[0]
-    with pytest.raises(StoreError) as info:
         finish([proposals[0], elsewhere, approved, task["id"]])
     problems = info.value.problems
     assert any(elsewhere in p and "Goal" in p for p in problems)
     assert any(approved in p and "proposed" in p for p in problems)
     assert any(task["id"] in p and "itself" in p for p in problems)
-    assert finish(proposals)["status"] == "complete"
+    assert finish([proposals[0]])["status"] == "complete"
 
 
 def test_complete_ideation_counts_proposals_the_orchestrator_already_decided(
