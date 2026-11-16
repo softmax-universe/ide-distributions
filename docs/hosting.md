@@ -218,7 +218,9 @@ The image emits a typed `workspace_runtime_recovery` event before recycling, wit
 The packaged fault test records recovery elapsed seconds, container restart count, and validates the event.
 When it fails, the fault container's log is in the startup evidence as `recovery-container.log`.
 Other recycles, such as a failed AIDE consumer (`image/README.md`) or a failed `/status` read, emit
-no such event and are not counted.
+no such event and are not counted. The supervisor's `/status` read waits 40 seconds
+(`SEAM_TIMEOUT_S` in `image/aide.py`), so an answer that is only slow is not a failed read; an
+error answer, such as `database is locked`, still is.
 
 Standalone local `research serve` does not own the gateway's lifecycle. After stopping that gateway
 and its workers, use `research workspace recover --runtime-stopped` to acknowledge interruption.
