@@ -87,10 +87,7 @@ def identity_action(call: ToolCall) -> dict[str, Any]:
                 raise StoreError(["this session is not registered; identity writes are refused"])
             if not sessions.opened_by_human_chat(session) and session["kind"] != "wake":
                 raise StoreError(
-                    [
-                        "identity writes are allowed only in a chat the user opened from the IDE; "
-                        "this session was opened by another client"
-                    ]
+                    [_not_the_ide_chat(ctx.wstore, naming=name is not None or confirm)]
                 )
             if session["kind"] == "wake" and (cites or confirm or met or offered or name is None):
                 raise StoreError(["no user is present in a wake; do this in a chat with them"])
@@ -117,6 +114,27 @@ def identity_action(call: ToolCall) -> dict[str, Any]:
     except StoreError as error:
         raise ToolError(str(error)) from None
     return {"identity": identity.read(ctx.wstore), "wrote": wrote}
+
+
+def _not_the_ide_chat(wstore: Store, *, naming: bool) -> str:
+    """The refusal for an identity write from a session no human IDE client opened (a game, a
+    Task). For a name it also says where the user can set it, so the cogent tells them instead
+    of keeping the name somewhere that is not its identity."""
+    from research_core.store import identity
+
+    refusal = (
+        "identity writes are allowed only in a chat the user opened from the IDE; this session "
+        "was opened by another client, whose messages can carry other people's lines. "
+        "Nothing was saved."
+    )
+    if not naming:
+        return refusal
+    if identity.read(wstore)["name_confirmed"]:
+        return f"{refusal} The user already confirmed your name, so it cannot change anywhere."
+    return (
+        f"{refusal} Tell the user they can set or change your name by asking you in their IDE "
+        "chat. Do not record the name as a directive, a claim or a user-profile entry meanwhile."
+    )
 
 
 # --- change_complete --------------------------------------------------------------------------
@@ -480,7 +498,8 @@ SPEC = durable_tool(
                 "checked against the stored transcript; never a record id or a wake) is the "
                 "user's one rewrite, "
                 "then locked, and also names a cogent that has none; met_user with cites records "
-                "the first get-to-know-you chat; offer_made records the one rename offer.",
+                "the first get-to-know-you chat; offer_made records the one rename offer. "
+                "Writes work only in a chat the user opened from the IDE, not in a game.",
                 {
                     "name": a.string("Your own short name, one line."),
                     "confirm": a.boolean("The user kept the name you have (needs cites)."),
