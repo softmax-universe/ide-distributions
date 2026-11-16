@@ -71,6 +71,13 @@ bridge never writes them:
 
 `contract_version` is stamped too, so a block always carries it.
 
+The `client` recorded at `session-open` also decides who may name the cogent. Only a chat Session
+opened by a human IDE client (`HUMAN_CHAT_CLIENTS` in `research_core/store/sessions.py`) can set,
+confirm or change the cogent's name (`workspace.identity`): another client's user messages can
+carry other people's lines, so they cannot speak for the user. In any other chat the agent's
+briefing says the name can be set or changed only in the user's IDE chat, and a refused write
+tells the agent to say so to the user and not to keep the name as a directive or a profile entry.
+
 ## Limits and validation (A.7)
 
 The whole block is at most 16 KB as JSON and `client_data` at most 8 KB; `mode.name` and

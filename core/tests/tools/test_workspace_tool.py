@@ -410,10 +410,32 @@ def test_identity_writes_from_a_game_or_unknown_client_are_refused(
     ):
         refused = identity(call, "g1", **args)
         assert refused["ok"] is False and "identity writes are allowed only" in str(refused), args
+        # A refused name says where the user can set it; the other writes have nothing to add.
+        naming = "name" in args or "confirm" in args
+        assert ("asking you in their IDE chat" in str(refused)) is naming, args
+        assert ("Do not record the name as a directive" in str(refused)) is naming, args
     assert identity(call)["identity"]["name"] == "Pip"
     assert identity(call)["identity"]["name_confirmed"] is False
     # Reads still work there.
     assert identity(call, "g1")["identity"]["name"] == "Pip"
+    # Once the user has confirmed the name, the refusal no longer sends them to the IDE chat.
+    identity(call, confirm=True, cites=transcript("c1", "user", "Keep Pip"))
+    locked = identity(call, "g1", name="Kimi", cites=stranger)
+    assert locked["ok"] is False and "already confirmed your name" in str(locked)
+    assert "asking you in their IDE chat" not in str(locked)
+    assert identity(call)["identity"]["name"] == "Pip"
+
+
+def test_a_nameless_cogent_in_a_game_is_told_where_the_user_can_name_it(
+    call, register_session, transcript
+):
+    register_session("g1", "chat", client={"id": "some-game", "kind": "web"})
+    asked = transcript("g1", "user", "Call yourself Orbi")
+    for args in ({"name": "Orbi"}, {"name": "Orbi", "cites": asked}):
+        refused = identity(call, "g1", **args)
+        assert refused["ok"] is False and "Nothing was saved" in str(refused), args
+        assert "set or change your name by asking you in their IDE chat" in str(refused), args
+    assert identity(call, "g1")["identity"]["name"] is None
 
 
 def test_verify_cite_refuses_a_game_chat_even_without_the_tool_gate(

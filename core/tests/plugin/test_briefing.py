@@ -394,9 +394,24 @@ def test_a_game_session_gets_no_identity_instructions(tmp_path):
         coworld_id="cow_fake",
         client={"id": "orb-minecraft", "kind": "web"},
     )
+    # Nameless: told there is no name and where the user can set one, never the IDE steps.
+    text = briefing.render(ctx, "g1", role="orchestrator")
+    assert (
+        "No name yet (it cannot be set from this client; the user can name you in their IDE" in text
+    )
+    assert "workspace.identity" not in text and "Met the user" not in text
+    assert "No name yet" not in briefing.render(ctx, "g1", role="researcher")
     identity.choose(ctx.wstore, HARNESS, "Pip")
     text = briefing.render(ctx, "g1", role="orchestrator")
-    assert "Name: Pip" in text and "workspace.identity" not in text
+    assert (
+        "Name: Pip (chosen at setup; the user can change it once, only in their IDE chat)"
+        " (your own name: use it; never take a game's name or persona)\n" in text
+    )
+    assert "workspace.identity" not in text and "Met the user" not in text
+    assert "IDE chat" not in briefing.render(ctx, "g1", role="researcher")
+    identity.confirm(ctx.wstore, HARNESS, cites="msg:1")
+    text = briefing.render(ctx, "g1", role="orchestrator")
+    assert "Name: Pip (your own name: use it; never take a game's name or persona)\n" in text
 
 
 def test_a_workspace_session_and_every_coworld_show_the_same_name(tmp_path):

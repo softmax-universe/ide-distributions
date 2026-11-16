@@ -260,22 +260,27 @@ def _identity_lines(inputs: Inputs) -> list[str]:
     """The cogent's one workspace-level name and whether it has met the user (store.identity).
 
     The instructions (naming, the rename offer, the intro) are for the Orchestrator in a chat
-    with the user; a wake or the Researcher sees only the bare ``Name:`` line."""
+    the user opened from the IDE. Its chat through any other client (a game) is told only where
+    the user can set or change the name, since identity writes are refused there. A wake or the
+    Researcher sees only the bare ``Name:`` line."""
     from research_core.store import settings
 
     name = settings.get(inputs.wstore, "identity.name")
     from research_core.store import sessions
 
-    chat = (
+    any_chat = (
         inputs.role == "orchestrator"
         and inputs.session is not None
         and inputs.session.get("kind") == "chat"
-        and sessions.opened_by_human_chat(inputs.session)
     )
+    chat = any_chat and sessions.opened_by_human_chat(inputs.session)
+    elsewhere = any_chat and not chat
     lines = []
     if name:
         note = ""
-        if chat and not settings.get(inputs.wstore, "identity.name_confirmed"):
+        if elsewhere and not settings.get(inputs.wstore, "identity.name_confirmed"):
+            note = " (chosen at setup; the user can change it once, only in their IDE chat)"
+        elif chat and not settings.get(inputs.wstore, "identity.name_confirmed"):
             if settings.get(inputs.wstore, "identity.offer_made"):
                 note = " (chosen at setup; rename offer made)"
             else:
@@ -293,6 +298,11 @@ def _identity_lines(inputs: Inputs) -> list[str]:
         lines.append(
             "No name yet (setup chooses one; otherwise in your first chat with the user choose"
             " one with them: workspace.identity {name, cites})"
+        )
+    elif elsewhere:
+        lines.append(
+            "No name yet (it cannot be set from this client; the user can name you in their IDE"
+            " chat. Do not keep a name as a directive or profile note)"
         )
     if chat and not settings.get(inputs.wstore, "identity.met_user"):
         if _spoke_in_session(inputs):
