@@ -6,37 +6,41 @@ the bodies and the joins. ``docs/agent-telemetry.md`` says how to run it and wha
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator
+from itertools import groupby
+from operator import itemgetter
 from typing import Any
 
 from research_core.agent_telemetry.encoder import message_text
 from research_core.agent_telemetry.records import EMPTY_DIGEST, format_time
 
 SEARCH_PATH = "/api/v2/logs/events/search"
-# Datadog's largest page: 5000 answered 200 and 5001 a 400, "Limit can't be more than 5000",
-# on 2026-11-12.
-PAGE_LIMIT = 5000
-# 200 digests make a 14,000-character query. Datadog answered one of 140,000 on 2026-11-04.
-VALUES_PER_SEARCH = 200
+# The most rows whose answer fits in the 2 MB the token broker's ``POST /proxy`` allows:
+# docs/agent-telemetry.md, "Proof and cost", has the arithmetic.
+PROXY_PAGE_LIMIT = 99
+# 1,500 digests make a 105,000-character query. On 2026-11-12 Datadog answered searches of 1,500,
+# 2,000, 3,000 and 5,000 digest terms (up to 350,000 characters) with 200 and status ``done``. Those
+# matched no rows, so 1,500 leaves room for a search that does.
+VALUES_PER_SEARCH = 1500
 # Agent content stays in the ``main`` index for 15 days, so nothing older can be there.
 SEARCH_WINDOW_S = 15 * 24 * 3600
-# What a structured body refers to, besides its lists.
-_SINGLE_REFERENCES = (
-    "parent_manifest_digest",
-    "prompt_sections_digest",
-    "tool_list_digest",
-    "options_digest",
-)
 
 
 class AmbiguousSession(Exception):
     """More than one workspace has records under this Session ID."""
+
+
+class SearchRefused(Exception):
+    """Datadog or the broker answered a search with an error: ``HTTP <status>: <start of the
+    answer>``, which says what was wrong with the query, and a query holds only IDs and digests."""
 
 
 class IncompleteSearch(Exception):
@@ -44,44 +48,80 @@ class IncompleteSearch(Exception):
     warnings, so what it returned may be partial."""
 
 
-class LogsSearch:
-    """Logs search over the Standard indexes. It waits out a 429 for as long as Datadog says.
+class BrokerLogsSearch:
+    """Logs search over the Standard indexes, through the Softmax token broker's ``POST /proxy``,
+    which adds the ``datadog.content.read`` keys itself and never hands them out. Metta's
+    ``docs/specs/0156-broker-http-proxy.md`` defines the request and the answer. It waits out a
+    429 for as long as Datadog says.
 
     The time window is fixed when this is made, one per rebuild, and every search and page uses
     it: Datadog warns that a relative window such as ``now-15d`` can miss results across pages.
     """
 
     def __init__(
-        self, url: str, api_key: str, app_key: str, sleep: Callable[[float], None] = time.sleep
+        self,
+        broker_url: str,
+        token: str,
+        reason: str,
+        session_id: str,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        self._url = url.rstrip("/") + SEARCH_PATH
-        self._keys = {"DD-API-KEY": api_key, "DD-APPLICATION-KEY": app_key}
         self._sleep = sleep
         now = time.time()
         self._window = {"from": format_time(now - SEARCH_WINDOW_S), "to": format_time(now)}
+        self._url = broker_url.rstrip("/") + "/proxy"
+        # A hosted session's agent proxy adds the token to what it sends to the broker.
+        self._headers = {"Content-Type": "application/json"}
+        if token != "proxy-injected":
+            self._headers["Authorization"] = f"Bearer {token}"
+        self._request = {
+            "scope": "datadog.content.read",
+            "reason": reason,
+            "session_id": session_id,
+            "method": "POST",
+            "path": SEARCH_PATH,
+            "headers": {"Content-Type": "application/json"},
+        }
+
+    def _send(self, body: dict[str, Any]) -> tuple[int, dict[str, str], bytes]:
+        """One search: the status, headers and body of Datadog's answer, which the broker passes on
+        as ``upstream_status``, or of the broker's own refusal."""
+        payload = {
+            **self._request,
+            "body_b64": base64.b64encode(json.dumps(body).encode()).decode(),
+        }
+        request = urllib.request.Request(self._url, json.dumps(payload).encode(), self._headers)
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                answer = json.load(response)
+        except urllib.error.HTTPError as error:
+            return error.code, dict(error.headers), error.read()
+        data = base64.b64decode(answer["body_b64"])
+        return int(answer["upstream_status"]), answer["headers"], data
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
-        headers = {"Content-Type": "application/json", **self._keys}
         while True:
-            request = urllib.request.Request(self._url, json.dumps(body).encode(), headers)
-            try:
-                with urllib.request.urlopen(request, timeout=120) as response:
-                    return json.load(response)
-            except urllib.error.HTTPError as error:
-                if error.code != 429:
-                    raise
-                self._sleep(max(1.0, float(error.headers.get("X-RateLimit-Reset") or 1)))
+            status, headers, data = self._send(body)
+            if status == 429:
+                reset = {name.lower(): value for name, value in headers.items()}
+                wait = max(1.0, float(reset.get("x-ratelimit-reset") or 1))
+                print(f"rebuild: rate limited, waiting {wait:g} s", file=sys.stderr)
+                self._sleep(wait)
+            elif status >= 400:
+                detail = " ".join(data[:300].decode("utf-8", "replace").split())
+                raise SearchRefused(f"HTTP {status}: {detail}")
+            else:
+                return json.loads(data)
 
     def entries(self, query: str) -> Iterator[dict[str, Any]]:
         """Each log entry's own fields, which Datadog nests under ``attributes.attributes``."""
-        window = {**self._window, "storage_tier": "indexes"}
-        page: dict[str, Any] = {"limit": PAGE_LIMIT}
+        filters = {"query": query, **self._window, "storage_tier": "indexes"}
+        page: dict[str, Any] = {"limit": PROXY_PAGE_LIMIT}
         while True:
-            filters = {"query": query, **window}
             answer = self._post({"filter": filters, "page": page, "sort": "timestamp"})
             meta = answer.get("meta") or {}
             status = meta.get("status")
-            if status not in (None, "done"):
+            if status != "done":
                 raise IncompleteSearch(f"the search answered status {status!r}")
             # Datadog warns, even with status ``done``, when the results may be partial.
             if warnings := meta.get("warnings"):
@@ -103,7 +143,7 @@ def _any_of(field: str, values: Iterable[str]) -> str:
     return f"@{field}:(" + " OR ".join(_quoted(value) for value in values) + ")"
 
 
-def _batches(values: Iterable[str]) -> Iterator[list[str]]:
+def _batches(values: Iterable[Any]) -> Iterator[list[Any]]:
     ordered = sorted(values)
     for start in range(0, len(ordered), VALUES_PER_SEARCH):
         yield ordered[start : start + VALUES_PER_SEARCH]
@@ -126,7 +166,7 @@ class _Finder:
     """What has been found so far: records by ``event_id``, chunks by digest and index. These keys
     are what drops duplicates. ``missing`` holds what could not be read, by digest."""
 
-    def __init__(self, search: LogsSearch, session_id: str, workspace: str | None) -> None:
+    def __init__(self, search: BrokerLogsSearch, session_id: str, workspace: str | None) -> None:
         self.search = search
         self.session_ids = {session_id}
         self.workspaces = {workspace} if workspace else set()
@@ -157,41 +197,81 @@ class _Finder:
             for batch in _batches(new):
                 self._find("(" + " OR ".join(_any_of(name, batch) for name in names) + ")")
             for record in self.records.values():
-                linked = {record.get(name) for name in names} - {None}
-                if record.get("action") == "compaction" and linked & self.session_ids:
-                    self.session_ids |= linked
+                named = {record.get(name) for name in names} - {None}
+                if record.get("action") == "compaction" and named & self.session_ids:
+                    self.session_ids |= named
+                else:
+                    # After a compaction in place a record names the first ID and the live one.
+                    # Each leads to the other, so a lost compaction record cannot hide part of the
+                    # Session.
+                    aliases = {record.get("session_id"), record.get("hermes_session_id")} - {None}
+                    if aliases & self.session_ids:
+                        self.session_ids |= aliases
         # A retried request names only its admission, and a store event or a workspace tool's
         # record only the trace of the message it served. A record written before records named
         # their trace (retained for 15 days) names its run instead. A record with a Session ID
-        # was found above if it is this Session's, and ``owned`` drops it otherwise.
-        for field in ("admission_id", "otel_trace_id", "run_id"):
-            values = {r[field] for r in self.records.values() if self.owned(r) and field in r}
-            for batch in _batches(values):
-                self._find(f"{_any_of(field, batch)} -@session_id:*")
+        # was found above if it is this Session's, and ``owned`` drops it otherwise. A record
+        # found by one link can name another, so the searches repeat until none finds a new value.
+        # Each round is one search of all three fields, batched by the number of values.
+        links = ("admission_id", "otel_trace_id", "run_id")
+        linked: set[tuple[str, str]] = set()
+        while True:
+            owned = [r for r in self.records.values() if self.owned(r) and not self._caused(r)]
+            new = {(f, r[f]) for r in owned for f in links if f in r} - linked
+            if not new:
+                return
+            linked |= new
+            for batch in _batches(new):
+                terms = [
+                    _any_of(field, [value for _, value in pairs])
+                    for field, pairs in groupby(batch, key=itemgetter(0))
+                ]
+                self._find("(" + " OR ".join(terms) + ") -@session_id:*")
+
+    def _caused(self, record: dict[str, Any]) -> bool:
+        """A store event another Session caused on this one, such as ``task.assigned``. It is this
+        Session's, but its trace, run and admission are the other Session's, so no link follows it.
+        """
+        actor = record.get("reported_actor") or ""
+        return (
+            record.get("action") == "store_event"
+            and actor.startswith("session:")
+            and actor.removeprefix("session:") not in self.session_ids
+        )
 
     def owned(self, record: dict[str, Any]) -> bool:
         """A record with another Session's ID came here by a link, and is not this Session's."""
         session = record.get("session_id") or record.get("hermes_session_id")
         return session is None or session in self.session_ids
 
-    def load(self, digests: Iterable[str]) -> None:
-        """Find each object named, wherever it was first stored, and all that those name in turn."""
-        frontier = set(digests)
-        seen: set[str] = set()
+    def load(self, references: Iterable[tuple[str, str]]) -> None:
+        """Find each object named, wherever it was first stored, and all that those name in turn.
+
+        ``references`` are ``(digest, name)``. The name says whether an object refers to others,
+        not the kind it was stored as: the same bytes can be stored first as a tool's text.
+        """
+        frontier = {
+            (digest, "manifest" if name == "request_manifest" else None)
+            for digest, name in references
+        }
+        seen: set[tuple[str, str | None]] = set()
         while frontier:
             seen |= frontier
-            wanted = frontier - self.objects.keys()
+            wanted = {digest for digest, _ in frontier} - self.objects.keys()
             for batch in _batches(wanted):
                 self._find(_any_of("content_digest", batch))
             for digest in wanted:
                 self.read(digest)
-            frontier = {name for digest in frontier for name in self._names(digest)} - seen
+            frontier = {
+                named for digest, shape in frontier for named in self._names(digest, shape)
+            } - seen
 
     def read(self, digest: str) -> bytes | None:
         if digest not in self.objects:
             data, problems = None, [{"kind": "no_content", "digest": digest}]
-            if self.chunks.get(digest):
-                data, problems = _join_object(digest, self.chunks[digest])
+            # Taken out, so that a joined object is not also held as its chunks.
+            if chunks := self.chunks.pop(digest, None):
+                data, problems = _join_object(digest, chunks)
             self.objects[digest] = data
             if data is None:
                 self.missing[digest] = problems
@@ -208,15 +288,22 @@ class _Finder:
             self.parsed[digest] = json.loads(data) if data else None
         return self.parsed[digest]
 
-    def _names(self, digest: str) -> list[str]:
-        """What a structured object refers to. A native message or text refers to nothing."""
-        entries = self.chunks.get(digest)
-        kind = next(iter(entries.values()))["content_kind"] if entries else "part"
-        body = None if kind == "part" else self.json(digest)
-        if body is None:
+    def _names(self, digest: str, shape: str | None) -> list[tuple[str, str | None]]:
+        """What a manifest or tool list refers to, and the shape of each. Anything else, such as a
+        message, a text or a request's options, refers to nothing."""
+        body = self.json(digest) if shape else None
+        if not isinstance(body, dict):
             return []
-        one = [body[name] for name in _SINGLE_REFERENCES if name in body]
-        return [*one, *body.get("messages", ()), *body.get("tools", ())]
+        if shape == "tool_list":
+            return [(tool, None) for tool in body.get("tools", ())]
+        named: list[tuple[str, str | None]] = []
+        if "parent_manifest_digest" in body:
+            named.append((body["parent_manifest_digest"], "manifest"))
+        if "tool_list_digest" in body:
+            named.append((body["tool_list_digest"], "tool_list"))
+        leaves = ("prompt_sections_digest", "options_digest")
+        named += [(body[name], None) for name in leaves if name in body]
+        return named + [(message, None) for message in body.get("messages", ())]
 
 
 def _with_marker(message: dict[str, Any], marker: dict[str, Any]) -> dict[str, Any]:
@@ -301,13 +388,14 @@ def _source_chars(finder: _Finder, manifest: dict, request: dict, places: dict) 
         chars[rest] += len(text) - taken
 
     sections = finder.json(manifest.get("prompt_sections_digest")) or {}
-    for message in request["messages"]:
+    for position, message in enumerate(request["messages"]):
         text = message_text(message) or ""
         role = message.get("role")
         if role == "system":
+            # The sections point into the first message alone, the one the manifest describes.
             spans = [
                 (section["name"], section["byte_offset"], section["byte_length"])
-                for section in sections.get("sections", ())
+                for section in (sections.get("sections", ()) if position == 0 else ())
             ]
             add_spans(text, spans, "system_unattributed")
         elif role == "user":
@@ -370,7 +458,10 @@ def _of_attempt(record: dict[str, Any]) -> bool:
 _ATTEMPT_ENDS = ("response", "failed", "unread")
 
 
-def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> list[dict]:
+def _build_requests(
+    finder: _Finder, operations: list[dict], places: dict
+) -> tuple[list[dict], list[str]]:
+    """Each request, and the attempt IDs of those no record says the end of."""
     replies: dict[str, dict] = defaultdict(dict)
     # What a broken stream had shown, which Hermes can retry inside the same attempt.
     partials: dict[str, list] = defaultdict(list)
@@ -380,6 +471,7 @@ def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> li
         else:
             replies[record["model_attempt_id"]][record["stage"]] = record
     requests = []
+    unended: list[str] = []
     attempts = [r for r in operations if r["action"] == "model_attempt" and r["stage"] == "request"]
     for position, attempt in enumerate(attempts, start=1):
         entry = {"position": position, **attempt, "tools": []}
@@ -393,6 +485,8 @@ def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> li
         else:
             entry.update(_rebuild_request(finder, manifest_digest))
         stages = replies[attempt["model_attempt_id"]]
+        if not stages.keys() & _ATTEMPT_ENDS:
+            unended.append(attempt["model_attempt_id"])
         reply = stages.get("response", {})
         if reply:
             entry["response"] = {**reply, "message": finder.json(_ref(reply, "message"))}
@@ -414,7 +508,7 @@ def _build_requests(finder: _Finder, operations: list[dict], places: dict) -> li
         if "request" not in replies[attempt_id]:
             problem = {"kind": "reply_with_no_request", "model_attempt_id": attempt_id}
             finder.missing[attempt_id] = [problem]
-    return requests
+    return requests, unended
 
 
 def _scope(record: dict[str, Any]) -> str | None:
@@ -445,18 +539,19 @@ def _attach_tools(finder: _Finder, operations: list[dict], requests: list[dict])
     return unattached
 
 
-def _results_of_rows(operations: list[dict]) -> dict:
-    """Each tool result by its row ID. One with none goes by ``(_scope, tool_call_id)``, and when
-    several share that nothing says which is whose, so it holds ``None``."""
-    results: dict = {}
+def _results_of_rows(operations: list[dict]) -> tuple[dict[str, dict], dict[tuple, dict | None]]:
+    """Each tool result by its row ID, and each with none by ``(_scope, tool_call_id)``. When
+    several with no row ID share that, nothing says which is whose, so it holds ``None``."""
+    by_row: dict[str, dict] = {}
+    by_call: dict[tuple, dict | None] = {}
     for record in operations:
         if (record["action"], record["stage"]) == ("tool", "result"):
-            call = (_scope(record), record.get("tool_call_id"))
             if row := record.get("hermes_message_id"):
-                results[row] = record
+                by_row[row] = record
             else:
-                results[call] = None if call in results else record
-    return results
+                call = (_scope(record), record.get("tool_call_id"))
+                by_call[call] = None if call in by_call else record
+    return by_row, by_call
 
 
 def _unlisted_message(finder: _Finder, row: dict, result: dict | None) -> dict | None:
@@ -484,6 +579,9 @@ def _rows(finder: _Finder, operations: list[dict], requests: list[dict]) -> list
     last: dict[tuple[str, str], tuple[str, dict]] = {}
     row_of_call: dict[str, str] = {}
     for request in requests:
+        # An auxiliary call can carry the conversation's tool messages, capped, with no row IDs.
+        if request["model_attempt_id"].startswith("aux-"):
+            continue
         body = request["request"] or {"messages": ()}
         for position, message in enumerate(body["messages"]):
             listed = (request["message_digests"][position], message)
@@ -496,18 +594,26 @@ def _rows(finder: _Finder, operations: list[dict], requests: list[dict]) -> list
             if key[1]:
                 first.setdefault(key, listed)
                 last[key] = listed
-    results = _results_of_rows(operations)
+    results_by_row, results_by_call = _results_of_rows(operations)
     rows = []
     for record in operations:
         if record["action"] != "message":
             continue
         row_id = record.get("hermes_message_id")
-        entry = {**record, "hermes_message_id": row_id}
+        entry = dict(record)
         call = record.get("tool_call_id")
-        result = results.get(row_id) or results.get((_scope(record), call))
+        result = results_by_row.get(row_id) or results_by_call.get((_scope(record), call))
         key = ("row", row_id) if ("row", row_id) in first else ("call", call)
-        if key[0] == "call" and key in first and result:
-            if message_text(first[key][1]) != finder.text(_ref(result, "result")):
+        if key[0] == "call" and key in first:
+            # A call ID can come back on a new row. The row's own result says which it is, or,
+            # with none recorded, as at a guard halt, the text its commit holds.
+            listed_text = message_text(first[key][1])
+            if result:
+                text = finder.text(_ref(result, "result"))
+            else:
+                own = finder.json(_ref(record, "message"))
+                text = listed_text if own is None else message_text(own)
+            if listed_text != text:
                 key = None
         if key in first:
             entry["message"] = first[key][1]
@@ -521,14 +627,20 @@ def _rows(finder: _Finder, operations: list[dict], requests: list[dict]) -> list
     return rows
 
 
-def rebuild_session(search: LogsSearch, session_id: str, workspace: str | None = None) -> dict:
+def rebuild_session(
+    search: BrokerLogsSearch, session_id: str, workspace: str | None = None
+) -> dict:
     """The whole report. Raises ``AmbiguousSession`` when no one workspace can be chosen."""
     finder = _Finder(search, session_id, workspace)
     finder.find_session()
     owned = _order(record for record in finder.records.values() if finder.owned(record))
     operations = [record for record in owned if record["family"] == "operation"]
     contexts = [record for record in owned if record["family"] == "context"]
-    finder.load(r["digest"] for record in operations for r in record.get("content_refs", ()))
+    finder.load(
+        (ref["digest"], ref["name"])
+        for record in operations
+        for ref in record.get("content_refs", ())
+    )
     if not owned:
         finder.missing[session_id] = [{"kind": "no_records", "session_id": session_id}]
 
@@ -537,7 +649,7 @@ def rebuild_session(search: LogsSearch, session_id: str, workspace: str | None =
         if "target_digest" in record:
             place = (record["source_type"], record["byte_offset"], record["byte_length"])
             places[record["target_digest"]].append(place)
-    requests = _build_requests(finder, operations, places)
+    requests, unended = _build_requests(finder, operations, places)
     unattached = _attach_tools(finder, operations, requests)
     rows = _rows(finder, operations, requests)
     # Hermes retries a call under its one ``api_request_id`` and starts each attempt with its own
@@ -547,21 +659,31 @@ def rebuild_session(search: LogsSearch, session_id: str, workspace: str | None =
         for record in operations
         if (record["action"], record["stage"]) == ("model_request", "started")
     )
-    attempted = Counter(request.get("api_request_id") for request in requests)
+    # An auxiliary call has no ``model_request`` / ``started``, and may have no ``api_request_id``.
+    attempted = Counter(
+        request.get("api_request_id")
+        for request in requests
+        if not request["model_attempt_id"].startswith("aux-")
+    )
     for call, starts in started.items():
         if attempted[call] < starts:
             finder.missing[call] = [{"kind": "call_with_no_attempt", "api_request_id": call}]
+    # An attempt's records are under its request. Those of a lost request stay among the events,
+    # so what survives of them is printed.
+    in_requests = {request["model_attempt_id"] for request in requests}
     events = [
         _with_text(finder, record)
         for record in operations
-        if record["action"] not in ("tool", "message") and not _of_attempt(record)
+        if record["action"] not in ("tool", "message")
+        and not (_of_attempt(record) and record["model_attempt_id"] in in_requests)
     ]
-    # No record says how these ended: a kill, a cancel (Hermes's interrupt fires no hook), or a
-    # call still running. None of these is a loss, so they stay out of ``missing``.
-    unended = [r["model_attempt_id"] for r in requests if not r.keys() & _ATTEMPT_ENDS]
+    # ``unended``: no record says how these ended, as after a kill, a cancel (Hermes's interrupt
+    # fires no hook), a call still running, or a reply record that a full queue dropped or that was
+    # lost on the way. Nothing tells these apart, so they stay out of ``missing``.
     return {
         "session_id": session_id,
-        "workspace_id": next(iter(finder.workspaces), None),
+        # None when no record is this Session's, even for a workspace named with ``--workspace``.
+        "workspace_id": next(iter(finder.workspaces), None) if owned else None,
         "session_ids": sorted(finder.session_ids),
         "requests": requests,
         "unended_attempts": unended,

@@ -95,11 +95,11 @@ def test_a_real_session_gets_the_built_prompt_and_tools(captured):
     path = os.environ.get("IDE_TOOL_CALL_CONTEXT")
     if path:
         Path(path).write_text(json.dumps({r: asdict(c) for r, c in captured.items()}))
-    snapshot = json.loads(harness.HERMES_BUILTIN_TOOLS.read_text())
     for role, context in captured.items():
-        assert context.hermes_tools == snapshot, (
-            f"{role}: a real Session's Hermes tools no longer match hermes_builtin_tools.json; "
-            "regenerate it (see harness.py)"
+        assert context.hermes_tools == harness.hermes_builtins(role), (
+            f"{role}: a real Session's Hermes tools no longer match the snapshot "
+            "(hermes_builtin_tools.json, hermes_orchestrator_tools.json); regenerate it "
+            "(see harness.py)"
         )
 
 

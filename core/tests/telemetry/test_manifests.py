@@ -207,6 +207,54 @@ def test_each_request_redacts_only_what_is_new(stream_file, producer):
     assert rebuild_request(last["content_digest"], objects_of(records)) == request
 
 
+def test_text_repeated_in_one_request_is_redacted_once(stream_file, producer):
+    redactor = CountingRedactor()
+    writer = TelemetryWriter(stream_file, producer, redactor=redactor)
+    repeated = {"role": "user", "content": "y" * 50_000}
+    request = {"model": MODEL, "messages": [repeated, repeated, repeated]}
+    writer.capture_request(request, **attempt(0))
+    assert processed(writer, 5.0)
+    assert 50_000 <= sum(redactor.scanned) < 100_000
+
+    records = stored_records(stream_file)
+    [manifest] = [r for r in records if r.get("content_kind") == "request_manifest"]
+    assert rebuild_request(manifest["content_digest"], objects_of(records)) == request
+
+
+def test_a_committed_message_already_in_a_request_is_not_scanned_again(stream_file, producer):
+    redactor = CountingRedactor()
+    writer = TelemetryWriter(stream_file, producer, redactor=redactor)
+    user = {"role": "user", "content": "z" * 50_000}
+    writer.capture_request({"model": MODEL, "messages": [user]}, **attempt(0))
+    assert processed(writer, 5.0)
+    redactor.scanned.clear()
+    writer.capture_operation("message", "committed", session_id="ses_1", content={"message": user})
+    assert processed(writer, 5.0)
+    assert sum(redactor.scanned) < 1_000
+
+    records = stored_records(stream_file)
+    [committed] = [r for r in records if r.get("action") == "message"]
+    [request] = [r for r in records if r.get("stage") == "request"]
+    manifest = objects_of(records)[request["content_refs"][0]["digest"]]
+    assert committed["content_refs"][0]["digest"] == json.loads(manifest)["messages"][0]
+
+
+def test_a_string_sent_as_json_and_then_as_text_keeps_two_objects(writer, stream_file):
+    """A tool listed as the bare string ``"read_file"`` is stored as JSON, quotes and all. A tool
+    result with the same text is stored as text, and must not take the JSON object's digest."""
+    request = {
+        "model": MODEL,
+        "messages": [{"role": "user", "content": "u"}],
+        "tools": ["read_file"],
+    }
+    writer.capture_request(request, **attempt(1))
+    writer.capture_operation("tool", "result", session_id="ses_1", content={"result": "read_file"})
+    assert processed(writer, 5.0)
+    records = stored_records(stream_file)
+    [result] = [r for r in records if r.get("action") == "tool"]
+    assert objects_of(records)[result["content_refs"][0]["digest"]] == b"read_file"
+
+
 def test_every_manifest_describes_its_own_request(writer, stream_file):
     system = {"role": "system", "content": "s"}
     user = {"role": "user", "content": "u"}

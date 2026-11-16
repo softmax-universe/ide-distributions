@@ -66,6 +66,8 @@ PROTECTED_KEYS: dict[str, Any] = {
     "approvals.cron_mode": "approve",
     "approvals.single_query_mode": "approve",
     "approvals.unattended_mode": "approve",
+    # Hermes's notes store is off: standing instructions are directives and findings are claims.
+    # The user profile is set per role below.
     "memory.memory_enabled": False,
     "memory.user_profile_enabled": False,
     "tools.tool_search.enabled": "off",
@@ -121,6 +123,10 @@ PROTECTED_KEYS: dict[str, Any] = {
 # Orchestrator chats are long: compaction protects more of the head and tail and compacts less
 # aggressively, so the user's instructions stay word for word (design F.5).
 ORCHESTRATOR_PROTECTED_KEYS: dict[str, Any] = {
+    # The Orchestrator keeps Hermes's user profile (USER.md, the `memory` tool with target
+    # `user`): its own picture of the person it works for, in every Session's prompt whatever the
+    # Coworld. Directives hold only what the user said, and claims belong to one Coworld.
+    "memory.user_profile_enabled": True,
     "compression.protect_first_n": 6,
     "compression.protect_last_n": 30,
     "compression.threshold": 0.6,

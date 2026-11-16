@@ -484,6 +484,51 @@ print("PASS")
     assert "PASS" in result.stdout
 
 
+USER_PROFILE_SCRIPT = r"""
+import json
+import model_tools
+from hermes_cli.config import load_config
+from tools.memory_tool import MemoryStore, get_builtin_memory_store_flags, memory_tool
+config = load_config()
+flags = get_builtin_memory_store_flags(config)
+names = {tool["function"]["name"]: tool["function"] for tool in model_tools.get_tool_definitions(
+    enabled_toolsets=["hermes-api-server"],
+    disabled_toolsets=config["agent"]["disabled_toolsets"], quiet_mode=True)}
+if flags == (False, False):
+    assert "memory" not in names, sorted(names)
+    print("PASS none")
+    raise SystemExit
+assert flags == (False, True), flags
+assert names["memory"]["parameters"]["properties"]["target"]["enum"] == ["user"], names["memory"]
+def store():
+    opened = MemoryStore(memory_enabled=False, user_profile_enabled=True)
+    opened.load_from_disk()
+    return opened
+add = [{"action": "add", "content": "Builds voice games."}]
+saved = json.loads(memory_tool(target="user", store=store(), operations=add))
+assert saved.get("success"), saved
+refused = json.loads(memory_tool(target="memory", store=store(), operations=add))
+assert not refused.get("success"), refused
+assert "Builds voice games." in store().format_for_system_prompt("user")
+print("PASS user")
+"""
+
+
+def test_only_the_orchestrator_keeps_a_user_profile(
+    hermes_bin, host, prepared_orchestrator, prepared_researcher
+):
+    """Hermes's ``memory`` tool, narrowed to the user profile, reaches the Orchestrator alone; a
+    saved fact lands in its ``memories/USER.md`` and is in the next Session's prompt block."""
+    result = run([hermes_python(hermes_bin), "-c", USER_PROFILE_SCRIPT], host.env("orchestrator"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS user" in result.stdout
+    profile = host.profile("orchestrator") / "memories" / "USER.md"
+    assert "Builds voice games." in profile.read_text()
+    result = run([hermes_python(hermes_bin), "-c", USER_PROFILE_SCRIPT], host.env("researcher"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS none" in result.stdout
+
+
 def test_prepared_config_prunes_an_old_tool_result_during_one_turn(
     hermes_bin, host, prepared_orchestrator, tmp_path
 ):

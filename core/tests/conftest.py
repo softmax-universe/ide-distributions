@@ -37,5 +37,4 @@ def stream_file(tmp_path, monkeypatch):
 def no_writer_left_bound():
     """A process has one telemetry writer, and many tests here never shut their server down."""
     yield
-    if observed._binding is not None:
-        observed.unbind(observed._binding.writer)
+    observed._binding = None

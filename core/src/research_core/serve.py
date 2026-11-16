@@ -52,7 +52,6 @@ import socket
 import subprocess
 import threading
 import time
-import traceback
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager, nullcontext
@@ -90,7 +89,7 @@ from research_core.store import cli as store_cli
 from research_core.store._common import parse_display_id, parse_iso
 from research_core.store.actors import Actor
 from research_core.store.db import Store, change_version, wait_for_change
-from research_core.store.errors import NotFound, StoreError
+from research_core.store.errors import IdReused, NotFound, StoreError
 from research_core.store.registry import GOAL, TASK, record_from_row
 from research_core.telemetry import correlation, process_context, propagator, span
 from research_core.watcher import context, hermes_api
@@ -555,6 +554,7 @@ class SeamServer:
                         HTTPStatus.CONFLICT,
                         "a session's Coworld and league cannot change",
                         kind="scope_mismatch",
+                        code="forbidden",
                     )
             registration = intake.OpenRegistration(
                 profile=self.profile,
@@ -600,6 +600,17 @@ class SeamServer:
         """Confirm a durable input once; dispatch serially with Hermes's durable run key."""
         current = trace.get_current_span()
         session_id = _text(body, "session_id")
+        raw_message = body.get("message")
+        if (
+            isinstance(raw_message, dict)
+            and isinstance(raw_message.get("content"), str)
+            and len(raw_message["content"]) > 50000
+        ):
+            raise Refused(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "Message text exceeds 50000 characters",
+                code="too_large",
+            )
         message = UserMessage.model_validate(body["message"])
         content = message.root["content"]
         text = (
@@ -607,6 +618,12 @@ class SeamServer:
             if isinstance(content, str)
             else "\n".join(part["text"] for part in content if part["type"] == "text")
         )
+        if len(text) > 50000:
+            raise Refused(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "Message text exceeds 50000 characters",
+                code="too_large",
+            )
         actor = _actor(body.get("actor"))
         op_id = str(UUID(_text(body, "op_id")))
         current.set_attribute("op.id", op_id)
@@ -898,43 +915,65 @@ class SeamServer:
     def message_context(self, body: dict) -> dict:
         """Join application metadata by native row identity, never by parsing message text."""
         session_id = _text(body, "session_id")
-        with self.stores() as stores:
-            admissions_by_message = {
-                row["native_message_id"]: (
-                    json.loads(row["payload"])["context"],
-                    json.loads(row["request"])["message"]["content"],
-                )
-                for row in stores.wstore.q(
-                    "SELECT native_message_id,payload,request FROM client_admissions"
-                    " WHERE session_id=? AND native_message_id IS NOT NULL AND origin='client'",
-                    (session_id,),
-                )
-            }
-            followup_messages = {
-                row["native_message_id"]
-                for row in stores.wstore.q(
-                    "SELECT native_message_id FROM client_admissions"
-                    " WHERE session_id=? AND origin='followup'",
-                    (session_id,),
-                )
-            }
-            return {
-                "data": [
+        with self.stores() as stores, stores.wstore.read_tx():
+            admissions_by_message: dict[int, tuple[Any, Any]] = {}
+            followup_messages: set[int] = set()
+            direct_requests: dict[int, str] = {}
+            for row in stores.wstore.q(
+                "SELECT op_id,native_message_id,origin,payload,request FROM client_admissions"
+                " WHERE session_id=? AND native_message_id IS NOT NULL",
+                (session_id,),
+            ):
+                native_id = row["native_message_id"]
+                direct_requests[native_id] = row["op_id"]
+                if row["origin"] == "client":
+                    admissions_by_message[native_id] = (
+                        json.loads(row["payload"])["context"],
+                        json.loads(row["request"])["message"]["content"],
+                    )
+                elif row["origin"] == "followup":
+                    followup_messages.add(native_id)
+            call_requests: dict[str, str] = {}
+            for row in stores.wstore.q(
+                "SELECT re.request_id,json_extract(re.event,'$.call_id') AS call_id"
+                " FROM request_events re"
+                " JOIN client_admissions ca ON ca.op_id=re.request_id"
+                " WHERE ca.session_id=? AND re.kind IN ('tool.started','tool.completed')",
+                (session_id,),
+            ):
+                call_id = row["call_id"]
+                if isinstance(call_id, str):
+                    call_requests[call_id] = row["request_id"]
+            data = []
+            for message in body["data"]:
+                msg_id = message.get("id")
+                req_id = direct_requests.get(msg_id)
+                if req_id is None:
+                    tool_call_id = message.get("tool_call_id")
+                    if isinstance(tool_call_id, str):
+                        req_id = call_requests.get(tool_call_id)
+                if req_id is None and isinstance(message.get("tool_calls"), list):
+                    for tc in message["tool_calls"]:
+                        if isinstance(tc, dict) and isinstance(tc.get("id"), str):
+                            if tc["id"] in call_requests:
+                                req_id = call_requests[tc["id"]]
+                                break
+                data.append(
                     {
                         **message,
                         **(
-                            {"content": admissions_by_message[message["id"]][1]}
-                            if message["id"] in admissions_by_message
+                            {"content": admissions_by_message[msg_id][1]}
+                            if msg_id in admissions_by_message
                             else {}
                         ),
-                        **({"runtime_input": True} if message["id"] in followup_messages else {}),
-                        "client_context": admissions_by_message[message["id"]][0]
-                        if message["id"] in admissions_by_message
+                        **({"runtime_input": True} if msg_id in followup_messages else {}),
+                        **({"request_id": req_id} if req_id is not None else {}),
+                        "client_context": admissions_by_message[msg_id][0]
+                        if msg_id in admissions_by_message
                         else None,
                     }
-                    for message in body["data"]
-                ]
-            }
+                )
+            return {"data": data}
 
     def message_event(self, body: dict) -> dict:
         """Append one AIDE event to a message's log; the runtime pushes it only after this."""
@@ -956,6 +995,8 @@ class SeamServer:
             )
 
     def message_cancel(self, body: dict) -> dict:
+        """Cancel a chat admission: settle queued/waiting rows cleanly and stop any live run,
+        stopping the shared host run when cancelling a merged steered follow-up."""
         op_id = str(UUID(_text(body, "op_id")))
         with self._deliver_lock, self.stores() as stores:
             row = stores.wstore.one(
@@ -963,23 +1004,30 @@ class SeamServer:
             )
             if row is None:
                 raise Refused(HTTPStatus.NOT_FOUND, "Unknown message admission")
-            if row["dispatch_started"] and row["delivery_mode"] == "steer":
-                # Its run is another admission's: stopping it would end that request too.
-                raise Refused(HTTPStatus.CONFLICT, "The message was merged into a live run")
-            if row["status"] in {"queued", "running"}:
+            active = row["status"] in {"queued", "running"}
+            run_id = row["run_id"] or row["target_run_id"]
+            if active:
                 with stores.wstore.tx(_actor(body.get("actor"))) as tx:
                     tx.execute(
                         "UPDATE client_admissions SET cancel_requested=1 WHERE op_id=?", (op_id,)
                     )
+                    if row["delivery_mode"] == "steer" and row["dispatch_started"] and run_id:
+                        # Stopping the shared run cancels both the follow-up and its host.
+                        tx.execute(
+                            "UPDATE client_admissions SET cancel_requested=1"
+                            " WHERE run_id=? AND status IN ('queued','running')",
+                            (run_id,),
+                        )
                     if not row["dispatch_started"]:
                         tx.execute(
-                            "UPDATE client_admissions SET status='cancelled' WHERE op_id=?",
+                            "UPDATE client_admissions SET status='cancelled',resume_after=NULL"
+                            " WHERE op_id=?",
                             (op_id,),
                         )
                     tx.event("client.cancel_requested", op_id, {})
-            if row["run_id"]:
-                self.hermes.stop(row["run_id"], profile=self.profile)
-            return {"op_id": op_id, "stop_requested": True}
+                if run_id:
+                    self.hermes.stop(run_id, profile=self.profile)
+            return {"op_id": op_id, "stop_requested": active}
 
     def input_response(self, op_id: str) -> dict:
         """The input response a client applied under ``op_id``, or ``request: null``."""
@@ -998,7 +1046,11 @@ class SeamServer:
             if row is None:
                 tx.event("client.input_responded", op_id, request)
             elif json.loads(row["payload"]) != request:
-                raise Refused(HTTPStatus.BAD_REQUEST, "op_id was already used for different input")
+                raise Refused(
+                    HTTPStatus.CONFLICT,
+                    "op_id was already used for different input",
+                    code="id_reused",
+                )
         return {"op_id": op_id, "replayed": row is not None}
 
     def store_apply(self, body: dict) -> dict:
@@ -1021,7 +1073,13 @@ class SeamServer:
                 seq = stores.by_kind(kind).last_seq()
         except store_cli.Refusal as error:
             raise Refused(HTTPStatus.BAD_REQUEST, error.error, problems=error.problems) from None
+        except NotFound as error:
+            raise Refused(
+                HTTPStatus.NOT_FOUND, f"{op} refused", code="not_found", problems=error.problems
+            ) from None
         except StoreError as error:
+            if op == "tasks.abandon" and "only an open Task" in str(error):
+                return {"ok": True, "op": op, "store": "coworld", "record": None, "seq": 0}
             raise Refused(
                 HTTPStatus.BAD_REQUEST, f"{op} refused", problems=error.problems
             ) from None
@@ -1083,6 +1141,7 @@ class SeamServer:
                                 HTTPStatus.CONFLICT,
                                 "this session belongs to a different Coworld or league",
                                 kind="scope_mismatch",
+                                code="forbidden",
                             )
                         selected = [session]
                     else:
@@ -1106,6 +1165,7 @@ class SeamServer:
                         )
                     return {
                         "store": "workspace",
+                        "epoch": stores.wstore.get_meta("created"),
                         "seq": stores.wstore.last_seq(),
                         "records": records,
                     }
@@ -1119,22 +1179,45 @@ class SeamServer:
         if resource not in specs:
             raise Refused(HTTPStatus.BAD_REQUEST, "Board resource must be tasks or goals")
         spec = specs[resource]
+        prefix = f"{spec.prefix}-"
         with self.stores(coworld_id) as stores:
             coworlds.read(stores.wstore, coworld_id)
             store = self.store_for(stores, "coworld")
             with store.read_tx():
+                revision_sql = (
+                    "COALESCE((SELECT MAX(seq) FROM events WHERE subject = ? || id), 0) AS revision"
+                )
                 if item_id is None:
-                    rows = store.q(f"SELECT * FROM {spec.table} ORDER BY rowid")
+                    rows = store.q(
+                        f"SELECT *, {revision_sql} FROM {spec.table} ORDER BY rowid",
+                        (prefix,),
+                    )
                 else:
-                    kind, number = parse_display_id(item_id)
+                    try:
+                        kind, number = parse_display_id(item_id)
+                    except ValueError:
+                        raise Refused(
+                            HTTPStatus.NOT_FOUND, "No such board item", code="not_found"
+                        ) from None
                     if kind != resource[:-1]:
                         raise Refused(
-                            HTTPStatus.BAD_REQUEST, "Item ID does not match the board resource"
+                            HTTPStatus.NOT_FOUND,
+                            "Item ID does not match the board resource",
+                            code="not_found",
                         )
-                    rows = store.q(f"SELECT * FROM {spec.table} WHERE id = ?", (number,))
+                    rows = store.q(
+                        f"SELECT *, {revision_sql} FROM {spec.table} WHERE id = ?",
+                        (prefix, number),
+                    )
                 return {
+                    "epoch": store.get_meta("created"),
                     "seq": store.last_seq(),
-                    "records": {resource: [record_from_row(spec, row) for row in rows]},
+                    "records": {
+                        resource: [
+                            record_from_row(spec, row) | {"revision": row["revision"]}
+                            for row in rows
+                        ]
+                    },
                 }
 
     def run_status(self, run_id: str) -> dict:
@@ -1298,6 +1381,7 @@ class SeamServer:
                     HTTPStatus.CONFLICT,
                     f"context.{field} differs from this session; open a new session",
                     kind="scope_mismatch",
+                    code="forbidden",
                 )
             if expected is not None and (field != "scope" or "scope" in declared):
                 block[field] = expected
@@ -1458,18 +1542,21 @@ class _Handler(BaseHTTPRequestHandler):
         elif isinstance(error, ValueError):
             status = HTTPStatus.BAD_REQUEST
             body = {"ok": False, "error": str(error), "problems": []}
+        elif isinstance(error, IdReused):
+            status = HTTPStatus.CONFLICT
+            body = {
+                "ok": False,
+                "error": str(error),
+                "problems": list(error.problems),
+                "code": "id_reused",
+            }
         elif isinstance(error, StoreError):
             status = HTTPStatus.NOT_FOUND if isinstance(error, NotFound) else HTTPStatus.BAD_REQUEST
             body = {"ok": False, "error": str(error), "problems": list(error.problems)}
         else:
             log.exception("request failed: %s %s", self.command, self.path)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
-            body = {
-                "ok": False,
-                "error": f"{type(error).__name__}: {error}",
-                "problems": [],
-                "traceback": traceback.format_exc()[-2000:],
-            }
+            body = {"ok": False, "error": "Internal server error", "problems": []}
         if record is not None:
             phrase = HTTPStatus(status).phrase.lower().replace(" ", "_")
             record(status, reason=body.get("kind") or body.get("code") or phrase)

@@ -21,7 +21,6 @@ from logging.handlers import QueueHandler, QueueListener
 
 from opentelemetry import trace
 from opentelemetry.context import Context
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import OTELResourceDetector, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import (
@@ -93,10 +92,10 @@ class DroppingQueueHandler(QueueHandler):
 
     def enqueue(self, record: logging.LogRecord) -> None:
         # ``Handler.handle`` holds this handler's lock, and only the listener takes records out.
-        if self.queue.full():
-            self.dropped += 1
-        else:
+        try:
             self.queue.put_nowait(record)
+        except queue.Full:
+            self.dropped += 1
 
 
 class DropReportingListener(QueueListener):
@@ -160,8 +159,13 @@ def tracer() -> trace.Tracer:
                 # A one-shot command must not start exporters or flush them at exit.
                 provider: TracerProvider | trace.NoOpTracerProvider = trace.NoOpTracerProvider()
             else:
+                # First and on its own, so a logging failure leaves tracing on. Neither one may
+                # fail application work.
                 try:
                     configure_logging()
+                except Exception:
+                    pass
+                try:
                     provider = TracerProvider(
                         shutdown_on_exit=False,
                         resource=OTELResourceDetector()
@@ -201,6 +205,11 @@ def tracer() -> trace.Tracer:
                 ):
                     try:
                         if isinstance(provider, TracerProvider):
+                            # Imported here: it costs about 30 ms, and most processes export none.
+                            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                                OTLPSpanExporter,
+                            )
+
                             provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
                     except Exception:
                         # Keep console diagnostics when only the remote exporter is invalid.
@@ -239,13 +248,11 @@ def span(name: str, *, context: Context | None = None, **attributes) -> Iterator
         record_exception=False,
         set_status_on_exception=False,
     ) as current:
-        completed = False
         try:
             yield current
-            completed = True
-        finally:
-            if not completed:
-                current.set_status(StatusCode.ERROR)
+        except BaseException:
+            current.set_status(StatusCode.ERROR)
+            raise
 
 
 def process_env(env: Mapping[str, str]) -> dict[str, str]:

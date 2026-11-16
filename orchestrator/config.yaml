@@ -1,11 +1,12 @@
 # Shipped defaults. prepare.py re-applies the keys the profile machinery relies on at every
 # start (research_core/prepare.py PROTECTED_KEYS) and removes retired keys; every other value
 # the owner changes is kept across `hermes profile update`.
-# Hermes memory is off: standing instructions are directive records shown in the briefing, so
-# compaction cannot lose them (design §9).
+# Hermes's notes store is off: standing instructions are directive records shown in the briefing,
+# so compaction cannot lose them (design §9). The user profile is on: it is the Orchestrator's own
+# picture of the user, kept across Sessions and Coworlds (the soul's "Know your user").
 memory:
   memory_enabled: false
-  user_profile_enabled: false
+  user_profile_enabled: true
 # Approvals are off and there is no deny list (design C.4). The per-context modes are backstops
 # so an unattended run approves rather than blocks if the mode is ever reset.
 approvals:

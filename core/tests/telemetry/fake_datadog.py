@@ -8,6 +8,7 @@ line of JSON becomes its attributes, and anything else is text under the contain
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import threading
@@ -118,20 +119,23 @@ class FakeDatadog:
     """``POST /api/v2/logs/events/search``, holding what intake took.
 
     ``rate_limit_next`` answers that many searches with a 429, as Datadog words it. ``status`` is
-    what each answer's ``meta.status`` says: ``timeout`` when Datadog ran out of time, and with
-    ``None`` an answer has no status. ``warnings`` is what each answer's ``meta.warnings`` says, a
-    list of ``{code, title, detail}``, and with ``None`` an answer has none.
+    what each answer's ``meta.status`` says, ``timeout`` when Datadog ran out of time.
+    ``warnings`` is what each answer's ``meta.warnings`` says, a list of ``{code, title, detail}``,
+    and with ``None`` an answer has none.
     """
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.entries: list[dict[str, Any]] = []
-        self.bytes_taken = 0
         self.searches: list[dict[str, Any]] = []
         self.rate_limit_next = 0
         self.rate_limited = 0
         self.status = "done"
         self.warnings: list[dict[str, str]] | None = None
+        # A hosted session's agent proxy adds the token to what goes to the broker.
+        self.agent_proxy_adds_token = False
+        # The broker's own 429, for this many requests.
+        self.broker_rate_limit_next = 0
         datadog = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -151,6 +155,7 @@ class FakeDatadog:
                 self.end_headers()
                 self.wfile.write(data)
 
+        self.broker = self._serve_broker()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         # Avoid a half-second shutdown poll in each function-scoped fixture.
@@ -159,14 +164,13 @@ class FakeDatadog:
         ).start()
 
     def close(self) -> None:
-        self.server.shutdown()
-        self.server.server_close()
+        for server in (self.server, self.broker):
+            server.shutdown()
+            server.server_close()
 
     def take_lines(self, lines: Iterable[bytes]) -> None:
         """What the Agent collected from a container's stream."""
-        lines = list(lines)
         with self.lock:
-            self.bytes_taken += sum(len(line) for line in lines)
             self.entries.extend(entry_of(line) for line in lines)
 
     def take(self, entries: Iterable[dict[str, Any]]) -> None:
@@ -211,12 +215,88 @@ class FakeDatadog:
         start = int(body["page"].get("cursor") or 0)
         page = matched[start : start + limit]
         after = start + limit
-        meta: dict[str, Any] = {} if self.status is None else {"status": self.status}
+        meta: dict[str, Any] = {"status": self.status}
         if self.warnings is not None:
             meta["warnings"] = self.warnings
         if after < len(matched):
             meta["page"] = {"after": str(after)}
         return 200, {"data": [self._row(entry) for entry in page], "meta": meta}, {}
+
+    def broker_url(self) -> str:
+        """The URL of the token broker in front of this search."""
+        return f"http://127.0.0.1:{self.broker.server_address[1]}"
+
+    def search(self, sleep: Any = None) -> Any:
+        """The rebuild's search, through this search's token broker."""
+        from research_core.agent_telemetry.rebuild import BrokerLogsSearch
+
+        waits = {"sleep": sleep} if sleep else {}
+        return BrokerLogsSearch(
+            self.broker_url(), "tbk_test", "a test rebuild", "session-1", **waits
+        )
+
+    def _serve_broker(self) -> ThreadingHTTPServer:
+        """Start the token broker's ``POST /proxy`` in front of this search, as metta's spec 0156
+        and the broker on 2026-11-13 define it. It takes the token ``tbk_test``
+        and the scope ``datadog.content.read``, adds the keys, and refuses an answer over 2 MB."""
+        datadog = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                status, answer = datadog._proxy(self.path, self.headers, request)
+                data = json.dumps(answer).encode()
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        broker = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(
+            target=broker.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+        ).start()
+        return broker
+
+    def _proxy(self, path: str, headers: Any, request: dict[str, Any]) -> tuple[int, Any]:
+        if path != "/proxy":
+            return 404, {"detail": "Not Found"}
+        if self.broker_rate_limit_next > 0:
+            self.broker_rate_limit_next -= 1
+            return 429, {"detail": "rate limited"}
+        authorization = headers.get("Authorization")
+        if authorization is None and self.agent_proxy_adds_token:
+            authorization = "Bearer tbk_test"
+        if authorization != "Bearer tbk_test":
+            return 401, {"detail": "invalid token"}
+        if request.get("scope") != "datadog.content.read" or request.get("method") != "POST":
+            return 403, {"detail": "method_not_allowed_for_scope"}
+        if not 5 <= len(request.get("reason") or "") <= 1000:
+            return 422, {"detail": "reason"}
+        if not re.fullmatch(r"[A-Za-z0-9-]{8,64}", request.get("session_id") or ""):
+            return 422, {"detail": "session_id"}
+        keyed = {**request["headers"], "DD-API-KEY": "a", "DD-APPLICATION-KEY": "b"}
+        body = json.loads(base64.b64decode(request["body_b64"]))
+        status, answer, answer_headers = self.answer(request["path"], keyed, body)
+        data = json.dumps(answer).encode()
+        if len(data) > 2_097_152:
+            return 502, {"detail": "upstream_response_too_large"}
+        # Datadog's headers as the broker passes them on: lower case.
+        answer_headers = {name.lower(): value for name, value in answer_headers.items()}
+        return 200, {
+            "request_id": "req_test",
+            "status": "approved",
+            "scope": request["scope"],
+            "tier": "auto",
+            "upstream_status": status,
+            "headers": answer_headers,
+            "body_b64": base64.b64encode(data).decode(),
+            "duration_ms": 1,
+        }
 
     @staticmethod
     def _row(entry: dict[str, Any]) -> dict[str, Any]:

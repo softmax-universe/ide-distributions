@@ -132,6 +132,9 @@ def test_protected_keys_for_role_substitutes_the_role():
     assert researcher["known_plugin_toolsets.cron"] == ["ide-researcher"]
     assert orchestrator["approvals.mode"] == "off"
     assert orchestrator["memory.memory_enabled"] is False
+    assert orchestrator["memory.user_profile_enabled"] is True
+    assert researcher["memory.memory_enabled"] is False
+    assert researcher["memory.user_profile_enabled"] is False
     assert orchestrator["tools.tool_search.enabled"] == "off"
     assert orchestrator["cron.catch_up_missed"] is True
     for keys in (orchestrator, researcher):

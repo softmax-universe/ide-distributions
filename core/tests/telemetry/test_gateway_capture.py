@@ -473,6 +473,24 @@ def test_auxiliary_calls_outside_a_turn_and_those_without_a_reply(capture, write
     assert _operations(records, "model_attempt", "unread")[0]["outcome"] == "streamed"
 
 
+def test_an_auxiliary_request_over_hermess_cap_or_without_messages_is_kept(
+    capture, writer, stream_file
+):
+    """Hermes's ``_sanitize_hook_payload`` replaces a request over 50,000 characters with a
+    preview and no ``body``. A Responses-API body names ``input`` in place of ``messages``."""
+    capped = {"_truncated": True, "original_type": "dict", "preview": '{"method": "POST", "bo'}
+    capture.pre_auxiliary_call(aux_task="compression", request=capped, started_at=STARTED)
+    responses = {"model": "m", "input": "Summarize the notes"}
+    capture.pre_auxiliary_call(
+        aux_task="title", request={"method": "POST", "body": responses}, started_at=STARTED + 1
+    )
+    records = _flushed(writer, stream_file)
+    assert len(_operations(records, "model_attempt", "request")) == 2
+    stored = b"".join(objects_of(records).values())
+    assert b'"preview":"{\\"method\\": \\"POST\\", \\"bo"' in stored
+    assert b'"input":"Summarize the notes"' in stored
+
+
 def test_approvals_are_recorded_with_their_text_redacted(capture, writer, stream_file):
     command = f"curl -H 'key: {HERMES_STYLE_SECRET}' example.com"
     capture.pre_approval_request(
@@ -487,6 +505,19 @@ def test_approvals_are_recorded_with_their_text_redacted(capture, writer, stream
     assert b"needs a look" in objects_of(records)[_digest(requested, "description")]
     decided = _operations(records, "approval", "decided")[0]
     assert decided["outcome"] == "deny" and decided["reason"] == "user"
+
+
+def test_a_tool_call_with_nan_or_infinity_in_its_arguments_keeps_its_record(
+    capture, writer, stream_file
+):
+    """Hermes reads arguments with ``json.loads``, which takes ``NaN`` and ``Infinity``, and
+    canonical JSON allows neither, so they are kept as text."""
+    args = json.loads('{"x": NaN, "y": [Infinity, -Infinity], "z": 1.5}')
+    capture.post_tool_call(tool_name="calc", args=args, result="{}", session_id="ses_1")
+    records = _flushed(writer, stream_file)
+    [completed] = _operations(records, "tool", "completed")
+    arguments = json.loads(objects_of(records)[_digest(completed, "arguments")])
+    assert arguments == {"x": "nan", "y": ["inf", "-inf"], "z": 1.5}
 
 
 def test_lifecycle_hooks_leave_records(capture, writer, stream_file):

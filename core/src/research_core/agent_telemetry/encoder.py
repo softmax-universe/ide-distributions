@@ -1,7 +1,7 @@
 """Turn one capture into lines on the stream: redaction, hashing, manifests, chunks, the write.
 
-The writer's thread calls this. It is the only place that redacts, so raw text never reaches the
-stream.
+One thread at a time calls this: the writer's thread, or a short command's caller under its lock.
+It is the only place that redacts, so raw text never reaches the stream.
 
 A request becomes a manifest that lists it by reference. Bodies are sent once by digest, and each
 manifest after the first names only the messages that are new. Cache markers sit in the manifest and
@@ -30,8 +30,6 @@ from research_core.agent_telemetry.redaction import Redactor, mask_softmax_token
 from research_core.agent_telemetry.stream import LogStream
 
 logger = logging.getLogger(__name__)
-
-UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
@@ -70,35 +68,35 @@ class _Baseline:
     message_digests: list[str]
     manifest_digest: str
     row_ids: dict[int, str]
-    # The redacted digest of each value of the last request, by a hash of its raw form.
-    known: dict[bytes, str]
 
 
 class _Objects:
     """The objects one observation depends on, by digest, without the empty object.
 
-    A value this history line has already redacted is not redacted again. Each request then costs a
-    hash of its history, far less than scanning it, and a scan of what is new. Such a value has been
-    sent, so the encoder keeps no text between requests. Hermes's prompt sections do stay in memory,
-    per Session, in ``plugin/capture.py``.
+    A value this process has already redacted, in any Session, is not redacted again. Each request
+    then costs a hash of its history, far less than scanning it, and a scan of what is new. Such a
+    value has been sent, so the encoder keeps no text between requests. Hermes's prompt sections do
+    stay in memory, per Session, in ``plugin/capture.py``.
     """
 
-    def __init__(self, known: Mapping[bytes, str] | None = None) -> None:
+    def __init__(self, known: Mapping[bytes, str]) -> None:
         self.made: dict[str, ContentObject] = {}
         self.seen: dict[bytes, str] = {}
-        self._known = known or {}
+        self._known = known
 
     def add(self, obj: ContentObject) -> str:
         if obj.size_bytes > 0:
             self.made.setdefault(obj.digest, obj)
         return obj.digest
 
-    def add_value(self, raw: Any, make: Callable[[], ContentObject]) -> str:
-        """``make`` redacts and encodes ``raw``. ``raw`` may hold text that UTF-8 cannot encode."""
+    def add_value(self, raw: Any, make: Callable[[], ContentObject], text: bool = False) -> str:
+        """``make`` redacts and encodes ``raw``, as text when ``text``, so the same string stored
+        as text and as JSON has two digests. ``raw`` may hold text that UTF-8 cannot encode."""
         key = hashlib.sha256(
-            json.dumps(raw, sort_keys=True, separators=(",", ":")).encode("ascii")
+            json.dumps([text, raw], sort_keys=True, separators=(",", ":")).encode("ascii")
         ).digest()
-        digest = self._known.get(key) or self.add(make())
+        # Text seen earlier in this request, or sent before, is not redacted again.
+        digest = self.seen.get(key) or self._known.get(key) or self.add(make())
         self.seen[key] = digest
         return digest
 
@@ -199,12 +197,19 @@ class RecordEncoder:
         self._redaction_version = redactor.version if redactor else rec.NO_REDACTION
         self._next_sequence = 0
         self._baselines: dict[tuple[str, ...], _Baseline] = {}
-        # What this process has sent.
+        # What this process has sent, and the redacted digest of each value it sent in a
+        # request, by a hash of the value's raw form.
         self._sent: set[str] = set()
+        self._redacted: dict[bytes, str] = {}
 
     def write(self, kind: str, occurred_at: float, payload: Mapping[str, Any]) -> None:
         """``payload`` is the writer's own copy of what a callback saw."""
-        getattr(self, f"_write_{kind}")(payload, rec.format_time(occurred_at))
+        writers = {
+            "operation": self._write_operation,
+            "context_parts": self._write_context_parts,
+            "request": self._write_request,
+        }
+        writers[kind](payload, rec.format_time(occurred_at))
 
     def _sequence(self) -> int:
         self._next_sequence += 1
@@ -224,7 +229,8 @@ class RecordEncoder:
             if len(line) <= rec.MAX_LINE_BYTES:
                 self._stream.write(line)
             else:
-                # Chunking keeps a body inside the limit, so this is metadata too large: a bug.
+                # Chunking keeps a body inside the limit, so this is metadata too large
+                # (CONTRACT.md, "Lines").
                 logger.warning("telemetry: dropped a %s line of %d bytes", row["family"], len(line))
 
     def _base(self, occurred_at: str) -> dict[str, Any]:
@@ -239,10 +245,12 @@ class RecordEncoder:
     # Operations and context records.
 
     def _write_operation(self, payload: Mapping[str, Any], occurred_at: str) -> None:
-        objects = _Objects()
+        objects = _Objects(self._redacted)
         refs = {
-            name: objects.add(
-                self._text_object(value) if isinstance(value, str) else self._json_object(value)
+            name: objects.add_value(
+                value,
+                partial(self._text_object if isinstance(value, str) else self._json_object, value),
+                text=isinstance(value, str),
             )
             for name, value in payload["content"].items()
         }
@@ -251,6 +259,8 @@ class RecordEncoder:
         event_id, action, stage = str(uuid.uuid4()), payload["action"], payload["stage"]
         base = self._base(occurred_at)
         self._emit([rec.operation_record(base, event_id, action, stage, fields, refs)])
+        # Requests fill ``_redacted``, which an operation only reads, so that every distinct log
+        # or error text does not grow it.
         self._sent.update(objects.made)
 
     def _write_context_parts(self, payload: Mapping[str, Any], occurred_at: str) -> None:
@@ -341,14 +351,14 @@ class RecordEncoder:
         fields = payload["fields"]
         baseline_key = (fields.get("profile") or "", payload["session_id"], payload["history_line"])
         baseline = self._baselines.get(baseline_key)
-        objects = _Objects(baseline.known if baseline else None)
+        objects = _Objects(self._redacted)
         model = payload["request"].get("model")
         ids = self._metadata(
             {
                 "session_id": payload["session_id"],
                 "model_attempt_id": payload["model_attempt_id"],
                 "provider": payload["provider"],
-                "model": model if isinstance(model, str) else UNKNOWN,
+                "model": model if isinstance(model, str) else "unknown",
             }
         )
         body = self._request_head(payload, objects)
@@ -379,7 +389,7 @@ class RecordEncoder:
         if listed_row_ids:
             body["hermes_message_ids"] = listed_row_ids
         if cache_markers:
-            body["cache_markers"] = self._redact().value(cache_markers)
+            body["cache_markers"] = cache_markers
         manifest = rec.json_object(body, "request_manifest")
         objects.add(manifest)
 
@@ -391,4 +401,5 @@ class RecordEncoder:
         operation = "model_attempt", "request", operation_fields, refs
         self._emit([rec.operation_record(base, event_id, *operation)])
         self._sent.update(objects.made)
-        self._baselines[baseline_key] = _Baseline(digests, manifest.digest, row_ids, objects.seen)
+        self._redacted.update(objects.seen)
+        self._baselines[baseline_key] = _Baseline(digests, manifest.digest, row_ids)

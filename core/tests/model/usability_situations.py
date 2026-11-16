@@ -138,6 +138,15 @@ COPLAY = {"client_guide": "client-coplay"}
 COPLAY_CAPS = {"views": ["desktop", "library", "notebook"]}
 
 ORCHESTRATOR_CHATS = [
+    chat(
+        "minecraft-evidence",
+        "Our Minecraft bot says it is walking and its Practice Yard evaluation passed. "
+        "Can I report that movement is fixed on the live Paper server? I only need "
+        "your assessment of that evidence, not a new run.",
+        ("text",),
+        ("minecraft-controller",),
+        stop=True,
+    ),
     # Goals
     chat(
         "goal-create",

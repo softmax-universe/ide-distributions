@@ -288,11 +288,10 @@ class StuckStream:
 
     def release(self, writer: TelemetryWriter) -> list[dict]:
         """Read until ``writer`` has written everything, however long its thread took to open the
-        stream."""
-        closing = threading.Thread(target=processed, args=(writer, 30.0))
-        closing.start()
-        data = b""
-        while closing.is_alive():
+        stream. A full queue drops the ``processed`` job too, so it is asked again until one runs.
+        """
+        data = self._read()
+        while not processed(writer, 0.05):
             data += self._read()
         data += self._read()
         os.close(self.writer)
@@ -300,11 +299,16 @@ class StuckStream:
         return [json.loads(line) for line in data.lstrip(b"x").splitlines() if line]
 
     def _read(self) -> bytes:
-        try:
-            return os.read(self.reader, 65536)
-        except BlockingIOError:
-            time.sleep(0.001)
-            return b""
+        """Everything the pipe holds now."""
+        data = b""
+        while True:
+            try:
+                chunk = os.read(self.reader, 65536)
+            except BlockingIOError:
+                return data
+            if not chunk:
+                return data
+            data += chunk
 
 
 def test_callers_do_not_wait_or_log_when_the_stream_is_stuck_and_a_full_queue_drops(
@@ -346,52 +350,26 @@ def test_the_queue_is_also_bounded_by_size(tmp_path, producer, redactor, monkeyp
     assert "x" * 80 in bodies and "y" * 80 in bodies and "z" * 300 not in bodies
 
 
-def test_only_one_capture_over_the_byte_limit_waits_at_a_time(
-    tmp_path, producer, redactor, monkeypatch
-):
-    """It counts for nothing against the limit, so what bounds it is that the queue is empty."""
-    monkeypatch.setattr(writer_module, "MAX_QUEUED_BYTES", 600)
-    stuck = StuckStream(tmp_path)
-    writer = TelemetryWriter(stuck.path, producer, redactor=redactor)
-    writer.capture_operation("tool", "completed", content={"text": "x" * 80})
-    time.sleep(0.05)
-    writer.capture_operation("tool", "completed", content={"text": "y" * 3000})
-    writer.capture_operation("tool", "completed", content={"text": "z" * 3000})
-    bodies = "".join(r.get("body", "") for r in stuck.release(writer))
-    assert "y" * 3000 in bodies and "z" not in bodies
-
-
-def test_one_capture_over_the_byte_limit_still_goes_out_when_nothing_is_queued(
+def test_a_capture_over_the_byte_limit_is_dropped_and_its_reply_is_not(
     stream_file, producer, redactor, monkeypatch
 ):
-    """Refusing it would leave its request out of every rebuild, for no memory saved: the pickle
-    already exists. The limit is for what piles up."""
+    """With nothing queued too: whether it went in must not depend on whether the thread had
+    already taken what came before it."""
     monkeypatch.setattr(writer_module, "MAX_QUEUED_BYTES", 600)
     writer = TelemetryWriter(stream_file, producer, redactor=redactor)
-    writer.capture_operation("tool", "completed", content={"text": "z" * 3000})
-    assert processed(writer, 5.0)
-    assert "z" * 3000 in [r.get("body") for r in stored_records(stream_file)]
-
-
-def test_a_request_over_the_byte_limit_does_not_cost_its_reply(
-    stream_file, producer, redactor, monkeypatch
-):
-    """The reply comes microseconds after its request, often before the thread has taken it."""
-    monkeypatch.setattr(writer_module, "MAX_QUEUED_BYTES", 600)
-    writer = TelemetryWriter(stream_file, producer, redactor=redactor)
-    for turn in range(20):
+    for turn in range(5):
         attempt = {**ATTEMPT, "model_attempt_id": f"att_{turn}"}
         writer.capture_request(
             request_with({"role": "user", "content": f"{turn} " * 2000}), **attempt
         )
         writer.capture_response({"role": "assistant", "content": f"reply {turn}"}, **attempt)
-        # True means both were processed already, so both are on the stream by now.
         assert processed(writer, 5.0)
-        replies = [r for r in stored_records(stream_file) if r.get("stage") == "response"]
-        assert len(replies) == turn + 1
+    records = stored_records(stream_file)
+    assert [r for r in records if r.get("stage") == "request"] == []
+    assert len([r for r in records if r.get("stage") == "response"]) == 5
 
 
-def test_a_deferred_job_runs_after_what_was_captured_before_it(writer, stream_file):
+def test_records_reach_the_stream_in_capture_order_with_a_rising_sequence(writer, stream_file):
     writer.capture_operation("a", "one")
     writer.capture_operation("a", "two")
     assert processed(writer, 5.0)
@@ -401,18 +379,6 @@ def test_a_deferred_job_runs_after_what_was_captured_before_it(writer, stream_fi
     assert [r["sequence"] for r in stored_records(stream_file)] == [0, 1, 2]
 
 
-def test_waiting_for_the_writer_is_bounded_and_says_when_it_could_not_finish(
-    tmp_path, producer, redactor
-):
-    stuck = StuckStream(tmp_path)
-    writer = TelemetryWriter(stuck.path, producer, redactor=redactor)
-    writer.capture_operation("a", "one")
-    started = time.monotonic()
-    assert not processed(writer, 0.3)
-    assert time.monotonic() - started < 1.0
-    assert [r["stage"] for r in stuck.release(writer)] == ["one"]
-
-
 def test_the_queue_empties_with_no_flush(writer, stream_file):
     """Why sleep needs no step of its own: the thread never waits for anything but the stream."""
     writer.capture_operation("a", "one")
@@ -420,6 +386,22 @@ def test_the_queue_empties_with_no_flush(writer, stream_file):
     while time.monotonic() < deadline and not raw_lines(stream_file):
         time.sleep(0.001)
     assert raw_lines(stream_file)
+
+
+class _NeedsTwo(Exception):
+    """Pickles with one argument and cannot be rebuilt from it."""
+
+    def __init__(self, first, second):
+        super().__init__(first)
+
+
+def test_a_capture_that_cannot_be_unpickled_costs_only_that_record(writer, stream_file, caplog):
+    with caplog.at_level(logging.WARNING):
+        writer.capture_operation("a", "broken", error=_NeedsTwo("x", "y"))
+        writer.capture_operation("a", "after")
+        assert processed(writer)
+    assert [r["stage"] for r in stored_records(stream_file)] == ["after"]
+    assert any("dropped a operation record (TypeError)" in m for m in caplog.messages)
 
 
 def test_a_failing_stream_costs_only_that_record(tmp_path, producer, caplog):

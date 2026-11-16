@@ -17,8 +17,14 @@ import pytest
 
 from research_core.agent_telemetry import ContextPart, PromptSection, TelemetryWriter
 from research_core.agent_telemetry import records as rec
-from research_core.agent_telemetry.rebuild import AmbiguousSession, LogsSearch, rebuild_session
-from research_core.agent_telemetry.records import canonical_bytes
+from research_core.agent_telemetry.rebuild import (
+    PROXY_PAGE_LIMIT,
+    AmbiguousSession,
+    BrokerLogsSearch,
+    SearchRefused,
+    rebuild_session,
+)
+from research_core.agent_telemetry.records import canonical_text
 from research_core.plugin.capture import GatewayCapture
 
 from .conftest import HERMES_STYLE_SECRET, insert_rows, processed, raw_lines, scrub, stored_records
@@ -117,10 +123,6 @@ def datadog():
     server.close()
 
 
-def search_of(datadog: FakeDatadog, sleep=None) -> LogsSearch:
-    return LogsSearch(datadog.url, "a", "b", **({"sleep": sleep} if sleep else {}))
-
-
 def sent(writer, stream_file, datadog) -> list[dict]:
     processed(writer, 5.0)
     datadog.take_lines(raw_lines(stream_file))
@@ -139,11 +141,11 @@ def result_message_digest() -> str:
 def test_requests_responses_and_tools_come_back_exactly(writer, stream_file, datadog):
     bodies = two_requests(writer)
     sent(writer, stream_file, datadog)
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert report["missing"] == []
     assert report["workspace_id"] == "wrk-proof"
-    assert [canonical_bytes(r["request"]) for r in report["requests"]] == [
-        canonical_bytes(body) for body in bodies
+    assert [canonical_text(r["request"]) for r in report["requests"]] == [
+        canonical_text(body) for body in bodies
     ]
     first, second = report["requests"]
     assert first["response"]["message"]["reasoning_content"] == "thinking"
@@ -161,21 +163,21 @@ def test_content_first_stored_under_an_earlier_session_is_followed(writer, strea
     records = sent(writer, stream_file, datadog)
     parts = [r for r in records if r.get("content_digest") == system_digest()]
     assert len(parts) == 1
-    report = rebuild_session(search_of(datadog), "ses_2")
+    report = rebuild_session(datadog.search(), "ses_2")
     assert report["missing"] == []
-    assert [canonical_bytes(r["request"]) for r in report["requests"]] == [
-        canonical_bytes(body) for body in bodies
+    assert [canonical_text(r["request"]) for r in report["requests"]] == [
+        canonical_text(body) for body in bodies
     ]
 
 
 def test_duplicates_are_dropped(writer, stream_file, datadog):
     two_requests(writer)
     sent(writer, stream_file, datadog)
-    clean = rebuild_session(search_of(datadog), "ses_1")
+    clean = rebuild_session(datadog.search(), "ses_1")
     datadog.take(list(datadog.entries))
-    twice = rebuild_session(search_of(datadog), "ses_1")
+    twice = rebuild_session(datadog.search(), "ses_1")
     assert twice["missing"] == []
-    assert canonical_bytes(twice["requests"]) == canonical_bytes(clean["requests"])
+    assert canonical_text(twice["requests"]) == canonical_text(clean["requests"])
 
 
 def test_a_chunk_gap_is_named_and_blocks_only_the_requests_needing_it(writer, stream_file, datadog):
@@ -183,9 +185,9 @@ def test_a_chunk_gap_is_named_and_blocks_only_the_requests_needing_it(writer, st
     sent(writer, stream_file, datadog)
     digest = result_message_digest()
     datadog.remove_chunk(digest, 1)
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     first, second = report["requests"]
-    assert canonical_bytes(first["request"]) == canonical_bytes(bodies[0])
+    assert canonical_text(first["request"]) == canonical_text(bodies[0])
     assert second["request"] is None and second["blocked_by"] == [digest]
     gap = next(problem for problem in report["missing"] if problem["digest"] == digest)
     assert gap["kind"] == "chunk_gap" and gap["missing_chunks"] == [1]
@@ -196,7 +198,7 @@ def test_an_object_with_no_entries_is_named(writer, stream_file, datadog):
     sent(writer, stream_file, datadog)
     digest = system_digest()
     datadog.entries = [e for e in datadog.entries if e.get("content_digest") != digest]
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert {"kind": "no_content", "digest": digest} in report["missing"]
     assert all(request["request"] is None for request in report["requests"])
 
@@ -207,7 +209,7 @@ def test_a_failed_digest_is_named(writer, stream_file, datadog):
     digest = system_digest()
     entry = next(e for e in datadog.entries if e.get("content_digest") == digest)
     entry["body"] = "x" + entry["body"]
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert [p["kind"] for p in report["missing"] if p["digest"] == digest] == ["digest_failure"]
 
 
@@ -219,15 +221,15 @@ def test_a_chunk_resent_later_fills_a_gap_in_the_first_sending(writer, stream_fi
     second_sending = [dict(e) for e in datadog.entries if e.get("content_digest") == digest]
     datadog.remove_chunk(digest, 1)
     datadog.take([e for e in second_sending if e["chunk_index"] == 1])
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert report["missing"] == []
-    assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
+    assert canonical_text(report["requests"][1]["request"]) == canonical_text(bodies[1])
 
 
 def test_tokens_are_shared_by_characters(writer, stream_file, datadog):
     two_requests(writer)
     sent(writer, stream_file, datadog)
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     first, second = report["requests"]
     by_source = {row["source"]: row for row in first["tokens_by_source"]}
     assert by_source["soul"]["chars"] == len("You are a researcher.")
@@ -241,9 +243,28 @@ def test_tokens_are_shared_by_characters(writer, stream_file, datadog):
     assert all("estimated_tokens" not in row for row in second["tokens_by_source"])
 
 
-def test_paging_and_a_rate_limit(writer, stream_file, datadog):
+def test_prompt_sections_count_only_in_the_first_system_message(writer, stream_file, datadog):
+    """The sections' offsets point into the first message. A later system message, such as a
+    note Hermes adds, is unattributed system text."""
+    later = {"role": "system", "content": "A later note"}
+    writer.capture_request(
+        request_body([{"role": "user", "content": "Go"}, later]),
+        prompt_sections=[PromptSection("soul", "You are a researcher.")],
+        session_id="ses_1",
+        provider="moonshot",
+        model_attempt_id="att_1",
+    )
+    sent(writer, stream_file, datadog)
+    [request] = rebuild_session(datadog.search(), "ses_1")["requests"]
+    chars = {row["source"]: row["chars"] for row in request["tokens_by_source"]}
+    assert chars["soul"] == len("You are a researcher.")
+    unattributed = len(SYSTEM) - len("You are a researcher.") + len(later["content"])
+    assert chars["system_unattributed"] == unattributed
+
+
+def test_paging_and_a_rate_limit(writer, stream_file, datadog, capsys):
     bodies = two_requests(writer)
-    # More than one 5000-line page, written in steps the writer's 4096-item queue can hold.
+    # Many pages, written in steps the writer's 4096-item queue can hold.
     for number in range(5200):
         writer.capture_operation("turn", "ended", session_id="ses_1", details={"number": number})
         if number % 1000 == 999:
@@ -251,11 +272,13 @@ def test_paging_and_a_rate_limit(writer, stream_file, datadog):
     sent(writer, stream_file, datadog)
     datadog.rate_limit_next = 2
     waits = []
-    search = search_of(datadog, waits.append)
+    search = datadog.search(waits.append)
     report = rebuild_session(search, "ses_1")
     assert waits == [1.0, 1.0]
+    assert capsys.readouterr().err == "rebuild: rate limited, waiting 1 s\n" * 2
     assert datadog.rate_limited == 2
     assert len(datadog.searches) > 3
+    assert {search["page"]["limit"] for search in datadog.searches} == {PROXY_PAGE_LIMIT}
     # Whichever index holds the lines: no search names one, and none reaches past the retention.
     assert all("indexes" not in search["filter"] for search in datadog.searches)
     # One absolute window, fixed once, for every search and every page of it.
@@ -265,7 +288,58 @@ def test_paging_and_a_rate_limit(writer, stream_file, datadog):
     assert span == timedelta(days=15)
     assert any(search["page"].get("cursor") for search in datadog.searches)
     assert len(report["events"]) == 5200
-    assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
+    assert canonical_text(report["requests"][1]["request"]) == canonical_text(bodies[1])
+
+
+def test_an_upstream_error_through_the_token_broker_raises_as_datadogs_own(datadog):
+    datadog.answer = lambda *_: (400, {"errors": ["Limit can't be more than 5000"]}, {})
+    waits = []
+    search = datadog.search(waits.append)
+    with pytest.raises(SearchRefused) as raised:
+        rebuild_session(search, "ses_1")
+    assert str(raised.value).startswith('HTTP 400: {"errors": ["Limit can\'t be more than 5000')
+    assert waits == []
+
+
+def test_the_brokers_own_rate_limit_is_waited_out(writer, stream_file, datadog):
+    bodies = two_requests(writer)
+    sent(writer, stream_file, datadog)
+    datadog.broker_rate_limit_next = 2
+    waits = []
+    report = rebuild_session(datadog.search(waits.append), "ses_1")
+    assert waits == [1.0, 1.0]
+    assert canonical_text(report["requests"][1]["request"]) == canonical_text(bodies[1])
+
+
+def test_a_proxy_injected_token_sends_no_authorization_of_its_own(writer, stream_file, datadog):
+    """A hosted session holds only ``proxy-injected``, and its agent proxy adds the token."""
+    bodies = two_requests(writer)
+    sent(writer, stream_file, datadog)
+    injected = BrokerLogsSearch(datadog.broker_url(), "proxy-injected", "a test", "session-1")
+    with pytest.raises(SearchRefused) as raised:
+        rebuild_session(injected, "ses_1")
+    # Nothing in front of this fake adds the token.
+    assert str(raised.value) == 'HTTP 401: {"detail": "invalid token"}'
+    datadog.agent_proxy_adds_token = True
+    report = rebuild_session(injected, "ses_1")
+    assert canonical_text(report["requests"][1]["request"]) == canonical_text(bodies[1])
+
+
+@pytest.mark.parametrize("asked", ["ses_A", "ses_B"])
+def test_a_lost_compaction_record_does_not_hide_part_of_the_session(
+    writer, stream_file, datadog, asked
+):
+    """After a compaction in place, a record names the first ID and the live one. With the
+    compaction record lost, either ID finds the other, and a later record that names only the
+    live ID, as after a restart or from a workspace tool, is still the Session's."""
+    writer.capture_operation("turn", "started", session_id="ses_A", hermes_session_id="ses_B")
+    writer.capture_operation("workspace_tool", "completed", session_id="ses_B", tool_name="goal")
+    sent(writer, stream_file, datadog)
+
+    report = rebuild_session(datadog.search(), asked)
+    assert report["session_ids"] == ["ses_A", "ses_B"]
+    assert [event["action"] for event in report["events"]] == ["turn", "workspace_tool"]
+    assert report["missing"] == []
 
 
 def test_compaction_is_followed_in_both_directions_after_a_restart(writer, stream_file, datadog):
@@ -280,10 +354,39 @@ def test_compaction_is_followed_in_both_directions_after_a_restart(writer, strea
     )
     two_requests(writer, "ses_2", prefix="later-")
     sent(writer, stream_file, datadog)
-    from_first = rebuild_session(search_of(datadog), "ses_1")
-    from_last = rebuild_session(search_of(datadog), "ses_2")
+    from_first = rebuild_session(datadog.search(), "ses_1")
+    from_last = rebuild_session(datadog.search(), "ses_2")
     assert from_first["session_ids"] == from_last["session_ids"] == ["ses_1", "ses_2"]
     assert len(from_first["requests"]) == len(from_last["requests"]) == 4
+
+
+def test_a_manifest_whose_bytes_were_first_sent_as_text_is_still_walked(
+    stream_file, producer, redactor, datadog, tmp_path
+):
+    """A digest names bytes, not a kind. When a tool's text has a manifest's exact bytes and goes
+    first, the manifest is never sent again, and only its reference says it is a manifest."""
+    body = request_body([{"role": "user", "content": "Go"}])
+    request = {"session_id": "ses_1", "provider": "moonshot", "model_attempt_id": "att_1"}
+    probe = TelemetryWriter(str(tmp_path / "probe"), producer, redactor=redactor)
+    probe.capture_request(body, **request)
+    assert processed(probe)
+    [manifest] = [
+        r for r in stored_records(tmp_path / "probe") if r.get("content_kind") == "request_manifest"
+    ]
+
+    writer = TelemetryWriter(stream_file, producer, redactor=redactor)
+    text = {"result": manifest["body"]}
+    writer.capture_operation("tool", "result", session_id="ses_1", content=text)
+    writer.capture_request(body, **request)
+    records = sent(writer, stream_file, datadog)
+    kinds = {
+        r["content_kind"] for r in records if r.get("content_digest") == manifest["content_digest"]
+    }
+    assert kinds == {"part"}
+
+    report = rebuild_session(datadog.search(), "ses_1")
+    assert canonical_text(report["requests"][0]["request"]) == canonical_text(body)
+    assert report["missing"] == []
 
 
 def test_a_restart_sends_a_full_manifest_and_everything_it_lists(
@@ -317,12 +420,12 @@ def test_a_restart_sends_a_full_manifest_and_everything_it_lists(
     assert chunks["gateway-1"] == chunks["gateway-2"]
     datadog.take_lines(raw_lines(stream_file))
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert report["missing"] == []
     assert [r["operation"] for r in report["requests"]] == ["full", "full"]
     assert [r["source_instance"] for r in report["requests"]] == ["gateway-1", "gateway-2"]
-    rebuilt = [canonical_bytes(r["request"]) for r in report["requests"]]
-    assert rebuilt == [canonical_bytes(body)] * 2
+    rebuilt = [canonical_text(r["request"]) for r in report["requests"]]
+    assert rebuilt == [canonical_text(body)] * 2
 
 
 def test_records_of_processes_running_side_by_side_interleave_by_time(
@@ -353,7 +456,7 @@ def test_records_of_processes_running_side_by_side_interleave_by_time(
     datadog.take_lines(raw_lines(serve_stream))
     datadog.take_lines(raw_lines(stream_file))
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     timeline = [(e["action"], e.get("admission_id")) for e in report["events"]]
     assert timeline == [
         ("admission", "adm_1"),
@@ -402,7 +505,7 @@ def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
         "approval", "requested", otel_trace_id=TRACE, content={"command": "ls"}
     )
     sent(writer, stream_file, datadog)
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     admitted = [e for e in report["events"] if e.get("admission_id") == admission]
     assert [e["request_id"] for e in admitted if "request_id" in e] == ["req_1", "req_2"]
     kinds = [event.get("native_event_type") for event in admitted]
@@ -411,6 +514,51 @@ def test_events_hold_what_joins_a_retry_and_a_held_chat_through_the_admission(
     assert runs == ["run_1", "run_2"]
     assert next(e for e in admitted if "assignment_id" in e)["task_id"] == "T-3"
     assert any(e.get("command") == "ls" for e in report["events"])
+
+
+def test_an_admission_named_only_by_a_record_its_trace_found_is_followed(
+    writer, stream_file, datadog
+):
+    """The Session's records name only the trace. A seam record in that trace names the admission,
+    and a retry of it names nothing else, so it is found only by searching that admission."""
+    writer.capture_operation("turn", "started", session_id="ses_1", otel_trace_id=TRACE)
+    writer.capture_operation("admission", "bound", otel_trace_id=TRACE, admission_id="adm_9")
+    writer.capture_operation("admission", "accepted", request_id="req_2", admission_id="adm_9")
+    sent(writer, stream_file, datadog)
+
+    report = rebuild_session(datadog.search(), "ses_1")
+    stages = [(e["action"], e["stage"]) for e in report["events"]]
+    assert stages == [("turn", "started"), ("admission", "bound"), ("admission", "accepted")]
+    assert report["missing"] == []
+
+
+def test_a_store_event_another_session_caused_does_not_pull_in_its_trace(
+    writer, stream_file, datadog
+):
+    """``task.assigned`` names the assignee's Session, but its trace is the assigner's."""
+    assigned = {"native_event_type": "task.assigned", "otel_trace_id": "trace_assigner"}
+    writer.capture_operation(
+        "store_event", "committed", session_id="ses_2", reported_actor="session:ses_1", **assigned
+    )
+    writer.capture_operation(
+        "approval", "requested", otel_trace_id="trace_assigner", content={"command": "ls"}
+    )
+    writer.capture_operation(
+        "store_event",
+        "committed",
+        session_id="ses_2",
+        reported_actor="session:ses_2",
+        native_event_type="task.updated",
+        otel_trace_id="trace_own",
+    )
+    writer.capture_operation("approval", "requested", otel_trace_id="trace_own")
+    sent(writer, stream_file, datadog)
+
+    report = rebuild_session(datadog.search(), "ses_2")
+    kinds = [(e["action"], e.get("otel_trace_id")) for e in report["events"]]
+    assert ("store_event", "trace_assigner") in kinds
+    assert ("approval", "trace_assigner") not in kinds
+    assert ("approval", "trace_own") in kinds
 
 
 def test_a_retained_record_from_before_traces_still_joins_by_its_run(writer, stream_file, datadog):
@@ -425,7 +573,7 @@ def test_a_retained_record_from_before_traces_still_joins_by_its_run(writer, str
     )
     writer.capture_operation("approval", "requested", run_id="run_old", content={"command": "ls"})
     sent(writer, stream_file, datadog)
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert any(e.get("command") == "ls" for e in report["events"])
 
 
@@ -435,7 +583,7 @@ def test_a_call_with_no_attempt_is_named(writer, stream_file, datadog):
         "model_request", "started", session_id="ses_1", api_request_id="t:api:1"
     )
     sent(writer, stream_file, datadog)
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert report["missing"] == [{"kind": "call_with_no_attempt", "api_request_id": "t:api:1"}]
 
 
@@ -455,14 +603,28 @@ def test_a_lost_request_of_a_retried_call_is_named(writer, stream_file, datadog,
     ]
     datadog.take_lines(lines)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert [r["model_attempt_id"] for r in report["requests"]] == ["t:api:1#1"]
     assert report["missing"] == [{"kind": "call_with_no_attempt", "api_request_id": "t:api:1"}]
 
 
-def test_a_session_datadog_has_never_seen_says_so(datadog):
-    report = rebuild_session(search_of(datadog), "ses_unknown")
+def test_an_id_named_only_as_a_parent_has_no_records_and_no_workspace(writer, stream_file, datadog):
+    """A subagent's records name the asked ID only as their parent. They are another Session's,
+    so nothing is this Session's and no workspace is reported."""
+    writer.capture_operation(
+        "turn", "started", session_id="ses_child", parent_session_id="ses_parent"
+    )
+    sent(writer, stream_file, datadog)
+    report = rebuild_session(datadog.search(), "ses_parent")
+    assert report["missing"] == [{"kind": "no_records", "session_id": "ses_parent"}]
+    assert report["workspace_id"] is None
+
+
+@pytest.mark.parametrize("workspace", [None, "wrk-named"])
+def test_a_session_datadog_has_never_seen_says_so(datadog, workspace):
+    report = rebuild_session(datadog.search(), "ses_unknown", workspace)
     assert report["missing"] == [{"kind": "no_records", "session_id": "ses_unknown"}]
+    assert report["workspace_id"] is None
 
 
 def test_workspaces_are_kept_apart(writer, stream_file, datadog):
@@ -470,13 +632,17 @@ def test_workspaces_are_kept_apart(writer, stream_file, datadog):
     sent(writer, stream_file, datadog)
     datadog.take([{**entry, "workspace_id": "wrk-other"} for entry in list(datadog.entries)])
     with pytest.raises(AmbiguousSession, match="wrk-other, wrk-proof"):
-        rebuild_session(search_of(datadog), "ses_1")
-    report = rebuild_session(search_of(datadog), "ses_1", "wrk-other")
+        rebuild_session(datadog.search(), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1", "wrk-other")
     assert report["workspace_id"] == "wrk-other" and report["missing"] == []
 
 
 def _command(datadog: FakeDatadog, *arguments: str, **env: str) -> subprocess.CompletedProcess:
-    allowed = {k: v for k, v in os.environ.items() if not k.startswith(("IDE_", "HERMES_", "DD_"))}
+    allowed = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(("IDE_", "HERMES_", "DD_", "TOKEN_BROKER_"))
+    }
     return subprocess.run(
         [
             sys.executable,
@@ -484,35 +650,52 @@ def _command(datadog: FakeDatadog, *arguments: str, **env: str) -> subprocess.Co
             "research_core.cli",
             "telemetry",
             "rebuild",
-            "--datadog-url",
-            datadog.url,
             *arguments,
         ],
-        env={**allowed, **env},
+        env={
+            **allowed,
+            "TOKEN_BROKER_URL": datadog.broker_url(),
+            "TOKEN_BROKER_TOKEN": "tbk_test",
+            **env,
+        },
         capture_output=True,
         text=True,
         timeout=60,
     )
 
 
-def test_the_command_runs_with_only_the_two_keys(writer, stream_file, datadog, tmp_path):
+def test_the_command_runs_through_the_token_broker(writer, stream_file, datadog, tmp_path):
     bodies = two_requests(writer)
     sent(writer, stream_file, datadog)
-    keys = {"DD_API_KEY": "a", "DD_APP_KEY": "b", "HOME": str(tmp_path)}
-    done = _command(datadog, "--session", "ses_1", **keys)
+    home = {"HOME": str(tmp_path)}
+    done = _command(datadog, "--session", "ses_1", **home)
     assert done.returncode == 0, done.stderr
     report = json.loads(done.stdout)
-    assert canonical_bytes(report["requests"][1]["request"]) == canonical_bytes(bodies[1])
-
+    assert canonical_text(report["requests"][1]["request"]) == canonical_text(bodies[1])
+    assert _command(datadog, "--session", "ses_1", TOKEN_BROKER_TOKEN="", **home).returncode == 2
+    # The client's token file serves as well as the variable.
+    (tmp_path / ".config" / "token-broker").mkdir(parents=True)
+    (tmp_path / ".config" / "token-broker" / "token").write_text("tbk_test\n")
+    assert _command(datadog, "--session", "ses_1", TOKEN_BROKER_TOKEN="", **home).returncode == 0
     datadog.remove_chunk(result_message_digest(), 0)
-    assert _command(datadog, "--session", "ses_1", **keys).returncode == 3
-    assert _command(datadog, "--session", "ses_1").returncode == 2
+    assert _command(datadog, "--session", "ses_1", **home).returncode == 3
+
+    # Datadog's or the broker's error body is shown, in at most 300 bytes and on the same line.
+    reason = "Limit can't be more than 5000 " + "x" * 400
+    datadog.answer = lambda *_: (400, {"errors": [reason]}, {})
+    for token, error in (
+        ("tbk_revoked", 'HTTP 401: {"detail": "invalid token"}'),
+        ("tbk_test", 'HTTP 400: {"errors": ["Limit'),
+    ):
+        done = _command(datadog, "--session", "ses_1", TOKEN_BROKER_TOKEN=token, **home)
+        assert done.returncode == 2 and done.stdout == ""
+        assert error in done.stderr and len(done.stderr.strip().splitlines()) == 1, done.stderr
+        assert len(done.stderr) < 450
 
 
 def test_a_datadog_failure_is_could_not_start_and_says_so_in_one_line(datadog, tmp_path):
-    keys = {"DD_API_KEY": "a", "DD_APP_KEY": "b", "HOME": str(tmp_path)}
-    for url in (f"{datadog.url}/no-such-route", "http://127.0.0.1:1"):
-        done = _command(datadog, "--session", "ses_1", "--datadog-url", url, **keys)
+    for url in (f"{datadog.broker_url()}/no-such-route", "http://127.0.0.1:1"):
+        done = _command(datadog, "--session", "ses_1", TOKEN_BROKER_URL=url, HOME=str(tmp_path))
         assert done.returncode == 2, done.stderr
         assert "Traceback" not in done.stderr
         assert len(done.stderr.strip().splitlines()) == 1, done.stderr
@@ -522,11 +705,9 @@ def test_a_search_datadog_did_not_finish_is_could_not_start(writer, stream_file,
     """A ``timeout`` answer can hold part of the results, so nothing is rebuilt from it."""
     two_requests(writer)
     sent(writer, stream_file, datadog)
-    keys = {"DD_API_KEY": "a", "DD_APP_KEY": "b", "HOME": str(tmp_path)}
-    datadog.status = None  # An answer that gives no status is taken as it comes.
-    assert _command(datadog, "--session", "ses_1", **keys).returncode == 0
+    home = {"HOME": str(tmp_path)}
     datadog.status = "timeout"
-    done = _command(datadog, "--session", "ses_1", **keys)
+    done = _command(datadog, "--session", "ses_1", **home)
     assert done.returncode == 2 and done.stdout == ""
     assert "status 'timeout'" in done.stderr and "Traceback" not in done.stderr
 
@@ -535,9 +716,9 @@ def test_a_search_datadog_warned_about_is_could_not_start(writer, stream_file, d
     """Datadog can answer ``done`` with warnings that its results are partial."""
     two_requests(writer)
     sent(writer, stream_file, datadog)
-    keys = {"DD_API_KEY": "a", "DD_APP_KEY": "b", "HOME": str(tmp_path)}
+    home = {"HOME": str(tmp_path)}
     datadog.warnings = []  # An empty list warns of nothing.
-    assert _command(datadog, "--session", "ses_1", **keys).returncode == 0
+    assert _command(datadog, "--session", "ses_1", **home).returncode == 0
     datadog.warnings = [
         {
             "code": "unknown_index",
@@ -545,7 +726,7 @@ def test_a_search_datadog_warned_about_is_could_not_start(writer, stream_file, d
             "detail": "indexes: main-old",
         }
     ]
-    done = _command(datadog, "--session", "ses_1", **keys)
+    done = _command(datadog, "--session", "ses_1", **home)
     assert done.returncode == 2 and done.stdout == ""
     assert "indexes are missing or invalid" in done.stderr and "Traceback" not in done.stderr
 
@@ -609,7 +790,7 @@ def test_a_guard_halt_rebuilds_the_text_hermes_committed_and_not_the_last_reply(
     committed(writer, "12", kind="assistant", content={"message": halt})
     sent(writer, stream_file, datadog)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     rows = {row["hermes_message_id"]: row["message"] for row in report["rows"]}
     assert rows["12"] == halt
     assert rows["10"] == calling
@@ -633,7 +814,7 @@ def test_an_unlisted_tool_row_shows_the_result_the_model_was_given(writer, strea
     )
     sent(writer, stream_file, datadog)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     [row] = report["rows"]
     assert row["message"] == {
         "role": "tool",
@@ -649,7 +830,7 @@ def test_a_normal_final_reply_rebuilds_from_its_commit(writer, stream_file, data
     committed(writer, "10", kind="assistant", content={"message": final})
     sent(writer, stream_file, datadog)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert report["rows"][0]["message"] == final
     assert report["missing"] == []
 
@@ -663,7 +844,7 @@ def test_a_row_takes_its_own_text_and_never_the_last_reply(writer, stream_file, 
     committed(writer, "11", kind="tool", tool_call_id="call_gone")
     sent(writer, stream_file, datadog)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert [row["message"] for row in report["rows"]] == [user, None]
     assert report["missing"] == [{"kind": "row_without_text", "row": "11"}]
 
@@ -691,7 +872,7 @@ def test_a_lost_final_text_is_reported_and_no_earlier_reply_takes_its_place(
     lines = raw_lines(stream_file)
     datadog.take_lines(line for line in lines if lost.encode() not in line)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert report["rows"][0]["message"] is None
     assert {"kind": "row_without_text", "row": "11"} in report["missing"]
 
@@ -715,7 +896,7 @@ def test_a_failed_and_an_unread_attempt_keep_their_records(writer, stream_file, 
         "model_attempt", "unread", model_attempt_id="att_3", outcome="streamed", **ids
     )
     sent(writer, stream_file, datadog)
-    first, second, third = rebuild_session(search_of(datadog), "ses_1")["requests"]
+    first, second, third = rebuild_session(datadog.search(), "ses_1")["requests"]
     assert first["failed"]["error"] == "boom"
     assert second["failed"]["reason"] == "timeouterror" and "error" not in second["failed"]
     assert third["unread"]["outcome"] == "streamed" and "failed" not in third
@@ -726,8 +907,8 @@ def test_a_tool_call_of_any_shape_comes_back(writer, stream_file, datadog):
     body = request_body([{"role": "assistant", "content": "", "tool_calls": [call]}])
     writer.capture_request(body, session_id="ses_1", provider="moonshot", model_attempt_id="att_1")
     sent(writer, stream_file, datadog)
-    [request] = rebuild_session(search_of(datadog), "ses_1")["requests"]
-    assert canonical_bytes(request["request"]) == canonical_bytes(body)
+    [request] = rebuild_session(datadog.search(), "ses_1")["requests"]
+    assert canonical_text(request["request"]) == canonical_text(body)
     assert "tool_call_arguments" not in {row["source"] for row in request["tokens_by_source"]}
 
 
@@ -749,7 +930,7 @@ def test_a_reused_tool_call_id_does_not_join_two_rows(writer, stream_file, datad
     committed(writer, "77", tool_call_id="call_1")
     sent(writer, stream_file, datadog)
 
-    rows = rebuild_session(search_of(datadog), "ses_1")["rows"]
+    rows = rebuild_session(datadog.search(), "ses_1")["rows"]
     by_row = {row["hermes_message_id"]: row for row in rows}
     assert by_row["10"]["message"]["content"] == "OLD result"
     assert by_row["77"]["message"]["content"] == "NEW result"
@@ -785,11 +966,59 @@ def test_a_new_row_with_a_reused_call_id_keeps_its_own_result(writer, stream_fil
     committed(writer, "77", tool_call_id="call_1")
     sent(writer, stream_file, datadog)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     by_row = {row["hermes_message_id"]: row["message"] for row in report["rows"]}
     assert by_row["10"] == old
     assert by_row["77"] == {**old, "content": "NEW result"}
     assert report["missing"] == []
+
+
+def test_a_new_row_with_a_reused_call_id_and_no_result_keeps_its_commit(
+    writer, stream_file, datadog
+):
+    """An older listing has this call ID with no row ID. A later turn reuses the ID and ends at a
+    guard halt, so no result is recorded and only the new row's commit holds its text."""
+    old = {"role": "tool", "tool_call_id": "call_1", "content": "OLD result"}
+    new = {**old, "content": "NEW result"}
+    writer.capture_request(
+        request_body([{"role": "user", "content": "Go"}, old]),
+        session_id="ses_1",
+        provider="moonshot",
+        model_attempt_id="att_1",
+        otel_trace_id="trace_1",
+    )
+    committed(writer, "10", tool_call_id="call_1")
+    committed(writer, "77", tool_call_id="call_1", content={"message": new})
+    sent(writer, stream_file, datadog)
+
+    report = rebuild_session(datadog.search(), "ses_1")
+    by_row = {row["hermes_message_id"]: row["message"] for row in report["rows"]}
+    assert by_row["10"] == old
+    assert by_row["77"] == new
+    assert report["missing"] == []
+
+
+def test_an_auxiliary_call_listing_a_tool_message_does_not_rewrite_its_row(
+    writer, stream_file, datadog
+):
+    """A side question replays the conversation, with tool text capped and no row IDs. It is not
+    a later form of the row."""
+    full = {"role": "tool", "tool_call_id": "call_1", "content": "the whole result " * 50}
+    capped = {**full, "content": "the whole result"}
+    user = {"role": "user", "content": "Go"}
+    for attempt, message in (("att_1", {**full, "_row_id": 10}), ("aux-side-1", capped)):
+        writer.capture_request(
+            request_body([user, message]),
+            session_id="ses_1",
+            provider="moonshot",
+            model_attempt_id=attempt,
+            otel_trace_id="trace_1",
+        )
+    committed(writer, "10", tool_call_id="call_1")
+    sent(writer, stream_file, datadog)
+
+    [row] = rebuild_session(datadog.search(), "ses_1")["rows"]
+    assert row["message"] == full and "rewritten_to" not in row
 
 
 def test_results_sharing_a_call_id_stay_apart_by_row(writer, stream_file, datadog):
@@ -799,7 +1028,7 @@ def test_results_sharing_a_call_id_stay_apart_by_row(writer, stream_file, datado
         committed(writer, row, tool_call_id="call_1")
     sent(writer, stream_file, datadog)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert [row["message"]["content"] for row in report["rows"]] == ["first", "second"]
     assert report["missing"] == []
 
@@ -811,7 +1040,7 @@ def test_results_with_no_row_id_sharing_a_call_id_stand_in_for_no_row(writer, st
         committed(writer, row, tool_call_id="call_1")
     sent(writer, stream_file, datadog)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert [row["message"] for row in report["rows"]] == [None, None]
     assert {"kind": "row_without_text", "row": "10"} in report["missing"]
 
@@ -839,7 +1068,7 @@ def test_repeated_text_counts_each_character_once(writer, stream_file, datadog, 
     )
     sent(writer, stream_file, datadog)
 
-    [request] = rebuild_session(search_of(datadog), "ses_1")["requests"]
+    [request] = rebuild_session(datadog.search(), "ses_1")["requests"]
     chars = {row["source"]: row["chars"] for row in request["tokens_by_source"]}
     assert chars == {"user_text": 5}
 
@@ -868,7 +1097,7 @@ def test_a_manifest_that_does_not_add_up_is_missing(writer, stream_file, datadog
     datadog.take([{**chunk, **replaced, "body": tampered.body}])
     ref["digest"] = tampered.digest
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     first = report["requests"][0]
     assert first["request"] is None and first["blocked_by"] == [tampered.digest]
     count = manifest["message_count"]
@@ -889,7 +1118,7 @@ def test_a_request_record_with_no_manifest_is_missing(writer, stream_file, datad
     refs = request["content_refs"]
     request["content_refs"] = [r for r in refs if r["name"] != "request_manifest"]
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     first = report["requests"][0]
     assert first["request"] is None and first["blocked_by"] == []
     assert report["missing"] == [{"kind": "no_request_manifest", "model_attempt_id": "att_1"}]
@@ -902,7 +1131,7 @@ def test_a_lost_reply_is_named_and_its_record_stays(writer, stream_file, datadog
     lost = reply["content_refs"][0]["digest"]
     datadog.remove_chunk(lost, 0)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert {"kind": "no_content", "digest": lost} in report["missing"]
     response = report["requests"][0]["response"]
     assert response["message"] is None and response["partial"] is False
@@ -931,7 +1160,7 @@ def test_what_was_recorded_stays_in_the_report(writer, stream_file, datadog):
     committed(writer, "3", tool_call_id="call_1", hermes_task_id="task_1")
     sent(writer, stream_file, datadog)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     tool = next(e for e in report["events"] if e["action"] == "workspace_tool")
     assert (tool["tool_call_id"], tool["duration_ms"]) == ("call_b", 12.5)
     event = next(e for e in report["events"] if e["action"] == "store_event")
@@ -955,7 +1184,7 @@ def test_hermes_classification_of_a_failed_attempt_stays_in_the_report(
         error={"type": "RateLimitError", "message": "slow down"},
     )
     sent(writer, stream_file, datadog)
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     [attempt] = report["requests"]
     assert attempt["failed"]["reason"] == "rate_limit"
     assert attempt["failed"]["details"] == {"status_code": 429}
@@ -996,7 +1225,7 @@ def test_a_failure_before_any_attempt_of_its_call_is_kept_and_the_rest_rebuilds(
         (False, "t:api:3"),
     ]
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     [attempt] = report["requests"]
     assert attempt["model_attempt_id"] == "t:api:2#1" and "failed" not in attempt
     assert attempt["response"]["message"] == {"role": "assistant", "content": "done"}
@@ -1028,7 +1257,7 @@ def test_a_stream_retried_inside_its_attempt_keeps_the_partial_and_the_final_rep
     )
     sent(writer, stream_file, datadog)
 
-    [attempt] = rebuild_session(search_of(datadog), "ses_1")["requests"]
+    [attempt] = rebuild_session(datadog.search(), "ses_1")["requests"]
     assert attempt["response"]["partial"] is False
     assert attempt["response"]["message"]["content"] == "Half an answer, whole"
     [partial] = attempt["partial_responses"]
@@ -1049,7 +1278,7 @@ def test_a_users_message_survives_a_kill_during_its_first_call(writer, stream_fi
     sent(writer, stream_file, datadog)
 
     assert HERMES_STYLE_SECRET.encode() not in stream_file.read_bytes()
-    report = rebuild_session(search_of(datadog), "s")
+    report = rebuild_session(datadog.search(), "s")
     [attempt] = report["requests"]
     assert attempt["request"]["messages"][-1] == {"role": "user", "content": scrub(text)}
     # Nothing says how the attempt ended, which is no loss: a kill, a cancel or a running call.
@@ -1071,26 +1300,33 @@ def test_an_attempt_ends_with_a_reply_a_failure_or_unread_and_not_a_partial_repl
     writer.capture_operation("model_attempt", "unread", model_attempt_id="att_4", **ids)
     sent(writer, stream_file, datadog)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert report["unended_attempts"] == ["att_2", "att_5"] and report["missing"] == []
 
 
 def test_a_reply_whose_request_was_lost_is_named(writer, stream_file, datadog):
     """A reply, a failure and a broken stream's partial reply of attempts whose request records
-    never arrived are neither requests nor events, so the report names them."""
+    never arrived are no requests. The report names them, and keeps each among the events with
+    its text."""
     ids = {"session_id": "ses_1", "otel_trace_id": "trace_1"}
-    writer.capture_response({"role": "assistant", "content": "hi"}, model_attempt_id="a1", **ids)
+    reply = {"role": "assistant", "content": "the reply that survived"}
+    writer.capture_response(reply, model_attempt_id="a1", **ids)
     writer.capture_operation("model_attempt", "failed", model_attempt_id="a2", **ids)
     partial = {"role": "assistant", "content": "h"}
     writer.capture_response(partial, model_attempt_id="a3", partial=True, **ids)
     sent(writer, stream_file, datadog)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert report["requests"] == []
     assert report["missing"] == [
         {"kind": "reply_with_no_request", "model_attempt_id": attempt}
         for attempt in ("a1", "a2", "a3")
     ]
+    kept = {event["model_attempt_id"]: event for event in report["events"]}
+    assert sorted(kept) == ["a1", "a2", "a3"]
+    assert kept["a1"]["stage"] == "response" and kept["a2"]["stage"] == "failed"
+    assert "the reply that survived" in kept["a1"]["message"]
+    assert kept["a3"]["partial"] is True
 
 
 @pytest.mark.parametrize(
@@ -1115,7 +1351,7 @@ def test_a_user_row_joins_its_listing_by_row_id_or_keeps_its_commit(
     capture.on_session_end(session_id="ses_1")
     sent(writer, stream_file, datadog)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     assert report["rows"][0]["message"] == {"role": "user", "content": expected}
     assert report["missing"] == []
 
@@ -1143,7 +1379,7 @@ def test_content_past_retention_is_reported_missing(writer, stream_file, datadog
     lines = raw_lines(stream_file)
     datadog.take_lines(line for line in lines if json.loads(line)["occurred_at"] >= retention_start)
 
-    report = rebuild_session(search_of(datadog), "ses_1")
+    report = rebuild_session(datadog.search(), "ses_1")
     [request] = report["requests"]
     assert request["model_attempt_id"] == "att_2" and request["request"] is None
     [digest] = request["blocked_by"]

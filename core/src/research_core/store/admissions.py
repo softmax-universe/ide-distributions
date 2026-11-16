@@ -23,7 +23,7 @@ from research_core.run_failures import ErrorClass
 from research_core.store import settings
 from research_core.store.actors import Actor
 from research_core.store.db import Store, Tx
-from research_core.store.errors import StoreError
+from research_core.store.errors import IdReused, StoreError
 from research_core.telemetry import span, trace_carrier
 
 Origin = Literal[
@@ -81,7 +81,7 @@ def read(store: Store, op_id: str, kind: str, request: dict) -> dict | None:
     if row is None:
         return None
     if row["kind"] != kind or json.loads(row["request"]) != request:
-        raise StoreError(["op_id was already used for different input"])
+        raise IdReused(["op_id was already used for different input"])
     return dict(row)
 
 

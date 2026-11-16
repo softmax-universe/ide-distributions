@@ -59,11 +59,8 @@ def main(argv: list[str] | None = None) -> int:
     from research_core.agent_telemetry import observed
     from research_core.telemetry import correlation
 
-    writer = observed.bind_command(os.environ, lambda: correlation(trace.get_current_span()))
-    try:
-        return int(run(args) or 0)
-    finally:
-        observed.unbind(writer)
+    observed.bind_command(os.environ, lambda: correlation(trace.get_current_span()))
+    return int(run(args) or 0)
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised through subprocesses

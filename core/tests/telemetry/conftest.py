@@ -111,10 +111,6 @@ MESSAGES_TABLE = (
     "content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL, "
     "finish_reason TEXT, reasoning_content TEXT, compacted INTEGER NOT NULL DEFAULT 0)"
 )
-ADMISSIONS_TABLE = (
-    "CREATE TABLE session_admissions (seq INTEGER PRIMARY KEY, request_id TEXT, "
-    "target_session_id TEXT, payload_json TEXT, status TEXT)"
-)
 
 
 @pytest.fixture
@@ -123,7 +119,6 @@ def home(tmp_path, monkeypatch) -> Path:
     ``hermes_constants`` names it."""
     with sqlite3.connect(tmp_path / "state.db") as db:
         db.execute(MESSAGES_TABLE)
-        db.execute(ADMISSIONS_TABLE)
     (tmp_path / "SOUL.md").write_text("SOUL TEXT\n")
     module = ModuleType("hermes_constants")
     module.get_hermes_home = lambda: tmp_path

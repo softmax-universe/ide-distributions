@@ -104,10 +104,11 @@ bundle or validate it, the relay does.
 Each method maps to seam and gateway calls. The AIDE request id
 is the seam `op_id` or gateway `Idempotency-Key`, so retries need no new tables. The gateway
 forgets a prompt once it is resolved, so an applied `input.respond` is also recorded at the
-seam's `/input-response`, which an identical retry replays. Notifications go to the frontends
-that named a session in the last ten minutes: run output (`chat.event`, `chat.chunk`,
-`chat.message`, `chat.finished`) and session changes from the seam's event stream
-(`state.changed`). Coworld sessions without a league have no AIDE scope and are not listed.
+seam's `/input-response`, which an identical retry replays. Notifications go to each subscribed
+frontend until the relay reports `frontend.closed` or the backend rebinds: run output
+(`chat.event`, `chat.chunk`, `chat.message`, `chat.finished`) and session changes from the seam's
+event stream (`state.changed`). Coworld sessions without a league have no AIDE scope and are not
+listed.
 
 Run progress is durable. One consumer per open request reads the gateway's run stream,
 translates each event to an AIDE `ChatEvent` (consecutive text deltas merge for 250 ms), appends
@@ -138,9 +139,10 @@ the log, so an append that committed before the timeout is not pushed again and 
 returns it. Nothing retries the failed call, so a failure that lasts across boots can crash-loop
 the workspace.
 
-A request is different: the failure is answered to that request alone. One the handler did not
-expect is logged with its traceback and answered `unavailable`, with `outcome: unknown` for a
-command, since it may have taken effect. The backend keeps serving.
+A request is different: the failure is answered to that request alone. Unexpected internal failures
+are logged with a traceback and answered with JSON-RPC `-32603` (`Internal error`), or
+`unavailable` with `outcome: "unknown"` once a state-changing command has crossed its commit point
+and may have taken effect. The backend keeps serving.
 
 A frontend subscribes to a session's pushes through any request naming that session, once the
 backend has read the session and its scope is that session's own. A wrong scope is refused

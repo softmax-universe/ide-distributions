@@ -147,3 +147,8 @@ nowhere.
   tool of its own, in backticks. Every name must exist on that action,
   and the signature must name every required field and key; end it with `...` when it shows only
   part of the call on purpose. `core/tests/test_tool_signatures.py` checks this, and that example values fit a field's enum, and says the rules in full.
+
+The shared [`minecraft-controller`](src/research_core/skills/common/method/minecraft-controller/SKILL.md)
+skill guides both profiles through Minecraft SDK discovery, bounded controller
+authoring, action receipts, and disposable Paper verification. It distinguishes
+live Minecraft from Practice Yard evaluation and leaves body code in its owner.

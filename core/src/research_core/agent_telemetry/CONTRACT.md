@@ -25,7 +25,7 @@ Every line has:
 | `producer`, `image`, `source_instance`, `runtime_id` | Which process wrote it. `source_instance` is new at each process start |
 | `redaction_version` | Which scanner read it, or `none` from a writer that takes no free text. Such a writer still masks Softmax tokens in its metadata strings |
 | `occurred_at` | UTC with three decimals. Datadog's own timestamp is when it read the line |
-| `sequence` | Capture order inside one `source_instance` |
+| `sequence` | Capture order inside one `source_instance`. All chunks of one object share its `sequence` |
 | `family` | `operation`, `context` or `content` |
 | `trace_id`, `span_id` | On an operation or context line written inside a span: the OpenTelemetry span it belongs to, as 32 and 16 lowercase hex digits, the names and form Datadog uses to join a log to its APM trace. Datadog's JSON log preprocessing takes both off the line's attributes: search them as `trace_id:<hex>`, without `@`, but Logs search returns neither. A line written outside any span has neither |
 | `otel_trace_id` | Beside `trace_id`, the same value, under a name Logs search returns. Every trace link below reads this one |
@@ -61,8 +61,9 @@ To read an object, join its chunks by `chunk_index` and check the digest and the
 **The pieces depend on the body alone.** So `content_digest` and `chunk_index` name a chunk wherever and whenever it was sent,
 and two sendings of one object are interchangeable, chunk by chunk.
 
-An `operation` or `context` line is never split. If its metadata would pass the limit, that is a bug in the record, and the
-writer logs a warning and drops that line.
+An `operation` or `context` line is never split. If its metadata would pass the limit, the writer logs a warning and drops
+that line. The model can choose a tool name or call ID, and a client the IDs of a refused request, so a long one costs its
+record.
 
 ### Duplicates
 
@@ -71,7 +72,7 @@ The same chunk can reach Datadog more than once, because a new process knows not
 
 ## Objects
 
-Every structured body is canonical JSON: sorted keys, no spaces, UTF-8, as `records.canonical_bytes` writes it. Every text
+Every structured body is canonical JSON: sorted keys, no spaces, UTF-8, as `records.canonical_text` writes it. Every text
 in it has been through the gateway writer's redaction. Digests and byte offsets refer to the redacted form.
 
 | `content_kind`     | Holds                                                                            |
@@ -186,17 +187,17 @@ reader follows `parent_session_id` on the `compaction` records.
 | `action` / `stage`                                    | Content refs                 | Says                                                                  |
 | ----------------------------------------------------- | ---------------------------- | --------------------------------------------------------------------- |
 | `model_request` / `started`                           |                              | A call is on its way (`pre_api_request`)                              |
-| `model_attempt` / `request`, `response`               | `request_manifest`, `message` | One outer attempt, written before the call. `model_attempt_id` is `<api_request_id>#<n>`. A stream Hermes retries inside one attempt is one attempt. `native_event_type` is `request` or the auxiliary task. The request is the middleware's view: `stream` and `stream_options` are added after it. A broken stream's `response` is `partial`, with its shown text and any streamed reasoning (`on_stream_end`). When Hermes retries the stream inside the attempt, the attempt has both a `partial` and a whole `response` |
-| `model_attempt` / `failed`                            | `error`, if it has text      | Hermes's verdict on a failed attempt (`api_request_error`): `reason`, `duration_ms` and any status. It joins the attempt by `api_request_id`. A call that failed before any attempt of it was recorded, such as one whose request could not be built, has no `model_attempt_id` |
+| `model_attempt` / `request`, `response`               | `request_manifest`, `message` | One outer attempt, written before the call. `model_attempt_id` is `<api_request_id>#<n>`, or for an auxiliary call `aux-<task>-<start in µs>` (`plugin/capture.py`, `_auxiliary_ids`). A stream Hermes retries inside one attempt is one attempt. `native_event_type` is `request` or the auxiliary task. The request is the middleware's view: `stream` and `stream_options` are added after it. A broken stream's `response` is `partial`, with its shown text and any streamed reasoning (`on_stream_end`). When Hermes retries the stream inside the attempt, the attempt has both a `partial` and a whole `response` |
+| `model_attempt` / `failed`                            | `error`, if it has text      | Hermes's verdict on a failed attempt (`api_request_error`): `reason`, `duration_ms` and any status. It carries the attempt's `model_attempt_id`, found by its `api_request_id`; none when no attempt was recorded, such as for a call whose request could not be built |
 | `model_attempt` / `unread`                            |                              | A streamed auxiliary call, whose reply Hermes hands back unread       |
 | `tool` / `proposed`                                   | `arguments`                  | One call the model asked for, from the reply Hermes assembled         |
 | `tool` / `completed`, `refused`                       | `arguments`                  | What ran, with `outcome`. The result is on the next one               |
 | `tool` / `result`                                     | `result`                     | The result as the model got it, from the first request that sends it, with its `hermes_message_id` |
-| `message` / `committed`                               | `message`                    | A row of `state.db`, read on the writer's thread after each turn's end (`on_session_end`), with `hermes_message_id`. `occurred_at` is the row's own timestamp. `message` holds the row's `role`, `content`, `tool_calls` and `reasoning_content`, because a turn's last rows reach no later request |
+| `message` / `committed`                               | `message`                    | A row of `state.db`, read on the writer's thread after each turn's end (`on_session_end`), with `hermes_message_id`. `occurred_at` is the row's own timestamp. `message` holds the row's `role`, `content`, `tool_call_id`, `tool_calls` and `reasoning_content`, because a turn's last rows reach no later request |
 | `approval` / `requested`, `decided`                   | `command`, `description`     | A human approval                                                      |
 | `compaction` / `committed`                            |                              | The history was rewritten                                             |
 | `session` / `started`, `turn` / `ended`, `subagent` / `started`, `stopped` | | Lifecycle |
-| `diagnostic` / `<log level>`                          | `message`                    | One log record, other than the access line of a successful seam poll (a 200 for `GET /p/<profile>/v1/runs/<id>` from its urllib client). `native_event_type` is the logger |
+| `diagnostic` / `<log level>`                          | `message`                    | One log record at INFO or above, except the writer's own records and the access line of a successful seam poll (a 200 for `GET /p/<profile>/v1/runs/<id>` from its urllib client). `native_event_type` is the logger |
 
 `tool_call_id` is the provider's on `proposed`. When a provider reuses an ID, as Kimi does across turns, Hermes renames the
 repeat to `<id>_d<n>` after the attempt ends, so every later record has the new one. Join those through `api_request_id`.
@@ -209,7 +210,10 @@ that sends it.
 `research_core/agent_telemetry/observed.py` holds one writer per process: `research-serve` (the seam and its coordinator loops),
 the gateway's, and `research-command` for every other `research` command, including a workspace tool's subprocess.
 All of this is metadata. Text reaches Datadog only through the gateway
-writer.
+writer. These records have no `hermes_session_id`. In a workspace tool's process, `session_id` on
+`workspace_tool` / `completed`, and on a store event it commits as that Session, is the ID Hermes
+gave the tool: the Session's live ID, not the one it started with. A reader joins the two through
+the gateway records, which name both.
 
 | `action` / `stage`                        | Written by             | Says                                                                                                   |
 | ----------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------ |
@@ -230,8 +234,8 @@ A store event sends its type, `seq`, actor, a subject that is a display ID (`tas
 `execution`, `transition` or `session` adds the row behind it, read just after the commit: for an admission `session_id`,
 `profile`, `initiator` (its origin), `owner_instance` and `details.resumes`; for a durable command `tool_name`, `session_id`,
 `lease_epoch`, `owner_instance`, `execution_attempt_id` and `details.attempts`; for a Session `kind`, `session_scope`,
-`coworld_id`, `league_id`, `task_id`, `goal_id`, `parent_session_id` and `initiator` (the event that caused it). A rollback
-records nothing.
+`coworld_id`, `league_id`, `task_id`, `goal_id`, `parent_session_id` and `initiator` (the event that caused it). On
+`session.ended`, `initiator` is instead the payload's `stopped_by`: who ended the Session. A rollback records nothing.
 
 ### How to join them
 

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import sqlite3
 import threading
@@ -111,7 +112,11 @@ def _numbers(**values: Any) -> dict[str, Any] | None:
 
 
 def _plain(value: Any) -> Any:
-    """A provider object as plain data: ``SimpleNamespace`` from a stream, otherwise pydantic."""
+    """A provider object as plain data: ``SimpleNamespace`` from a stream, otherwise pydantic.
+    ``NaN`` and the infinities, which ``json.loads`` takes from a model's arguments, become text:
+    canonical JSON has no form for them, and the record would be dropped."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
     if value is None or isinstance(value, str | int | float | bool):
         return value
     if isinstance(value, Mapping):
@@ -148,9 +153,10 @@ def with_row_ids(
     cursor = 0
     bound = []
     for message in wire_messages:
+        wanted = _identity(message)
         for index in range(cursor, len(keys)):
             identity, row_id = keys[index]
-            if identity == _identity(message):
+            if identity == wanted:
                 cursor = index + 1
                 if row_id is not None:
                     message = {**message, "_row_id": row_id}
@@ -578,8 +584,14 @@ class GatewayCapture:
             aux_task, started_at, session_id, starting=True
         )
         identity = {key: value for key, value in ids.items() if key != "session_id"}
+        # Over its 50,000-character hook cap Hermes passes ``{"_truncated": True, "original_type",
+        # "preview"}`` with no ``body``, and that is kept as the request. A Responses-API body has
+        # ``input`` and no ``messages``. Either way the writer needs a list of messages.
+        handed = request or {}
+        wire = wire_request(handed.get("body", handed) or {})
+        wire["messages"] = wire.get("messages") or []
         self._writer.capture_request(
-            wire_request((request or {}).get("body") or {}),
+            wire,
             session_id=session,
             model_attempt_id=attempt_id,
             provider=provider or "unknown",
@@ -760,8 +772,9 @@ class GatewayCapture:
 
             ids = self._ids(session_id)
             db = Path(get_hermes_home()) / "state.db"
-            # Hermes stamps a row when it commits it, so the turn's rows are those since the last
-            # turn's end, up to now. Bounding both ends here means a read the full queue dropped
+            # A row's timestamp is when Hermes created the message (``stamp_message_timestamp``),
+            # not when it committed it, so the turn's rows are those created since the last turn's
+            # end, up to now. Bounding both ends here means a read the full queue dropped
             # leaves those rows out, and never hands them to the next turn's span.
             after = self._turn_ended.get(session_id, self._started)
             self._turn_ended[session_id] = until = time.time()

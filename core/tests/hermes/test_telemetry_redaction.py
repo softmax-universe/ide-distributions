@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.telemetry.test_redaction import PLAYER_ID, PLAYER_TOKEN, USER_TOKEN
+
 CORE_SRC = Path(__file__).resolve().parents[2] / "src"
 
 _PROBE = r"""
@@ -33,14 +35,6 @@ print(json.dumps({
 """
 
 
-def _token(prefix: str) -> str:
-    raw = bytes((11 + index * 41) % 256 for index in range(32))
-    return prefix + base64.urlsafe_b64encode(raw).decode()
-
-
-USER_TOKEN = _token("usr_")
-PLAYER_TOKEN = _token("ply_")
-PLAYER_ID = "ply_f39295d0-ac38-4a62-ac4f-e1d62d7dc9d1"
 OPENAI_STYLE = "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
 GITHUB_STYLE = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
 OPAQUE = "abcdefghijklmnopqrstuvwxyz012345"
