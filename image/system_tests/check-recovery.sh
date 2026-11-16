@@ -34,6 +34,26 @@ with SessionDB(Path("/workspace/host/profiles/orchestrator/state.db")) as db:
     proof.write_text(str(epoch))
 print("PASS profile reconciliation: missing/different image markers, owner memory preserved, prompt refresh requested")
 PYTHON
+# A seam too busy to answer for a few seconds is alive: the supervisor waits and does not recycle.
+docker exec -i "$name" /opt/hermes/.venv/bin/python - <<'PYTHON'
+import os
+import signal
+import time
+from pathlib import Path
+
+(serve,) = [
+    int(cmdline.parent.name)
+    for cmdline in Path("/proc").glob("[0-9]*/cmdline")
+    if b"/research\0serve\0" in cmdline.read_bytes()
+]
+os.kill(serve, signal.SIGSTOP)
+time.sleep(7)
+os.kill(serve, signal.SIGCONT)
+PYTHON
+sleep 2
+ready
+test "$(docker inspect --format '{{.RestartCount}}' "$name")" = 0
+echo "PASS slow seam: 7 s without a /status answer, no runtime restart"
 # Fault injection models a durable admission whose native acceptance reply was lost.
 recovery_started=$SECONDS
 docker exec -i "$name" /opt/workspace-env/bin/python - <<'PY'
