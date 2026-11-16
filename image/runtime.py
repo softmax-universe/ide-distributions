@@ -255,7 +255,10 @@ async def run(stack: AsyncExitStack) -> None:
                     (await seam_client.get("/health")).raise_for_status()
 
             async def reconcile_uncertain_execution() -> None:
-                async with httpx.AsyncClient(base_url="http://127.0.0.1:8650") as observer:
+                # No deadline: a slow /status is not a restart; seam.wait() catches a dead seam.
+                async with httpx.AsyncClient(
+                    base_url="http://127.0.0.1:8650", timeout=None
+                ) as observer:
                     while True:
                         response = await observer.get("/status")
                         response.raise_for_status()
