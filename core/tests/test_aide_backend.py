@@ -1238,6 +1238,46 @@ def test_a_steered_follow_up_logs_only_its_outcome_and_leaves_the_host_run_alone
     run(system, scenario)
 
 
+@pytest.mark.parametrize("scope", [WORKSPACE, LEAGUE], ids=["workspace", "league"])
+@pytest.mark.parametrize("held_at", [5, 6], ids=["before a tool result", "after the last tool"])
+def test_a_steered_message_bound_to_its_follow_up_is_announced_in_any_scope(system, scope, held_at):
+    """The host run's consumer meets a message of another request and reads the session to learn
+    whether that request steered into its run. That read carries the session's scope, which the
+    seam refuses a Coworld session's rows without. A steer before a tool result is met while the
+    run is followed; one after the last tool is met only when the request's outcome is logged."""
+
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend, scope)
+        script = gateway.script
+        gateway.script = lambda run_id: [
+            *script(run_id)[:held_at],
+            {"gate": True},
+            *script(run_id)[held_at:],
+        ]
+        first, follow_up = str(uuid4()), str(uuid4())
+        params = {"session_id": session_id, "messages": say("hi"), "scope": scope}
+        await call(backend, "chat.send", params, request_id=first)
+        await until(lambda: started(backend))
+        await call(backend, "chat.send", params | {"messages": say("also")}, request_id=follow_up)
+        (run_id,) = hermes.runs
+        await until(lambda: hermes.steered.get(run_id) == ["also"])
+        gateway.say(session_id, role="user", content="also", display_kind="steer")
+        steer_id = gateway.transcripts[session_id][-1]["id"]
+        with ctx.wstore.tx(HARNESS) as tx:
+            tx.execute(
+                "UPDATE client_admissions SET native_message_id=? WHERE op_id=?",
+                (steer_id, follow_up),
+            )
+        gateway.gate.set()
+        await until(lambda: len(backend.socket.notes("chat.finished")) == 2)
+        (steer,) = [m for m in backend.socket.notes("chat.message") if m["sequence"] == steer_id]
+        assert steer["request_id"] == follow_up
+        later = [m for m in backend.socket.notes("chat.message") if m["sequence"] > steer_id]
+        assert later and {m["request_id"] for m in later} == {first}
+
+    run(system, scenario)
+
+
 def test_a_seam_error_while_logging_ends_the_backend_and_a_restart_resumes_the_log(system):
     gateways = []
 
@@ -2659,7 +2699,7 @@ def test_chat_history_includes_request_id_matching_live_events_and_publish_isola
                 "UPDATE client_admissions SET native_message_id=? WHERE op_id=?",
                 (second_user_id, second),
             )
-        after = await backend.publish(first, session_id, 0)
+        after = await backend.publish(first, session_id, aide.Scope(**WORKSPACE), 0)
         assert after < second_user_id
         published_for_first = [
             n for n in backend.socket.notes("chat.message") if n["sequence"] == second_user_id

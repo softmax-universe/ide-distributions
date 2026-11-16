@@ -1334,7 +1334,7 @@ class Backend:
                 log.info("Seam event stream dropped; resuming after %s", after)
             await asyncio.sleep(1)
 
-    async def publish(self, request_id: str, session_id: str, after: int) -> int:
+    async def publish(self, request_id: str, session_id: str, scope: Scope, after: int) -> int:
         """Announce native messages newer than ``after``; return the newest announced id."""
         async with self.publish_locks.setdefault(session_id, asyncio.Lock()):
             after = max(after, self.published_after.get(session_id, 0))
@@ -1355,7 +1355,7 @@ class Backend:
                     and not native.runtime_input
                 ):
                     if steered is None:
-                        snapshot = await self.snapshot(session_id=session_id)
+                        snapshot = await self.scoped(scope, session_id=session_id)
                         mine = [r for r in snapshot.records.requests if r.op_id == request_id]
                         my_runs = {r.run_id for req in mine for r in req.runs}
                         steered = {
@@ -1432,7 +1432,7 @@ class Backend:
             writer.close()
 
     async def follow(
-        self, request: Admission, run: Run, progress: Progress, after: int
+        self, request: Admission, scope: Scope, run: Run, progress: Progress, after: int
     ) -> tuple[bool, int]:
         """Log and push one run's events after those already consumed, until its stream ends.
 
@@ -1515,7 +1515,7 @@ class Backend:
                                 progress.consumed[run.run_id] = last_seq
                                 await record(progress.place(run.run_id, event))
                                 if event.event == "tool.completed":
-                                    after = await self.publish(request_id, session_id, after)
+                                    after = await self.publish(request_id, session_id, scope, after)
                                 elif event.event in CONTROLS:
                                     await self.changed(session_id)
                                 elif event.event.removeprefix("run.") in TERMINAL:
@@ -1577,7 +1577,7 @@ class Backend:
                 if runs:
                     run = runs[0]
                     progress = attempts.setdefault(run.attempt, Progress(run.attempt))
-                    finished, after = await self.follow(request, run, progress, after)
+                    finished, after = await self.follow(request, scope, run, progress, after)
                     if finished:
                         done.add(run.run_id)
                     elif request.status in ACTIVE:
@@ -1587,7 +1587,7 @@ class Backend:
                     # A steered request's messages are its host run's, which that consumer
                     # announces; read from this watermark they would repeat under this id.
                     if not any(r.steered for r in request.runs):
-                        after = await self.publish(request_id, session_id, after)
+                        after = await self.publish(request_id, session_id, scope, after)
                     final = attempts.get(request.resumes, Progress(request.resumes))
                     outcome = Finished(
                         attempt=request.resumes,
