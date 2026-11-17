@@ -123,6 +123,7 @@ class Coordinator:
         *,
         inference_lease_file: Path | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        uncertain: Callable[[Store], None] = lambda store: None,
     ):
         self.ws = ws
         self.native = native
@@ -131,6 +132,8 @@ class Coordinator:
         # The inference state beside this file classifies a failed chat run (``run_failures``).
         self.inference_lease_file = inference_lease_file
         self.clock = clock
+        # Called after a commit leaves an execution uncertain: only a runtime recycle settles it.
+        self.uncertain = uncertain
         # The last report recorded per Coworld: this loop can run twice a second with nothing new.
         self._last_reports: dict[str | None, dict[str, Any]] = {}
 
@@ -580,6 +583,7 @@ class Coordinator:
             and row["runtime_id"] != self.runtime_id
         ):
             execution_unknown = False  # the private process namespace was replaced
+        uncertain = bool(row["dispatch_started"] and execution_unknown)
         with store.tx(ACTOR) as tx:
             current = tx.one("SELECT status FROM client_admissions WHERE op_id=?", (row["op_id"],))
             if current["status"] not in {"queued", "running"}:
@@ -593,14 +597,11 @@ class Coordinator:
             tx.execute(
                 "UPDATE client_admissions SET status='interrupted',resolution_required=0,error=?,"
                 "execution_uncertain=?,runtime_id=COALESCE(runtime_id,?) WHERE op_id=?",
-                (
-                    reason,
-                    int(bool(row["dispatch_started"] and execution_unknown)),
-                    self.runtime_id,
-                    row["op_id"],
-                ),
+                (reason, int(uncertain), self.runtime_id, row["op_id"]),
             )
             tx.event("client.delivery_failed", row["op_id"], {"reason": reason, "replayed": False})
+        if uncertain:
+            self.uncertain(store)
 
     def reconcile_inputs(self, store: Store) -> None:
         retired = []

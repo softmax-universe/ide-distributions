@@ -54,7 +54,8 @@ sleep 2
 ready
 test "$(docker inspect --format '{{.RestartCount}}' "$name")" = 0
 echo "PASS slow seam: 7 s without a /status answer, no runtime restart"
-# Fault injection models a durable admission whose native acceptance reply was lost.
+# Fault injection models a durable admission whose native acceptance reply was lost. The
+# dispatcher closes it as uncertain and research serve asks its supervisor to recycle (no polling).
 recovery_started=$SECONDS
 docker exec -i "$name" /opt/workspace-env/bin/python - <<'PY'
 from research_core import layout
@@ -115,7 +116,7 @@ events = [RuntimeRecovery.model_validate_json(line) for line in sys.stdin
           if line.startswith("{\"event\":\"workspace_runtime_recovery\"")]
 assert len(events) == 1, events
 assert events[0].completed_recoveries == 0, events
-print("PASS recovery telemetry: one request, durable recovery count=1")
+print("PASS recovery telemetry: one request on the seam's notify socket, durable recovery count=1")
 ' < "$scratch/recovery.log"
 docker stop --time 30 "$name" >/dev/null
 docker rm "$name" >/dev/null
