@@ -8,6 +8,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from dotenv import dotenv_values
 
@@ -25,8 +26,7 @@ def lease(key: str, expires: datetime) -> tuple[str, str, bytes]:
     body = {
         "key": key,
         "expires_at": expires.isoformat(),
-        # Renew at once: the loop's two-second floor paces the scenario.
-        "renew_at": datetime.now(UTC).isoformat(),
+        "renew_at": (expires - state.RENEWAL_GRACE).isoformat(),
         "allowance_usd": 1,
     }
     return "200 OK", "", json.dumps(body).encode()
@@ -46,12 +46,13 @@ async def main(tmp_path: Path):
     done = asyncio.Event()
 
     installed = None
+    platform_retry_after = None
 
     async def respond(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         request = await reader.readuntil(b"\r\n\r\n")
         assert request.startswith(b"PUT /v2/workspaces/proof/inference HTTP/1.1\r\n")
         assert b"Authorization: Bearer fixture" in request
-        nonlocal installed
+        nonlocal platform_retry_after
         requests.append(time.monotonic())
         if len(requests) == 1:
             assert not ready.is_set() and not availability.available() and not marker.exists()
@@ -61,18 +62,6 @@ async def main(tmp_path: Path):
         elif len(requests) == 2:
             status, headers, body = lease("fixture-key", expires)
         elif len(requests) == 3:
-            # The first lease is installed; now the key runs dry mid-run.
-            assert availability.available()
-            installed = state.read_lease(marker)
-            assert installed.key_id == state.key_id("fixture-key")
-            # Later than the hook's grace after a key change, so the error counts.
-            record_api_error(
-                marker,
-                session_id="api_proof",
-                reason="billing",
-                status_code=402,
-                now=datetime.now(UTC) + KEY_CHANGE_GRACE,
-            )
             assert not availability.available()
             # The platform hands back the same, spent key: that must not end the block, nor
             # move the key's change time.
@@ -82,15 +71,17 @@ async def main(tmp_path: Path):
             assert state.read_lease(marker).key_changed_at == installed.key_changed_at
             assert not availability.available()
             status, headers = "200 OK", ""
+            platform_retry_after = time.monotonic() + 3
             body = json.dumps(
                 {
                     "kind": "budget_exhausted",
                     "message": "spent",
                     "next_refill_at": refill.isoformat(),
-                    "retry_at": datetime.now(UTC).isoformat(),
+                    "retry_at": (datetime.now(UTC) + timedelta(seconds=3)).isoformat(),
                 }
             ).encode()
         else:
+            assert time.monotonic() >= platform_retry_after
             blocking = availability.blocking()
             assert not availability.available() and blocking.blocked == "budget_exhausted"
             assert blocking.until == refill
@@ -134,6 +125,19 @@ async def main(tmp_path: Path):
                     "PRESERVED": "original",
                     "OPENROUTER_API_KEY": "fixture-key",
                 }
+            # A healthy key keeps its renewal schedule. A billing block created
+            # while the loop waits for refill must trigger an earlier check.
+            await asyncio.sleep(2.1)
+            assert len(requests) == 2
+            installed = state.read_lease(marker)
+            record_api_error(
+                marker,
+                session_id="api_proof",
+                reason="billing",
+                status_code=403,
+                message="API key budget limit exceeded (daily limit).",
+                now=datetime.now(UTC) + KEY_CHANGE_GRACE,
+            )
             async with asyncio.timeout(15):
                 await done.wait()
                 while not availability.available():
@@ -155,11 +159,14 @@ async def unwritable_state(tmp_path: Path):
     await record_state(state.lease_refused, lease_file, datetime.now(UTC), budget_exhausted=True)
 
 
-with TemporaryDirectory() as directory:
+with (
+    TemporaryDirectory() as directory,
+    patch("inference.BUDGET_RECHECK", timedelta(seconds=2), create=True),
+    patch("inference.LEASE_STATE_POLL_S", 0.05, create=True),
+):
     asyncio.run(main(Path(directory)))
 with TemporaryDirectory() as directory:
     asyncio.run(unwritable_state(Path(directory)))
 print(
-    "PASS inference retry follows server delay and publishes credentials before readiness;"
-    " a spent key blocks until a new key arrives"
+    "PASS inference honors platform retry delays and rechecks a locally blocked key before refill"
 )

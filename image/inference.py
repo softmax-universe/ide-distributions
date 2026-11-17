@@ -4,7 +4,7 @@ import asyncio
 import logging
 import sys
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core" / "src"))
 from research_core import inference as state  # noqa: E402
 
 log = logging.getLogger(__name__)
+LEASE_STATE_POLL_S = 30
+BUDGET_RECHECK = timedelta(minutes=5)
 
 
 @dataclass
@@ -128,4 +130,22 @@ async def maintain(
                     result.key.get_secret_value(),
                 )
                 ready.set()
-            await asyncio.sleep(max(2, (renew_at - datetime.now(UTC)).total_seconds()))
+            now = datetime.now(UTC)
+            renew_at = max(renew_at, now + timedelta(seconds=2))
+            if isinstance(result, Unavailable):
+                await asyncio.sleep((renew_at - now).total_seconds())
+                continue
+
+            budget_check_at = now + BUDGET_RECHECK
+            while True:
+                now = datetime.now(UTC)
+                # The model hook can block the installed key while this loop waits.
+                # Ask the platform to reconcile the balance without admitting model work.
+                blocking = availability.blocking()
+                check_at = renew_at
+                if blocking is not None and blocking.blocked == "budget_exhausted":
+                    check_at = min(check_at, budget_check_at)
+                remaining = (check_at - now).total_seconds()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(LEASE_STATE_POLL_S, remaining))
