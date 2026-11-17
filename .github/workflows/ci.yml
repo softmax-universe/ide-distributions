@@ -51,6 +51,11 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: uv run python tools/check_prompts.py --model
+      - name: Fetch canonical AIDE schema
+        run: >-
+          curl --fail --silent --show-error --location --max-time 30 --create-dirs
+          https://softmax.com/docs/static/aide/1.0.0/asyncapi.json
+          --output .pytest_cache/aide-asyncapi.json
       - name: Unit and scenario tests
         run: uv run pytest -q -n 4 --dist=loadfile --durations=20
 

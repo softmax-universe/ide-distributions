@@ -60,9 +60,15 @@ re-applies the keys the machinery relies on and removes retired ones).
 ```bash
 uv sync                 # the workspace environment plus pytest and ruff (Python 3.12)
 uv run ruff check .
-uv run pytest -q        # unit and scenario tests; the fake platform needs no network
+curl --fail --silent --show-error --location --max-time 30 --create-dirs \
+  https://softmax.com/docs/static/aide/1.0.0/asyncapi.json --output .pytest_cache/aide-asyncapi.json
+uv run pytest -q        # unit and scenario tests
 HERMES_BIN=/path/to/hermes uv run pytest -q -m hermes core/tests/hermes   # against a real Hermes
 ```
+
+The AIDE frame tests check the downloaded schema against the checksum pinned in
+`core/tests/test_aide_backend.py`. For a pending Metta contract change, set
+`AIDE_ASYNCAPI_PATH` to the exact schema artifact from that revision.
 
 `core/tests/hermes/test_telemetry_redaction.py` also needs `HERMES_PYTHON` or `IDE_HERMES_SRC`, to
 reach Hermes's secret scanner. `core/tests/hermes/test_rebuild_real.py` holds the comparison the telemetry rests on: a Session rebuilt from a fake Datadog against the bytes a
@@ -214,7 +220,7 @@ $4.18, at 2.7 requests a run
 only if it is declared, so a provider change is noticed. `test_tool_call_format.py` sends one
 instruction per tool, on the shipped models and pins.
 
-The default `pytest` needs no network and covers the judging rules, every `tool.action {fields}`
+The default `pytest` runs offline after schema setup and covers the judging rules, every `tool.action {fields}`
 signature and its example values in the prompts, skills, task types and wakes against the specs
 (`core/tests/test_tool_signatures.py`), and every field a validator requires against the schemas
 (`core/tests/tools/test_tool_schemas.py`).

@@ -303,7 +303,14 @@ def _is_rfc3339_datetime(value: object) -> bool:
 
 class _AideContract:
     def __init__(self, spec_path: Path):
-        document = json.loads(spec_path.read_bytes())
+        schema = spec_path.read_bytes()
+        actual = hashlib.sha256(schema).hexdigest()
+        if actual != _AIDE_ASYNCAPI_SHA256:
+            pytest.fail(
+                f"AIDE schema checksum mismatch for {spec_path}: "
+                f"expected {_AIDE_ASYNCAPI_SHA256}, got {actual}"
+            )
+        document = json.loads(schema)
         self._uri = spec_path.as_uri()
         self._registry = Registry().with_resource(self._uri, DRAFT202012.create_resource(document))
         self._validators: dict[str, Draft202012Validator] = {}
@@ -379,9 +386,20 @@ class _AideContract:
         self._validate(self.param_schemas[method], frame["params"])
 
 
+# Canonical Metta schema at c6650c9042bef56daae7c2e4b20af16580ba9601.
+_AIDE_ASYNCAPI_SHA256 = "5838c9a9ab420fd0ff65cf850cc295dee23d2e16f0e05cd9abfe09fce4a30c82"
+
+
 @lru_cache(maxsize=1)
 def _aide_contract() -> _AideContract:
-    return _AideContract(IMAGE / "contract/aide-1.0.0/asyncapi.json")
+    default_path = IMAGE.parent / ".pytest_cache/aide-asyncapi.json"
+    path = Path(os.environ.get("AIDE_ASYNCAPI_PATH", default_path)).resolve()
+    if not path.is_file():
+        pytest.fail(
+            f"AIDE schema missing at {path}. "
+            "See 'Develop and test' in README.md to fetch the canonical schema."
+        )
+    return _AideContract(path)
 
 
 @pytest.fixture(autouse=True)
