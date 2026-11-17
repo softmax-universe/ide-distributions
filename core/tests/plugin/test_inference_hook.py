@@ -178,13 +178,15 @@ def test_affordable_smaller_reply_does_not_block_workspace(lease_file, affordabl
     assert state.last_error.reason == "output_limit"
 
 
-def test_no_affordable_output_still_blocks(lease_file):
-    state = record(
-        lease_file,
-        "billing",
-        status_code=402,
-        message="You requested up to 16384 tokens, but can only afford 0.",
-    )
+@pytest.mark.parametrize(
+    "message",
+    [
+        "You requested up to 16384 tokens, but can only afford 0.",
+        "Prompt tokens limit exceeded: 35795 > 0.",
+    ],
+)
+def test_no_affordable_tokens_still_blocks(lease_file, message):
+    state = record(lease_file, "billing", status_code=402, message=message)
     assert state.blocked == "budget_exhausted"
 
 
