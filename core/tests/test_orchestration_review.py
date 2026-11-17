@@ -440,13 +440,7 @@ def test_lost_steering_receipt_closes_only_delivery_and_is_not_resent(tmp_path):
 
 
 def test_release_retains_unknown_run_until_runtime_exclusion(tmp_path):
-    class MissingRun(FakeHermesRuns):
-        def status(self, run_id, *, profile):
-            result = super().status(run_id, profile=profile)
-            if result.status == "unknown":
-                result.terminal = False
-            return result
-
+    class LostRun(FakeHermesRuns):
         def stop(self, run_id, *, profile):
             raise AssertionError("A missing run must not loop through stop")
 
@@ -461,7 +455,7 @@ def test_release_retains_unknown_run_until_runtime_exclusion(tmp_path):
         context="fix",
         rationale="fit",
     )
-    native = MissingRun()
+    native = LostRun()
     owner = Coordinator(ctx.workspace, native, "old-runtime")
     row = ctx.wstore.one("SELECT * FROM client_admissions WHERE op_id=?", (receipt["op_id"],))
     run_id = owner.start(
@@ -470,7 +464,7 @@ def test_release_retains_unknown_run_until_runtime_exclusion(tmp_path):
         text=json.loads(row["payload"])["input"],
         idempotency_key=row["native_key"],
     )
-    del native.runs[run_id]
+    native.crash(run_id)
     with ctx.wstore.tx(HARNESS) as tx:
         tx.execute("UPDATE task_assignments SET state='release_requested'")
     owner.reconcile()

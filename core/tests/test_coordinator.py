@@ -255,6 +255,37 @@ def test_unknown_outcome_is_interrupted_and_allows_following_input(tmp_path):
     assert len([call for call in native.calls if call[0] == "start"]) == 2
 
 
+def test_a_run_lost_in_a_gateway_restart_is_resolved_and_following_input_runs(tmp_path):
+    ctx = make_ctx(tmp_path)
+    native = FakeHermesRuns()
+    request = chat(ctx)
+    run_id = Coordinator(ctx.workspace, native, "old-runtime").start(**request)
+    native.crash(run_id)  # the gateway restarted under the turn: Hermes holds it ``unknown``
+    following = request | {"idempotency_key": "following", "text": "following"}
+    admissions.enqueue(
+        ctx.wstore,
+        HARNESS,
+        key="following",
+        session_id=request["session_id"],
+        profile="orchestrator",
+        text="following",
+        origin="client",
+    )
+    coordinator = Coordinator(ctx.workspace, native, "new-runtime")
+
+    following_run = coordinator.start(**following)
+
+    assert following_run != run_id and native.runs[following_run].status == "running"
+    assert native.status(run_id, profile="orchestrator").status == "cancelled"
+    coordinator.reconcile()
+    assert tuple(
+        ctx.wstore.one(
+            "SELECT status, error FROM client_admissions WHERE native_key='stable-input'"
+        )
+    ) == ("interrupted", "The workspace restarted during the run")
+    assert not admissions.restart_required(ctx.wstore)
+
+
 def test_recovery_replays_old_message_ids_and_counts_a_running_continuation(tmp_path):
     from research_core.watcher.context import TickContext
 
