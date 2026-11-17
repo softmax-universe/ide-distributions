@@ -22,7 +22,9 @@ the volume. In order:
    reader kept busy, then ``os.sync()`` for every other file on the volume (documents, git
    objects, logs).
 
-Whatever is still running or not flushed is listed in ``volatile`` and the command exits 1.
+Whatever is still running or not flushed is listed in ``volatile`` and the command exits 1. It
+then ends the sleep it began, as ``research workspace wake`` does, so a workspace that cannot stop
+keeps working (sleep's pause would hold every new message) until the host asks again.
 
 ``research workspace wake`` runs :func:`wake_up`: it clears the pause only when sleep set it,
 clears ``meta.sleep_started`` and, when the pause ended, emits ``workspace.resumed``, whose

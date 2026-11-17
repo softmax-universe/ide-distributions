@@ -353,16 +353,20 @@ def work_reasons(store: Store) -> list[str]:
     message, a refused start waiting out its ``retry_at`` backoff, the messages queued behind
     either in the same Session, and an admission that needs resolution do not: each waits on
     time, a refill or the user, and the dispatcher picks it up again once the workspace wakes.
+    Nor does an undispatched message while the workspace is paused: the dispatcher starts none
+    until the pause ends.
     """
     return [
         f"admission:{row['op_id']}:{row['status']}"
         for row in store.q(
             "SELECT op_id,status FROM client_admissions a WHERE a.resolution_required=0"
             " AND (a.status='running' OR (a.status='queued' AND a.resume_after IS NULL"
-            " AND a.retry_at IS NULL AND NOT EXISTS (SELECT 1 FROM client_admissions held"
+            " AND a.retry_at IS NULL AND (a.dispatch_started=1 OR NOT ?)"
+            " AND NOT EXISTS (SELECT 1 FROM client_admissions held"
             " WHERE held.session_id=a.session_id AND held.status='queued'"
             " AND (held.resume_after IS NOT NULL OR held.retry_at IS NOT NULL)"
-            " AND held.rowid<a.rowid))) ORDER BY a.rowid"
+            " AND held.rowid<a.rowid))) ORDER BY a.rowid",
+            (bool(settings.get(store, "paused")),),
         )
     ]
 

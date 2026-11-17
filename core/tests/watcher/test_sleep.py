@@ -289,6 +289,32 @@ def test_sleep_and_wake_commands_on_an_idle_workspace(tmp_path):
     assert status["paused"] is False and status["sleep_started"] is None
 
 
+def test_a_sleep_that_cannot_stop_hands_the_workspace_back_awake(tmp_path):
+    home = tmp_path / "profiles" / "orchestrator"
+    env = {
+        **{k: v for k, v in os.environ.items() if not k.startswith(("IDE_", "HERMES_"))},
+        "IDE_WORKSPACE": str(tmp_path / "ws"),
+        "HERMES_HOME": str(home),
+        "IDE_PLATFORM": "fake",
+    }
+    # A reader holding the Orchestrator's state.db keeps its checkpoint from finishing.
+    state = wal_database(home / "state.db")
+    state.execute("INSERT INTO notes VALUES ('turn')")
+    reader = sqlite3.connect(home / "state.db", isolation_level=None)
+    reader.execute("BEGIN")
+    reader.execute("SELECT * FROM notes").fetchall()
+
+    code, slept = research(["workspace", "sleep", "--wait", "0"], env)
+    reader.close()
+    state.close()
+
+    assert code == 1 and slept["ok"] is False, slept
+    assert slept["volatile"] == [f"database:{home / 'state.db'}:not-checkpointed"]
+    assert slept["paused"] is False and slept["woke"]["unpaused"] is True
+    code, status = research(["watcher", "status"], env)
+    assert status["paused"] is False and status["sleep_started"] is None
+
+
 def test_sleep_refuses_without_the_profile_home(tmp_path):
     env = {
         **{k: v for k, v in os.environ.items() if not k.startswith(("IDE_", "HERMES_"))},
