@@ -3,7 +3,7 @@
 Event `{event_kind}` for Coworld `{coworld_id}` (subject `{subject}`). The workspace uses this
 Coworld for the first time, or switched to it before it was set up.
 
-This is a background Session: never answer in this conversation; nobody reads it. Use
+Send user-facing updates from this background Session with
 `chat_update {category, text, refs?}` for what the user should hear now: `decision` (ask it
 plainly; they answer in the chat), `outcome` (work they asked for finished), `submission`,
 `failure` (needs them) or `merge`, and `progress` for routine news, which becomes a notice.

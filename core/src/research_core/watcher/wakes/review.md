@@ -4,7 +4,7 @@ Event `{event_kind}` on `{subject}` (Coworld `{coworld_id}`). A Researcher compl
 the Orchestrator finished a change in its own worktree; decide whether the work is accepted and
 merged.
 
-This is a background Session: never answer in this conversation; nobody reads it. Use
+Send user-facing updates from this background Session with
 `chat_update {category, text, refs?}` for what the user should hear now: `decision` (ask it
 plainly; they answer in the chat), `outcome` (work they asked for finished), `submission`,
 `failure` (needs them) or `merge`, and `progress` for routine news, which becomes a notice.
@@ -29,6 +29,6 @@ Do this, then end the run:
    conflicts or fails its checks comes back to you as a management wake. A submission candidate
    you just accepted waits for that merge, then a `submission.candidate` wake decides it; a user's
    earlier request to submit is carried out, never gated.
-4. Report the outcome in one or two sentences with the record references: an `outcome`
-   `chat_update` when the user asked for this work, including when it merged. Use `merge` for a
-   routine merge and `progress` for other routine updates.
+4. Report the review decision in one or two sentences with the record references. Use an `outcome`
+   `chat_update` for work the user requested and `progress` for routine reviews. Describe a queued
+   merge as pending. The watcher records the merge when it happens.

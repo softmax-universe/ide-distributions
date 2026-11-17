@@ -476,6 +476,9 @@ def test_a_wake_names_its_admission_and_the_events_it_covers(seam):
     assert (wake["admission_id"], wake["session_id"]) == (row["op_id"], row["session_id"])
     assert (wake["native_event_type"], wake["coworld_id"]) == ("task.asked", COWORLD)
     assert (wake["details"]["first_seq"], wake["details"]["batch_size"]) == (seq, 1)
+    instructions = json.loads(row["payload"])["instructions"]
+    assert "finish the turn with one internal status sentence" in instructions
+    assert "Leave pending work to the watcher" in instructions
 
 
 def test_a_failed_worker_names_its_successor(seam):
