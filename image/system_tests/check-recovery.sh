@@ -116,7 +116,7 @@ events = [RuntimeRecovery.model_validate_json(line) for line in sys.stdin
           if line.startswith("{\"event\":\"workspace_runtime_recovery\"")]
 assert len(events) == 1, events
 assert events[0].completed_recoveries == 0, events
-print("PASS recovery telemetry: one request on the seam's notify socket, durable recovery count=1")
+print("PASS recovery telemetry: one request on the seam notify socket, durable recovery count=1")
 ' < "$scratch/recovery.log"
 docker stop --time 30 "$name" >/dev/null
 docker rm "$name" >/dev/null
