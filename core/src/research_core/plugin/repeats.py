@@ -78,15 +78,20 @@ def refusal_of(result: Any) -> dict | None:
 
     Text after the JSON is allowed: Hermes appends its loop warnings to a result in the history.
     """
-    if not isinstance(result, str) or not result.lstrip().startswith("{"):
-        return None
-    try:
-        parsed, _ = json.JSONDecoder().raw_decode(result.lstrip())
-    except ValueError:
-        return None
-    if isinstance(parsed, dict) and parsed.get("ok") is False and parsed.get("problems"):
+    parsed = _tool_object(result)
+    if parsed.get("ok") is False and parsed.get("problems"):
         return parsed
     return None
+
+
+def _tool_object(text: Any) -> dict:
+    if not isinstance(text, str) or not text.lstrip().startswith("{"):
+        return {}
+    try:
+        parsed, _ = json.JSONDecoder().raw_decode(text.lstrip())
+    except ValueError:
+        return {}
+    return parsed
 
 
 def args_hash(args: Any) -> str:
@@ -178,6 +183,93 @@ def without_repeated_refusals(*, request: dict[str, Any], **_: Any) -> dict[str,
     except Exception as error:  # never break a model call
         log.debug("repeated refusal middleware failed: %s", error)
         return None
+
+
+def finish_stalled_orchestration(
+    *, request: dict[str, Any], provider: str = "", **_: Any
+) -> dict[str, Any] | None:
+    """Let the watcher take over when repeated task and goal reads show no useful change."""
+    messages = request.get("messages") or []
+    if provider != "openrouter" or not request.get("tools") or not messages:
+        return None
+    last = messages[-1]
+    if last.get("role") != "tool" or not isinstance(_result_text(last.get("content")), str):
+        return None
+    # The watcher can advance these records independently. Judge their state, not byte-identical
+    # tool output: notices allocate IDs, health checks show heartbeats, and diagnostics touch Tasks.
+    snapshots: dict[tuple[str, str], str] = {}
+    repeated = 0
+    calls: dict[str, dict] = {}
+    for message in messages[-96:]:
+        role = message.get("role")
+        if role == "user":
+            snapshots.clear()
+            calls.clear()
+            repeated = 0
+        elif role == "assistant":
+            calls.update({call["id"]: call["function"] for call in message.get("tool_calls") or ()})
+        elif role == "tool":
+            call = calls.pop(message.get("tool_call_id"), {})
+            name = call.get("name")
+            args = _tool_object(call.get("arguments"))
+            action = args.get("action")
+            if (
+                (name == "chat_update" and args.get("category") == "progress")
+                or (name == "workspace" and action in ("doctor", "identity"))
+                or (name == "terminal" and args.get("command") in ("true", ":"))
+            ):
+                continue
+            result = _tool_object(_result_text(message.get("content")))
+            if (
+                name not in ("task", "goal")
+                or action not in ("read", "list")
+                or not result.get("ok")
+            ):
+                snapshots.clear()
+                repeated = 0
+                continue
+            rows = result.get("records") if action == "list" else [result.get("record")]
+            if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+                continue
+            state = [
+                {
+                    key: value
+                    for key, value in row.items()
+                    if key not in ("updated", "last_error_seen")
+                }
+                for row in rows
+            ]
+            snapshot = args_hash((state, result.get("pending_messages")))
+            query = (name, args_hash(args))
+            previous = snapshots.get(query)
+            if snapshot == previous:
+                repeated += 1
+            elif previous is not None:
+                snapshots.clear()
+                repeated = 0
+            snapshots[query] = snapshot
+
+    if repeated < 3:
+        return None
+    notice = (
+        "\n\n[Orchestrator handoff: repeated reads show no change in task or goal state. "
+        "Reply now with what is running or blocked and end this turn. "
+        "The workspace watcher handles follow-up events.]"
+    )
+    content = last["content"]
+    final_content = (
+        [*content, {"type": "text", "text": notice}]
+        if isinstance(content, list)
+        else content + notice
+    )
+    return {
+        "request": {
+            **request,
+            "tool_choice": "none",
+            "messages": [*messages[:-1], {**last, "content": final_content}],
+        },
+        "reason": "Yield unchanged task and goal reads to the watcher",
+    }
 
 
 def make_hooks(role: Role) -> dict[str, Callable[..., Any]]:

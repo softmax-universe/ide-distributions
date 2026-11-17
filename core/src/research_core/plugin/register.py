@@ -44,10 +44,15 @@ def make_register(role: Role) -> Callable[[Any], None]:
                 handler=make_handler(spec, role, traces),
                 description=spec.description,
             )
+        from research_core.plugin.repeats import (
+            finish_stalled_orchestration,
+            without_repeated_refusals,
+        )
         from research_core.plugin.repeats import make_hooks as make_repeat_hooks
-        from research_core.plugin.repeats import without_repeated_refusals
 
         ctx.register_middleware("llm_request", without_repeated_refusals)
+        if role == "orchestrator":
+            ctx.register_middleware("llm_request", finish_stalled_orchestration)
         from research_core.plugin.hermes_prompt import without_mandatory_tool_use
 
         ctx.register_middleware("llm_request", without_mandatory_tool_use)
