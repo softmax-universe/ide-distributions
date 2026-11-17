@@ -43,7 +43,8 @@ minutes without work. Restart calls wake with the retained filesystem.
 
 The release dispatcher passes the distribution commit to Metta's generic build workflow.
 That workflow builds `image/Dockerfile`, runs `image/system_tests/start-stop.sh`, and publishes
-an immutable image digest. Hosting consumes that digest without inspecting profile internals.
+an immutable image digest, then moves the runtime repository's `candidate` tag to it. Hosting
+consumes that digest without inspecting profile internals.
 
 Chat reaches the image only through the [AIDE 1.0.0 backend](#aide-100-backend); the
 workspace connection above carries hosting control alone, and refuses any other envelope with
