@@ -363,6 +363,21 @@ def test_stop_of_an_inactive_run_falls_back_to_its_status(gateway, client):
     )
 
 
+def test_a_run_lost_in_a_restart_reads_unknown_until_resolved(gateway, client):
+    lost = {"run_id": "run_1", "status": "unknown", "admission_id": "a1", "execution_generation": 2}
+    gateway.answer(200, lost)
+    status = client.status("run_1", profile="orchestrator")
+    assert (status.status, status.terminal, status.lost) == ("unknown", False, True)
+
+    gateway.answer(200, {"run_id": "run_1", "admission_id": "a1", "status": "terminal"})
+    client.resolve_unknown(status, profile="orchestrator")
+    assert (gateway.last["method"], gateway.last["path"]) == (
+        "POST",
+        "/p/orchestrator/v1/runs/run_1/resolve-unknown",
+    )
+    assert gateway.last["body"] == {"admission_id": "a1", "execution_generation": 2}
+
+
 # --- sessions --------------------------------------------------------------------------------
 
 
@@ -524,12 +539,27 @@ def test_fake_fail_crash_and_unknown_runs():
 
     assert fake.status(failed, profile="researcher").error == "tool exploded"
     assert fake.status(failed, profile="researcher").status == "failed"
-    assert fake.status(crashed, profile="researcher").status == "interrupted"
-    assert fake.status(crashed, profile="researcher").terminal is True
+    lost = fake.status(crashed, profile="researcher")
+    assert (lost.status, lost.terminal, lost.lost) == ("unknown", False, True)
 
     unknown = fake.status("run_nope", profile="researcher")
-    assert (unknown.status, unknown.terminal) == ("unknown", True)
-    assert [method for method, _ in fake.calls] == ["start", "start"] + ["status"] * 5
+    assert (unknown.status, unknown.terminal, unknown.lost) == ("unknown", True, False)
+    assert [method for method, _ in fake.calls] == ["start", "start"] + ["status"] * 4
+
+
+def test_fake_holds_a_lost_runs_session_until_it_is_resolved():
+    fake = FakeHermesRuns()
+    lost = fake.start(profile="orchestrator", session_id="s", text="t")
+    fake.crash(lost)
+    later = fake.start(profile="orchestrator", session_id="s", text="next")
+
+    assert fake.stop(lost, profile="orchestrator").lost  # the gateway refuses to stop it
+    assert fake.steer(lost, "x", profile="orchestrator") is False
+    assert fake.status(later, profile="orchestrator").status == "queued"
+
+    fake.resolve_unknown(fake.status(lost, profile="orchestrator"), profile="orchestrator")
+    assert fake.status(lost, profile="orchestrator").status == "cancelled"
+    assert fake.status(later, profile="orchestrator").status == "running"
 
 
 def test_fake_create_session_then_messages():

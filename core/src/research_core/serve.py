@@ -828,11 +828,11 @@ class SeamServer:
                     key = (row["profile"], row["run_id"])
                     now = time.monotonic()
                     if row["cancel_requested"]:
-                        status = self.hermes.stop(row["run_id"], profile=row["profile"])
+                        status = self.coordinator.stop(row["run_id"], profile=row["profile"])
                     elif (
                         now - self._last_native_poll.get(key, float("-inf")) >= RUN_POLL_INTERVAL_S
                     ):
-                        status = self.hermes.status(row["run_id"], profile=row["profile"])
+                        status = self.coordinator.status(row["run_id"], profile=row["profile"])
                     else:
                         continue
                     self._last_native_poll[key] = now
@@ -878,7 +878,9 @@ class SeamServer:
                     row["origin"] not in {"client", "answer", "continuation"}
                     and not row["dispatch_started"]
                     and session["run_id"]
-                    and not self.hermes.status(session["run_id"], profile=row["profile"]).terminal
+                    and not self.coordinator.status(
+                        session["run_id"], profile=row["profile"]
+                    ).terminal
                 ):
                     continue
                 reserved.add(row["session_id"])
@@ -1318,7 +1320,7 @@ class SeamServer:
                 }
 
     def run_status(self, run_id: str) -> dict:
-        return dataclasses.asdict(self.hermes.status(run_id, profile=self.profile))
+        return dataclasses.asdict(self.coordinator.status(run_id, profile=self.profile))
 
     # --- what the HTTP boundary records ----------------------------------------------------
 

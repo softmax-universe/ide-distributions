@@ -167,14 +167,16 @@ def work_reasons(ctx: TickContext) -> list[str]:
 
 
 def still_running(ctx: TickContext, session: dict[str, Any] | None) -> bool:
-    """Whether the gateway still reports the Session's run live (unreachable counts as no)."""
+    """Whether the gateway still reports the Session's run live (unreachable counts as no). A run
+    lost in a gateway restart is not: nothing executes it, though the gateway holds it open until
+    its owner resolves it (``Coordinator.status``)."""
     if session is None or not session.get("run_id"):
         return False
     try:
         status = ctx.hermes.status(session["run_id"], profile=session["profile"])
     except RunsError:
         return False  # an unreachable gateway cannot be waited on; it is not our run any more
-    return not status.terminal
+    return not status.terminal and not status.lost
 
 
 def _pid(ref: Any) -> int | None:

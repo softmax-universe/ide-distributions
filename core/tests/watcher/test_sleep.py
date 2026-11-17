@@ -91,6 +91,17 @@ def test_sleep_stops_an_orchestrator_run_that_outlasts_the_wait(tmp_path):
     assert report["still_running"] == []
 
 
+def test_a_chat_run_lost_in_a_gateway_restart_does_not_keep_the_workspace_awake(tmp_path):
+    ctx = make_ctx(tmp_path)
+    chat = chat_run(ctx)
+    ctx.hermes.crash(chat)  # the gateway restarted under the turn: Hermes holds it ``unknown``
+
+    report = go_to_sleep(ctx, wait_s=5)
+
+    assert report["orchestrator_runs"]["stopped"] == []
+    assert report["still_running"] == []
+
+
 def test_a_failed_stop_is_reported_as_still_running(tmp_path):
     ctx = make_ctx(tmp_path)
     chat_run(ctx)

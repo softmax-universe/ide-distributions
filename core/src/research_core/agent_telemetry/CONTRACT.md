@@ -226,6 +226,7 @@ the gateway records, which name both.
 | `coordinator` / `failed`, `runtime_recovered` | `research serve`   | A pass raised (`reason` is the exception's type), or a new runtime retired an old one's executions    |
 | `wake` / `started`                        | `research serve`       | A wake or batch Session's admission, with `batch_size`, `first_seq` and `last_seq` of its events       |
 | `execution` / `successor`                 | `research serve`       | `admission_id` handed over to `execution_attempt_id`. `reason` is `new_session`, `rerouted` or `delivery_retry` |
+| `execution` / `lost_resolved`             | `research serve`       | The coordinator resolved a run a gateway restart lost (Hermes `unknown`) in `session_id`, so its later input runs |
 
 The prompts the coordinator writes have no record of their own: the model request holds that text, after redaction.
 

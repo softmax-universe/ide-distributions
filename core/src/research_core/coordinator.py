@@ -6,6 +6,7 @@ Child-result retention and process containment are deliberately not claimed by t
 
 from __future__ import annotations
 
+import dataclasses
 import fcntl
 import hashlib
 import json
@@ -137,11 +138,46 @@ class Coordinator:
         # The last report recorded per Coworld: this loop can run twice a second with nothing new.
         self._last_reports: dict[str | None, dict[str, Any]] = {}
 
-    def status(self, run_id: str, *, profile: str):
-        return self.native.status(run_id, profile=profile)
+    def status(self, run_id: str, *, profile: str) -> hermes_api.RunStatus:
+        return self._settle_lost(self.native.status(run_id, profile=profile), profile=profile)
 
-    def stop(self, run_id: str, *, profile: str):
-        return self.native.stop(run_id, profile=profile)
+    def stop(self, run_id: str, *, profile: str) -> hermes_api.RunStatus:
+        return self._settle_lost(self.native.stop(run_id, profile=profile), profile=profile)
+
+    def _settle_lost(self, status: hermes_api.RunStatus, *, profile: str) -> hermes_api.RunStatus:
+        """The run as its owner reads it: a run the gateway lost in a restart is acknowledged.
+
+        Hermes reports a run ``unknown`` (:attr:`~hermes_api.RunStatus.lost`) when its gateway
+        restarted under it. Nothing executes it any more, yet Hermes refuses its stop and steers
+        and holds every later input of its Session until the owner resolves it. This coordinator
+        is that owner: once no execution of the run is left to this runtime (an attempt it
+        dispatched still open, or one awaiting runtime exclusion), it resolves the run and reads
+        it as ``interrupted``, as for any run a restart ended. Until then the run reads ``unknown``
+        and the caller closes the attempt as uncertain, which recycles the runtime. Every status
+        read and stop of the workspace goes through here."""
+        if not status.lost:
+            return status
+        with Store.open(self.ws.store_path, kind="workspace") as store:
+            if store.one(
+                "SELECT 1 FROM client_admissions WHERE run_id=? AND (execution_uncertain=1"
+                " OR (status IN ('queued','running') AND runtime_id IS ?))",
+                (status.run_id, self.runtime_id),
+            ):
+                return status
+        self.native.resolve_unknown(status, profile=profile)
+        observed.record(
+            "execution",
+            "lost_resolved",
+            session_id=status.session_id,
+            profile=profile,
+            owner_instance=self.instance_id,
+        )
+        return dataclasses.replace(
+            status,
+            status="interrupted",
+            terminal=True,
+            error="The workspace restarted during the run",
+        )
 
     def steer(self, run_id: str, text: str | list[dict], *, profile: str):
         return self.native.steer(run_id, text, profile=profile)
@@ -205,15 +241,13 @@ class Coordinator:
                     " WHERE session_id=? AND run_id IS NOT NULL AND status IN ('queued','running')",
                     (session_id,),
                 ):
-                    observed[previous["run_id"]] = self.native.status(
+                    observed[previous["run_id"]] = self.status(
                         previous["run_id"], profile=previous["profile"]
                     )
                     if observed[previous["run_id"]].status == "unknown":
                         self.close_unreplayable(store, previous, "Native outcome is unknown")
                 if snapshot["run_id"] not in observed and snapshot["run_id"]:
-                    observed[snapshot["run_id"]] = self.native.status(
-                        snapshot["run_id"], profile=profile
-                    )
+                    observed[snapshot["run_id"]] = self.status(snapshot["run_id"], profile=profile)
                 if (
                     row["origin"] in {"client", "answer", "continuation"}
                     and (
@@ -1302,7 +1336,7 @@ class Coordinator:
                 " AND run_id IS NOT NULL"
             ):
                 self.settle_attempt(
-                    store, row["op_id"], self.native.status(row["run_id"], profile=row["profile"])
+                    store, row["op_id"], self.status(row["run_id"], profile=row["profile"])
                 )
 
     def advance_attempts(self, ctx: TickContext) -> None:
@@ -1500,7 +1534,7 @@ class Coordinator:
                 and current["run_id"]
                 and current["status"] in {"queued", "running"}
             ):
-                observed = self.native.status(current["run_id"], profile=session["profile"])
+                observed = self.status(current["run_id"], profile=session["profile"])
                 self.settle_attempt(ctx.wstore, current["op_id"], observed)
             current = ctx.wstore.one(
                 "SELECT a.*,t.state AS assignment_state FROM task_assignments t"
@@ -2153,9 +2187,7 @@ class Coordinator:
                     continue
                 if assignment["attempt_run_id"] is None:
                     continue
-                status = self.native.status(
-                    assignment["attempt_run_id"], profile=assignment["profile"]
-                )
+                status = self.status(assignment["attempt_run_id"], profile=assignment["profile"])
                 if status.status == "unknown":
                     self.close_unreplayable(
                         store,

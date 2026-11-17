@@ -15,9 +15,13 @@ Facts the client relies on:
   ``409 idempotency_key_conflict`` (A5.1);
 * the gateway answers ``429 rate_limit_exceeded`` when its concurrency cap is reached and
   ``503 gateway_draining`` while shutting down: both mean "try again next tick";
-* run statuses are ``queued | running | waiting_for_approval | stopping`` and the terminal set
-  :data:`TERMINAL`; ``steer`` is accepted only while ``running`` (409 otherwise); ``stop``
-  answers ``stopping`` and the run then ends ``cancelled``;
+* run statuses are ``queued | running | waiting_for_approval | stopping | unknown`` and the
+  terminal set :data:`TERMINAL`; ``steer`` is accepted only while ``running`` (409 otherwise);
+  ``stop`` answers ``stopping`` and the run then ends ``cancelled``;
+* ``unknown`` is a run the gateway restarted under (:attr:`RunStatus.lost`): nothing executes it,
+  ``stop`` and ``steer`` answer 409, and the gateway holds every later input of its Session
+  until the owner acknowledges the loss with ``POST /v1/runs/<id>/resolve-unknown``, after which
+  the run reads ``cancelled``;
 * the gateway does not serialise runs per session, so callers must;
 * session ids minted by the watcher use the shape Hermes mints itself, ``api_<epoch>_<8hex>``.
 
@@ -80,6 +84,13 @@ class RunStatus:
             terminal=status in TERMINAL,
             raw=payload,
         )
+
+    @property
+    def lost(self) -> bool:
+        """The gateway restarted under this started run: it no longer executes, and the gateway
+        holds its Session's later input until :meth:`HermesRuns.resolve_unknown`. Unlike a run
+        the gateway does not know (:meth:`unknown`), it is not terminal."""
+        return self.status == "unknown" and not self.terminal
 
     @classmethod
     def unknown(cls, run_id: str, detail: str = "", raw: dict | None = None) -> RunStatus:
@@ -354,6 +365,19 @@ class HermesRuns:
             return self.status(run_id, profile=profile)
         return RunStatus.from_payload(response.payload, run_id)
 
+    def resolve_unknown(self, lost: RunStatus, *, profile: str) -> None:
+        """``POST …/resolve-unknown``: acknowledge a :attr:`RunStatus.lost` run, which then reads
+        ``cancelled`` and lets its Session's later input run. Acknowledging it again is a no-op."""
+        self._request(
+            "POST",
+            profile,
+            f"/v1/runs/{lost.run_id}/resolve-unknown",
+            body={
+                "admission_id": lost.raw["admission_id"],
+                "execution_generation": lost.raw["execution_generation"],
+            },
+        )
+
     def session_messages(self, session_id: str, *, profile: str) -> list[dict]:
         """``GET /p/<profile>/api/sessions/<id>/messages``; ``[]`` for a session Hermes lacks."""
         response = self._request(
@@ -487,6 +511,8 @@ class FakeRun:
         if self.pending_controls:
             raw["status"] = "waiting_for_approval"
             raw["pending_controls"] = self.pending_controls
+        if self.status == "unknown":
+            raw.update(admission_id=f"admission_{self.run_id}", execution_generation=1)
         return RunStatus.from_payload(raw)
 
 
@@ -494,7 +520,9 @@ class FakeHermesRuns(HermesRuns):
     """An in-memory gateway with the same methods, for watcher tests.
 
     A started run is ``running`` until a test (or the ``script`` hook, called with the new
-    :class:`FakeRun` at every start) calls :meth:`complete`, :meth:`fail` or :meth:`crash`.
+    :class:`FakeRun` at every start) calls :meth:`complete`, :meth:`fail` or :meth:`crash`. As in
+    the real gateway, a run started on a Session whose earlier run was lost in a restart stays
+    ``queued`` until that run is resolved.
     ``stop`` answers ``stopping`` like the real gateway and the run reads ``cancelled`` from the
     next status call on. Every call is appended to ``calls`` as ``(method, kwargs)``; steers go
     to ``steered``; ``sessions`` holds each session's messages (user text at start and steer,
@@ -546,9 +574,9 @@ class FakeHermesRuns(HermesRuns):
         run.status, run.error, run.turn_exit_reason = "failed", error, turn_exit_reason
 
     def crash(self, run_id: str) -> None:
-        """The gateway died under the run: Hermes reports such runs as ``interrupted``."""
-        run = self.runs[run_id]
-        run.status, run.error = "interrupted", "gateway restarted"
+        """The gateway restarted under the run: Hermes reports it ``unknown`` (lost) until it is
+        resolved, and holds the Session's later runs ``queued`` meanwhile."""
+        self.runs[run_id].status = "unknown"
 
     # -- the API ------------------------------------------------------------------------------
 
@@ -596,6 +624,7 @@ class FakeHermesRuns(HermesRuns):
             input=text if isinstance(text, str) else text[-1]["content"],
             instructions=instructions,
             idempotency_key=idempotency_key,
+            status="queued" if self._held(session_id) else "running",
         )
         self.runs[run.run_id] = run
         if idempotency_key is not None:
@@ -626,10 +655,20 @@ class FakeHermesRuns(HermesRuns):
     def stop(self, run_id: str, *, profile: str) -> RunStatus:
         self.calls.append(("stop", {"run_id": run_id, "profile": profile}))
         run = self.runs.get(run_id)
-        if run is not None and run.status not in TERMINAL and run.status != "stopping":
+        if run is not None and run.status not in TERMINAL | {"stopping", "unknown"}:
             run.status = "stopping"
             return run.to_status()
         return self._status(run_id)
+
+    def resolve_unknown(self, lost: RunStatus, *, profile: str) -> None:
+        self.calls.append(("resolve_unknown", {"run_id": lost.run_id, "profile": profile}))
+        run = self.runs[lost.run_id]
+        if run.status == "unknown":
+            run.status = "cancelled"
+        if not self._held(run.session_id):
+            for queued in self.runs.values():
+                if queued.session_id == run.session_id and queued.status == "queued":
+                    queued.status = "running"
 
     def approve_once(self, run_id: str, control: dict, *, profile: str) -> None:
         self.calls.append(
@@ -652,6 +691,10 @@ class FakeHermesRuns(HermesRuns):
     def create_session(self, session_id: str, *, profile: str) -> None:
         self.calls.append(("create_session", {"session_id": session_id, "profile": profile}))
         self.sessions.setdefault(session_id, [])
+
+    def _held(self, session_id: str) -> bool:
+        """Whether a lost run holds the Session's later runs."""
+        return any(r.session_id == session_id and r.status == "unknown" for r in self.runs.values())
 
     def _status(self, run_id: str) -> RunStatus:
         run = self.runs.get(run_id)
