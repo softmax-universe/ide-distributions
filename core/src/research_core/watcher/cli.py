@@ -165,6 +165,10 @@ def run_sleep(args: argparse.Namespace) -> int:
     payload["volatile"] = volatile
     if volatile:
         payload["error"] = "not ready to stop: see volatile"
+        # The host will not stop a workspace that is not ready, so end this sleep as a wake
+        # does: the workspace keeps working instead of holding new messages under sleep's pause.
+        payload["woke"] = sleep.wake_from_env(os.environ)
+        payload["paused"] = payload["woke"]["paused"]
     print(json.dumps(payload, default=str))
     return 0 if not volatile else 1
 

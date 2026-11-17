@@ -443,6 +443,17 @@ def test_has_work_counts_neither_a_waiting_message_nor_the_messages_behind_it(di
     assert dispatch.server.status()["has_work"] is False
 
 
+def test_has_work_does_not_count_a_message_queued_while_the_workspace_is_paused(dispatch):
+    """A paused workspace starts no message, so one waiting for the pause to end is not work."""
+    settings.update(dispatch.store, Actor.harness(), "paused", True, cites="test")
+    op_id = dispatch.say("tune the policy")
+    dispatch.tick()
+    assert dispatch.admission(op_id)["status"] == "queued" and dispatch.starts() == []
+    assert dispatch.server.status()["has_work"] is False
+    settings.update(dispatch.store, Actor.harness(), "paused", False, cites="test")
+    assert dispatch.server.status()["waiting_on"] == [f"admission:{op_id}:queued"]
+
+
 def test_a_resume_never_binds_the_context_to_its_continuation(dispatch, tmp_path, monkeypatch):
     """The client hides the continuation only while it has no context, so the native-message
     hook must not record a resume's user message as the admission's message, even when the

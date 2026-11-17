@@ -193,8 +193,11 @@ workspace is awake: finishing platform work does not wake it.
 
 `research workspace sleep` preserves lifecycle v1: pause admission, drain recorded workers and
 tracked processes, settle chat/wake runs, then checkpoint and flush the retained volume.
-Exit 0 authorizes the host to stop compute. Explicit Stop and fifteen-minute automatic sleep
-remain enabled. Every start after a sleep is a full boot (`image/runtime.py`). The runtime updates
+Exit 0 authorizes the host to stop compute. Exit 1 means something is still running or not
+flushed (`volatile`); the command then clears its own pause, as `research workspace wake` does,
+so the awake workspace keeps admitting messages until the host tries again. A message queued
+while the workspace is paused is not work: it cannot run until someone resumes the workspace.
+Explicit Stop and fifteen-minute automatic sleep remain enabled. Every start after a sleep is a full boot (`image/runtime.py`). The runtime updates
 the profiles when the image changes, runs `prepare.py` for each profile, starts the gateway, then
 runs `research serve --wake`. Before starting dispatch, the server clears any sleep-owned pause
 so the coordinator resumes drained work. A new image therefore takes effect at the next wake.
