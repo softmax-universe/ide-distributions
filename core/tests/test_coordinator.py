@@ -176,6 +176,37 @@ def test_assignments_reserve_capacity_before_any_worker_starts(tmp_path):
             rationale="Fit",
         )
     assert ctx.wstore.one("SELECT COUNT(*) FROM task_assignments")[0] == 1
+    settings.update(ctx.wstore, HARNESS, "max_researchers", 2, cites="allow another reservation")
+    Coordinator.reserve(
+        ctx,
+        task_id=2,
+        task_updated=second["updated"],
+        profile="researcher",
+        assignment_id="two",
+        context="Two",
+        rationale="Fit",
+    )
+    settings.update(ctx.wstore, HARNESS, "max_researchers", 1, cites="lower limit with backlog")
+    first_request, second_request = [
+        {
+            "profile": entry["profile"],
+            "session_id": entry["session_id"],
+            "text": json.loads(entry["payload"])["input"],
+            "idempotency_key": entry["native_key"],
+        }
+        for entry in ctx.wstore.q("SELECT * FROM client_admissions ORDER BY rowid")
+    ]
+    native = FakeHermesRuns()
+    coordinator = Coordinator(ctx.workspace, native)
+    first_run = coordinator.start(**first_request)
+    assert first_run in native.runs
+    with pytest.raises(RunsBusy) as refusal:
+        coordinator.start(**second_request)
+    assert refusal.value.code == "capacity_reserved"
+    assert len(native.runs) == 1
+    native.complete(first_run)
+    coordinator.reconcile()
+    assert coordinator.start(**second_request) in native.runs
 
 
 def test_a_stale_lease_does_not_allow_a_second_worker(tmp_path):

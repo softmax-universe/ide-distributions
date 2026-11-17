@@ -309,12 +309,18 @@ _WORKER_RESERVATIONS = (
 )
 
 
-def reserved_workers(store: Store, exclude_session: str | None = None) -> int:
+def reserved_workers(store: Store) -> int:
+    return store.one("SELECT COUNT(DISTINCT a.session_id)" + _WORKER_RESERVATIONS)[0]
+
+
+def dispatched_workers(store: Store, *, exclude_session: str) -> int:
+    """Count other workers that may be executing, including unresolved dispatches."""
     return store.one(
         "SELECT COUNT(DISTINCT a.session_id)"
         + _WORKER_RESERVATIONS
-        + " AND (? IS NULL OR a.session_id!=?)",
-        (exclude_session, exclude_session),
+        + " AND a.session_id!=?"
+        + " AND (a.dispatch_started=1 OR a.resolution_required=1 OR a.execution_uncertain=1)",
+        (exclude_session,),
     )[0]
 
 
