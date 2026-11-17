@@ -17,6 +17,7 @@ import json
 import secrets
 import sqlite3
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
@@ -300,6 +301,7 @@ class Tx:
         self.token = secrets.token_hex(8)
         self.at = store.now()
         self._open = False
+        self._locked_at = 0.0
         self._start_id = 0
         self._start_event = 0
         self._events: list[tuple[int, str, str, dict]] = []
@@ -308,7 +310,9 @@ class Tx:
         if self.store._tx is not None:
             raise RuntimeError("a transaction is already open on this store")
         conn = self.store.conn
-        conn.execute("BEGIN IMMEDIATE")
+        with migrate.lock_wait(conn, "begin_immediate"):
+            conn.execute("BEGIN IMMEDIATE")
+        self._locked_at = time.monotonic()
         self.store._tx = self
         self._open = True
         self._start_event = self.store.last_seq()
@@ -339,6 +343,7 @@ class Tx:
         finally:
             self._open = False
             self.store._tx = None
+            migrate.log_lock_held(conn, str(self.actor), time.monotonic() - self._locked_at)
         if exc_type is None and self._events and _commit_observer is not None:
             _commit_observer(self.store, self.actor, self._events)
         return False

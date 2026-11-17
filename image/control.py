@@ -9,6 +9,7 @@ from typing import Literal
 from uuid import UUID
 
 import httpx
+from outbound import Observed
 from pydantic import BaseModel, ConfigDict, ValidationError
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
@@ -127,8 +128,9 @@ async def serve(
         httpx.AsyncClient(
             base_url=platform_url.rstrip("/") + "/",
             headers={"Authorization": f"Bearer {credential}"},
+            transport=Observed("platform"),
         ) as player,
-        httpx.AsyncClient(base_url="http://127.0.0.1:8650") as seam,
+        httpx.AsyncClient(base_url="http://127.0.0.1:8650", transport=Observed("seam")) as seam,
     ):
         url = player.build_request("GET", root + "/connection").url
         url = url.copy_with(scheme="wss" if url.scheme == "https" else "ws")

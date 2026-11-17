@@ -26,6 +26,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import httpx
 from inference import Availability
+from outbound import Observed
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -2085,10 +2086,11 @@ async def serve(
     url = f"{platform_url.rstrip('/')}/v2/workspaces/{workspace_id}/aide/1.0.0/backend"
     url = "ws" + url.removeprefix("http")
     async with (
-        httpx.AsyncClient(base_url="http://127.0.0.1:8650") as seam,
+        httpx.AsyncClient(base_url="http://127.0.0.1:8650", transport=Observed("seam")) as seam,
         httpx.AsyncClient(
             base_url="http://127.0.0.1:8642/p/orchestrator/",
             headers={"Authorization": f"Bearer {env['API_SERVER_KEY']}"},
+            transport=Observed("gateway"),
         ) as gateway,
         asyncio.TaskGroup() as work,
     ):
