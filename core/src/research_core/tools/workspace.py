@@ -9,12 +9,15 @@ them on its next tick.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.request import urlopen
 
 from research_core import coworld_setup, environment_guide, gitops
+from research_core.locks import file_lock
 from research_core.store import capabilities
 from research_core.store._common import now_iso, parse_iso
 from research_core.store.errors import SchemaMismatch, StoreError
@@ -59,11 +62,33 @@ def handle(call: ToolCall) -> dict:
         return doctor(ctx)
     if call.action == "capabilities":
         return list_capabilities(ctx, check=bool(call.get("check")))
+    if call.action == "view_catalog":
+        return {"guide": view_catalog(ctx.workspace.state, call.get("digest"))}
     if call.action == "environment_guide":
         return {"guide": environment_guide.render(ctx)}
     if call.action == "identity":
         return identity_action(call)
     raise AssertionError(call.action)
+
+
+def view_catalog(state: Path, digest: str) -> str:
+    """Fetch the renderer's immutable component reference once per workspace and revision."""
+    if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise ToolError("digest must be the SHA-256 supplied by the frontend")
+    catalog = state / "view-catalogs" / f"{digest}.md"
+    with file_lock(catalog.with_suffix(".lock")):
+        if catalog.exists():
+            return catalog.read_text(encoding="utf-8")
+        url = f"https://softmax.com/docs/static/cogent/views/{digest}.md"
+        with urlopen(url, timeout=15) as response:
+            body = response.read(128 * 1024 + 1)
+        if len(body) > 128 * 1024 or hashlib.sha256(body).hexdigest() != digest:
+            raise ToolError("the published view catalog did not match its digest")
+        guide = body.decode("utf-8")
+        pending = catalog.with_suffix(".part")
+        pending.write_bytes(body)
+        pending.replace(catalog)
+        return guide
 
 
 def identity_action(call: ToolCall) -> dict[str, Any]:
@@ -511,6 +536,12 @@ SPEC = durable_tool(
                 },
                 (),
                 ORCHESTRATOR,
+            ),
+            ActionSpec(
+                "view_catalog",
+                "Read the component guide when composing a view for a frontend.",
+                {"digest": a.string("The component catalog SHA-256 advertised by the frontend.")},
+                ("digest",),
             ),
             ActionSpec("environment_guide", "Where you are, what is writable, credentials, CLIs."),
         ),
