@@ -645,6 +645,7 @@ def quiesce(
     started = time.monotonic()
     write_marker(marker, held_at, max_hold_s)
     locks: list[sqlite3.Connection] = []
+    locked_at: list[float] = []
     outcome: dict[str, Any] = {"then_exit": None}
     try:
         with _sigterm_raises_keyboard_interrupt():
@@ -652,6 +653,7 @@ def quiesce(
             for path in databases:
                 conn, report = checkpoint_and_lock(path)
                 locks.append(conn)
+                locked_at.append(time.monotonic())
                 checkpoints[str(path)] = report
             flush_to_disk(databases)
             held = {"quiesced": [str(p) for p in databases], "checkpoints": checkpoints}
@@ -666,6 +668,8 @@ def quiesce(
     except (sqlite3.Error, OSError, subprocess.SubprocessError) as error:
         return _fail(f"quiesce failed: {error}")
     finally:
+        for conn, at in zip(locks, locked_at, strict=True):
+            migrate.log_lock_held(conn, "quiesce", time.monotonic() - at)
         release_locks(locks)
         marker.unlink(missing_ok=True)
     ok = outcome["then_exit"] in (None, 0) and not outcome.get("interrupted")
@@ -700,7 +704,8 @@ def checkpoint_and_lock(path: Path) -> tuple[sqlite3.Connection, dict[str, Any]]
             # TRUNCATE resets the WAL header before the frame counts are read, so the row's
             # counts are always 0; the WAL's size before and after says what happened.
             busy = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
-            conn.execute("BEGIN IMMEDIATE")
+            with migrate.lock_wait(conn, "checkpoint_lock"):
+                conn.execute("BEGIN IMMEDIATE")
             wal_bytes = _wal_bytes(path)
             if busy or wal_bytes == 0 or attempt == CHECKPOINT_ATTEMPTS:
                 break

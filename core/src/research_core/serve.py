@@ -66,6 +66,7 @@ from uuid import UUID
 
 from httpx import HTTPError
 from opentelemetry import trace
+from opentelemetry.trace import StatusCode
 
 from research_core import (
     attachments,
@@ -122,6 +123,22 @@ RECORDED_ROUTES = {
     "/models": "models",
 }
 PAGE_PATHS = ("/", "/ui")
+GET_ROUTES = {
+    *PAGE_PATHS,
+    "/health",
+    "/status",
+    "/scheduler-status",
+    "/command",
+    "/snapshot",
+    "/session-pending",
+    "/input-response",
+    "/message-events",
+    "/stream",
+    "/models",
+    "/models/catalog",
+}
+# A request slower than this logs a warning beside its span. ``/stream`` is long by design.
+SLOW_REQUEST_S = 1.0
 PAGE_FILE = resources.files("research_core").joinpath("ui", "index.html")
 
 
@@ -472,7 +489,6 @@ class SeamServer:
                 "contract_version": contract.CONTRACT_VERSION,
             }
 
-    @span("workspace.status")
     def status(self) -> dict:
         """What ``research watcher status`` prints (``watcher/cli.py``): the last heartbeat and
         its age, the has-work signal with its reasons, and the pause state, from the workspace
@@ -486,7 +502,7 @@ class SeamServer:
                 age_s = round((datetime.now(UTC) - parse_iso(heartbeat)).total_seconds(), 1)
             pending_transitions = []
             registered_coworlds = coworlds.list(wstore)
-            # /status opens every Coworld store, so its span says how many it opened.
+            # /status opens every Coworld store, so its request span says how many it opened.
             trace.get_current_span().set_attribute("coworld.count", len(registered_coworlds))
             for registered in registered_coworlds:
                 coworld = self.ws.coworld(registered["coworld_id"])
@@ -1472,60 +1488,107 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - the base signature
         log.debug("%s - %s", self.address_string(), format % args)
 
+    def send_response(self, code: int, message: str | None = None) -> None:
+        self.status_code = int(code)
+        super().send_response(code, message)
+
+    @contextmanager
+    def _observed(self, route: str) -> Iterator[trace.Span]:
+        """One ``workspace.http`` span per request, in the caller's trace: the method, the route
+        template (never IDs or query values) and the answer's status. Over ``SLOW_REQUEST_S`` it
+        also logs a warning, so a slow seam shows without tracing."""
+        self.status_code = 0
+        started = time.monotonic()
+        with span(
+            "workspace.http",
+            context=propagator.extract(self.headers),
+            **{"http.request.method": self.command, "http.route": route},
+        ) as current:
+            try:
+                yield current
+            finally:
+                duration_s = time.monotonic() - started
+                current.set_attribute("http.response.status_code", self.status_code)
+                if self.status_code >= 500:
+                    current.set_status(StatusCode.ERROR)
+                if duration_s > SLOW_REQUEST_S and route != "/stream":
+                    log.warning(
+                        "seam %s %s answered %s in %.2fs",
+                        self.command,
+                        route,
+                        self.status_code,
+                        duration_s,
+                        extra={
+                            "attributes": {
+                                "http.request.method": self.command,
+                                "http.route": route,
+                                "http.response.status_code": self.status_code,
+                                "duration_s": round(duration_s, 3),
+                            }
+                        },
+                    )
+
     # -- routing --------------------------------------------------------------------------
 
     def do_GET(self) -> None:  # noqa: N802 - http.server's naming
         url = urlsplit(self.path)
         query = {key: values[-1] for key, values in parse_qs(url.query).items()}
         seam = self.server.seam
-        try:
-            if url.path in PAGE_PATHS:
-                self._html(HTTPStatus.OK, seam.page())
-            elif url.path == "/health":
-                self._json(HTTPStatus.OK, seam.health())
-            elif url.path == "/status":
-                self._json(HTTPStatus.OK, seam.status())
-            elif url.path == "/scheduler-status":
-                self._json(HTTPStatus.OK, seam.scheduler_status())
-            elif url.path == "/command":
-                self._json(
-                    HTTPStatus.OK, seam.command_status(query["coworld_id"], query["command_id"])
-                )
-            elif url.path == "/snapshot" and "board" in query:
-                self._json(
-                    HTTPStatus.OK,
-                    seam.board_snapshot(query["coworld"], query["board"], query.get("item")),
-                )
-            elif url.path == "/snapshot":
-                self._json(
-                    HTTPStatus.OK,
-                    seam.snapshot(
-                        query.get("store", "workspace"),
-                        query.get("coworld"),
-                        session_id=query.get("session_id"),
-                        league=query.get("league"),
-                        requests=query.get("requests") == "1",
-                        request_id=query.get("request_id"),
-                    ),
-                )
-            elif url.path == "/session-pending":
-                self._json(HTTPStatus.OK, seam.session_pending(query["session_id"]))
-            elif url.path == "/input-response":
-                self._json(HTTPStatus.OK, seam.input_response(query["op_id"]))
-            elif url.path == "/message-events":
-                self._json(HTTPStatus.OK, seam.message_events(query))
-            elif url.path == "/stream":
-                self._stream(query)
-            elif url.path == "/models":
-                self._json(HTTPStatus.OK, seam.models())
-            elif url.path == "/models/catalog":
-                self._json(HTTPStatus.OK, seam.models_catalog())
-            elif url.path.startswith("/runs/") and len(url.path) > len("/runs/"):
-                self._json(HTTPStatus.OK, seam.run_status(url.path[len("/runs/") :]))
-            else:
-                raise Refused(HTTPStatus.NOT_FOUND, f"no route {url.path}")
-        except Exception as error:  # noqa: BLE001 - every failure becomes a JSON error
-            self._error(error)
+        if url.path in GET_ROUTES:
+            route = url.path
+        elif url.path.startswith("/runs/"):
+            route = "/runs/{run_id}"
+        else:
+            route = "unmatched"
+        with self._observed(route):
+            try:
+                if url.path in PAGE_PATHS:
+                    self._html(HTTPStatus.OK, seam.page())
+                elif url.path == "/health":
+                    self._json(HTTPStatus.OK, seam.health())
+                elif url.path == "/status":
+                    self._json(HTTPStatus.OK, seam.status())
+                elif url.path == "/scheduler-status":
+                    self._json(HTTPStatus.OK, seam.scheduler_status())
+                elif url.path == "/command":
+                    self._json(
+                        HTTPStatus.OK, seam.command_status(query["coworld_id"], query["command_id"])
+                    )
+                elif url.path == "/snapshot" and "board" in query:
+                    self._json(
+                        HTTPStatus.OK,
+                        seam.board_snapshot(query["coworld"], query["board"], query.get("item")),
+                    )
+                elif url.path == "/snapshot":
+                    self._json(
+                        HTTPStatus.OK,
+                        seam.snapshot(
+                            query.get("store", "workspace"),
+                            query.get("coworld"),
+                            session_id=query.get("session_id"),
+                            league=query.get("league"),
+                            requests=query.get("requests") == "1",
+                            request_id=query.get("request_id"),
+                        ),
+                    )
+                elif url.path == "/session-pending":
+                    self._json(HTTPStatus.OK, seam.session_pending(query["session_id"]))
+                elif url.path == "/input-response":
+                    self._json(HTTPStatus.OK, seam.input_response(query["op_id"]))
+                elif url.path == "/message-events":
+                    self._json(HTTPStatus.OK, seam.message_events(query))
+                elif url.path == "/stream":
+                    self._stream(query)
+                elif url.path == "/models":
+                    self._json(HTTPStatus.OK, seam.models())
+                elif url.path == "/models/catalog":
+                    self._json(HTTPStatus.OK, seam.models_catalog())
+                elif url.path.startswith("/runs/") and len(url.path) > len("/runs/"):
+                    self._json(HTTPStatus.OK, seam.run_status(url.path[len("/runs/") :]))
+                else:
+                    raise Refused(HTTPStatus.NOT_FOUND, f"no route {url.path}")
+            except Exception as error:  # noqa: BLE001 - every failure becomes a JSON error
+                self._error(error)
 
     def do_POST(self) -> None:  # noqa: N802 - http.server's naming
         path = urlsplit(self.path).path
@@ -1542,31 +1605,31 @@ class _Handler(BaseHTTPRequestHandler):
         }
         unrecorded = path in RECORDED_ROUTES
         body: dict = {}
-        request_span = trace.INVALID_SPAN
 
         def record(*args: Any, **kwargs: Any) -> None:
             """The request's record names the request's span, which its message's trace holds."""
-            with trace.use_span(request_span, end_on_exit=False):
-                seam.record_request(path, self.headers, body, *args, **kwargs)
+            seam.record_request(path, self.headers, body, *args, **kwargs)
 
-        try:
-            handler = routes.get(path)
-            if handler is None:
-                raise Refused(HTTPStatus.NOT_FOUND, f"no route POST {path}")
-            with span("workspace.http", context=propagator.extract(self.headers)) as request_span:
+        with self._observed(path if path in routes else "unmatched"):
+            try:
+                handler = routes.get(path)
+                if handler is None:
+                    raise Refused(HTTPStatus.NOT_FOUND, f"no route POST {path}")
                 body = self._body()
                 result = handler(body)
-            status = (
-                HTTPStatus.ACCEPTED
-                if path == "/store/apply" and "status" in result and result["status"] == "pending"
-                else HTTPStatus.OK
-            )
-            if unrecorded:
-                unrecorded = False  # A reply that cannot be written is not a second outcome.
-                record(status, result=result)
-            self._json(status, result)
-        except Exception as error:  # noqa: BLE001 - every failure becomes a JSON error
-            self._error(error, record if unrecorded else None)
+                status = (
+                    HTTPStatus.ACCEPTED
+                    if path == "/store/apply"
+                    and "status" in result
+                    and result["status"] == "pending"
+                    else HTTPStatus.OK
+                )
+                if unrecorded:
+                    unrecorded = False  # A reply that cannot be written is not a second outcome.
+                    record(status, result=result)
+                self._json(status, result)
+            except Exception as error:  # noqa: BLE001 - every failure becomes a JSON error
+                self._error(error, record if unrecorded else None)
 
     # -- bodies and replies -----------------------------------------------------------------
 

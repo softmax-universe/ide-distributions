@@ -56,7 +56,8 @@ def store_name(conn: sqlite3.Connection) -> str:
 def lock_wait(conn: sqlite3.Connection, operation: str) -> Iterator[None]:
     """Log a statement that waited over ``LOCK_LOG_S`` for the store's locks, or failed waiting.
 
-    ``operation`` is ``wal_switch``, ``migration`` or ``begin_immediate``. A ``BEGIN IMMEDIATE``
+    ``operation`` is ``wal_switch``, ``migration``, ``begin_immediate``, ``checkpoint_lock``
+    (``research store quiesce`` and the sleep flush) or ``rebuild``. A ``BEGIN IMMEDIATE``
     that ends in "database is locked" after the busy timeout is logged ``failed`` with its wait,
     then its error propagates unchanged.
     """
@@ -84,6 +85,26 @@ def lock_wait(conn: sqlite3.Connection, operation: str) -> Iterator[None]:
                     }
                 },
             )
+
+
+def log_lock_held(conn: sqlite3.Connection, holder: str, held_s: float) -> None:
+    """Who keeps the others waiting: log a write lock held for over ``LOCK_LOG_S``."""
+    if held_s <= LOCK_LOG_S:
+        return
+    store = store_name(conn)
+    log.warning(
+        "store %s: %s held the write lock for %.2fs",
+        store,
+        holder,
+        held_s,
+        extra={
+            "attributes": {
+                "store": store,
+                "store.actor": holder,
+                "store.lock_held_s": round(held_s, 3),
+            }
+        },
+    )
 
 
 def connect_writable(path: Path, busy_timeout_ms: int | None = None) -> sqlite3.Connection:
@@ -304,23 +325,28 @@ def rebuild_keeping_rows(path: Path, kind: str) -> RebuildReport:
     conn = connect_writable(path)
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
-        conn.execute("BEGIN IMMEDIATE")
+        with lock_wait(conn, "rebuild"):
+            conn.execute("BEGIN IMMEDIATE")
+        locked_at = time.monotonic()
         try:
-            version = user_version(conn)
-            if version > latest_version(kind):
-                raise SchemaNewer(version, latest_version(kind))
-            backup = _copy_before_repair(path)
-        except BaseException:
-            conn.execute("ROLLBACK")
-            raise
-        try:
-            report = _rebuild_in_place(conn, kind, backup)
-            conn.execute("COMMIT")
-        except BaseException:
-            conn.execute("ROLLBACK")
-            # The original is untouched, so the copy says nothing the file does not.
-            backup.unlink(missing_ok=True)
-            raise
+            try:
+                version = user_version(conn)
+                if version > latest_version(kind):
+                    raise SchemaNewer(version, latest_version(kind))
+                backup = _copy_before_repair(path)
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            try:
+                report = _rebuild_in_place(conn, kind, backup)
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                # The original is untouched, so the copy says nothing the file does not.
+                backup.unlink(missing_ok=True)
+                raise
+        finally:
+            log_lock_held(conn, "rebuild", time.monotonic() - locked_at)
     finally:
         conn.close()
     return report

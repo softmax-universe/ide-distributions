@@ -10,6 +10,7 @@ from typing import Literal
 
 import httpx
 from dotenv import set_key
+from outbound import Observed
 from pydantic import BaseModel, SecretStr, TypeAdapter
 
 # The inference state's helpers live in the release's stdlib-only core, which the image ships
@@ -76,6 +77,7 @@ async def maintain(
         base_url=platform_url.rstrip("/") + "/",
         headers={"Authorization": f"Bearer {credential}"},
         timeout=30,
+        transport=Observed("platform"),
     ) as client:
         while True:
             (response,) = await asyncio.gather(

@@ -20,6 +20,7 @@ from control import serve
 from inference import Availability
 from inference import maintain as maintain_inference
 from opentelemetry import trace
+from outbound import Observed
 from processes import managed_process, ready_process
 from pydantic import BaseModel, ConfigDict, SecretStr
 
@@ -217,7 +218,9 @@ async def run(stack: AsyncExitStack) -> None:
         )
         profile_env = {**common, "HERMES_HOME": str(HOME / "profiles/orchestrator")}
         async with httpx.AsyncClient(
-            base_url="http://127.0.0.1:8642", headers={"Authorization": f"Bearer {key}"}
+            base_url="http://127.0.0.1:8642",
+            headers={"Authorization": f"Bearer {key}"},
+            transport=Observed("gateway"),
         ) as client:
             with telemetry.span("workspace.gateway_ready", context=startup_context):
                 from hermes_cli.config import require_readable_config_before_write, set_config_value
@@ -256,7 +259,9 @@ async def run(stack: AsyncExitStack) -> None:
                 # It takes no write lock, so it waits out a busy seam (SEAM_TIMEOUT_S, as the
                 # AIDE backend does) and an error answer is a broken seam, not contention.
                 async with httpx.AsyncClient(
-                    base_url="http://127.0.0.1:8650", timeout=SEAM_TIMEOUT_S
+                    base_url="http://127.0.0.1:8650",
+                    timeout=SEAM_TIMEOUT_S,
+                    transport=Observed("seam"),
                 ) as seam_client:
                     (await seam_client.get("/health")).raise_for_status()
 
