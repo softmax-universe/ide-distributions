@@ -914,7 +914,25 @@ class Backend:
         code = {400: "invalid", 404: "not_found"}.get(response.status_code, "unsupported")
         raise Refusal(code, detail)
 
-    async def snapshot(self, **params: str) -> Snapshot:
+    async def snapshot(self) -> Snapshot:
+        """Every top-level chat Session with its requests. It selects no session: a per-session
+        read is ``scoped``, so it cannot be sent without the consumer's scope."""
+        return await self._read({})
+
+    async def scoped(
+        self, scope: Scope, *, session_id: str | None = None, request_id: str | None = None
+    ) -> Snapshot:
+        """One session's rows. The seam refuses a scope that differs from the stored one, and a
+        read naming no Coworld or league is a workspace read, which every Coworld session
+        refuses."""
+        params = {
+            "session_id": session_id,
+            "request_id": request_id,
+            **scope.model_dump(include={"coworld", "league"}),
+        }
+        return await self._read({k: v for k, v in params.items() if v is not None})
+
+    async def _read(self, params: dict[str, str]) -> Snapshot:
         """Top-level chat Sessions with their requests, as one consistent seam read."""
         snapshot = Snapshot.model_validate_json(
             await self.call(
@@ -930,11 +948,6 @@ class Backend:
         for request in snapshot.records.requests:
             self.requests[request.op_id] = request.session_id
         return snapshot
-
-    async def scoped(self, scope: Scope, **selection: str) -> Snapshot:
-        """One session's rows; the seam refuses a scope that differs from the stored one."""
-        expected = scope.model_dump(include={"coworld", "league"}, exclude_none=True)
-        return await self.snapshot(**selection, **expected)
 
     async def request(self, session_id: str, scope: Scope, request_id: str) -> Admission:
         snapshot = await self.scoped(scope, session_id=session_id)

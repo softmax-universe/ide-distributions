@@ -160,6 +160,17 @@ class Refused(Exception):
         self.body = {"ok": False, "error": error, "problems": list(problems or []), **extra}
 
 
+def _scope_mismatch(
+    error: str, session_id: str, requested: dict[str, Any], stored: dict[str, Any]
+) -> Refused:
+    """The 409 for a request whose scope differs from its Session's, logged with the Session and
+    both scopes (identifiers only) so the refusal names the read or write that sent it."""
+    log.warning(
+        "Scope mismatch on session %s: requested %s, stored %s", session_id, requested, stored
+    )
+    return Refused(HTTPStatus.CONFLICT, error, kind="scope_mismatch", code="forbidden")
+
+
 def _gateway_error(error: RunsError) -> Refused:
     """A runs API failure as a reply: 503 with ``Retry-After`` when the gateway is busy or
     unreachable (the client retries), 502 otherwise. The gateway's own HTTP status is kept
@@ -628,15 +639,17 @@ class SeamServer:
             existing = sessions.read(stores.wstore, session_id)
             if existing is not None:
                 previous_context = existing["session_context"] or {}
-                if (existing["coworld_id"], previous_context.get("league")) != (
-                    coworld_id,
-                    session_context.get("league"),
-                ):
-                    raise Refused(
-                        HTTPStatus.CONFLICT,
+                stored = {
+                    "coworld": existing["coworld_id"],
+                    "league": previous_context.get("league"),
+                }
+                requested = {"coworld": coworld_id, "league": session_context.get("league")}
+                if requested != stored:
+                    raise _scope_mismatch(
                         "a session's Coworld and league cannot change",
-                        kind="scope_mismatch",
-                        code="forbidden",
+                        session_id,
+                        requested,
+                        stored,
                     )
             registration = intake.OpenRegistration(
                 profile=self.profile,
@@ -1215,15 +1228,17 @@ class SeamServer:
                         session_id = owner["session_id"]
                     if session_id:
                         session = self._require_session(stores, session_id)
-                        if (
-                            session["coworld_id"],
-                            (session["session_context"] or {}).get("league"),
-                        ) != (coworld_id, league):
-                            raise Refused(
-                                HTTPStatus.CONFLICT,
+                        stored = {
+                            "coworld": session["coworld_id"],
+                            "league": (session["session_context"] or {}).get("league"),
+                        }
+                        requested = {"coworld": coworld_id, "league": league}
+                        if requested != stored:
+                            raise _scope_mismatch(
                                 "this session belongs to a different Coworld or league",
-                                kind="scope_mismatch",
-                                code="forbidden",
+                                session_id,
+                                requested,
+                                stored,
                             )
                         selected = [session]
                     else:
@@ -1452,18 +1467,19 @@ class SeamServer:
         session = self._require_session(stores, session_id)
         coworld_id = session["coworld_id"]
         declared = session["session_context"] or {}
-        for field, expected in (
-            ("scope", declared.get("scope", "coworld" if coworld_id else "workspace")),
-            ("coworld", coworld_id),
-            ("league", declared.get("league")),
-        ):
+        stored = {
+            "scope": declared.get("scope", "coworld" if coworld_id else "workspace"),
+            "coworld": coworld_id,
+            "league": declared.get("league"),
+        }
+        for field, expected in stored.items():
             shown = kept.get(field)
             if shown is not None and shown != expected:
-                raise Refused(
-                    HTTPStatus.CONFLICT,
+                raise _scope_mismatch(
                     f"context.{field} differs from this session; open a new session",
-                    kind="scope_mismatch",
-                    code="forbidden",
+                    session_id,
+                    {name: kept.get(name) for name in stored},
+                    stored,
                 )
             if expected is not None and (field != "scope" or "scope" in declared):
                 block[field] = expected

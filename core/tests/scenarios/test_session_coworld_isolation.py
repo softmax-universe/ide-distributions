@@ -199,7 +199,7 @@ def test_workspace_activity_remains_scoped_across_idle_games(tmp_path):
                     assert heartbeat.run(ctx)["has_work"] is True
 
 
-def test_runtime_filters_chat_history_and_rejects_wrong_game_reads(tmp_path):
+def test_runtime_filters_chat_history_and_rejects_wrong_game_reads(tmp_path, caplog):
     from uuid import uuid4
 
     from research_core.serve import Refused
@@ -248,9 +248,17 @@ def test_runtime_filters_chat_history_and_rejects_wrong_game_reads(tmp_path):
             ("cow_arena", "league_other"),
             (None, None),
         ):
+            caplog.clear()
             with pytest.raises(Refused) as refused:
                 server.snapshot("workspace", coworld, session_id="arena", league=league)
             assert refused.value.status == 409
             assert refused.value.body["kind"] == "scope_mismatch"
+            # The refusal names the Session and both scopes, so the read that sent it is known.
+            (logged,) = [r.getMessage() for r in caplog.records if "Scope mismatch" in r.msg]
+            assert logged == (
+                f"Scope mismatch on session arena: requested {{'coworld': {coworld!r},"
+                f" 'league': {league!r}}}, stored {{'coworld': 'cow_arena',"
+                " 'league': 'league_arena'}"
+            )
     finally:
         server._http.server_close()
