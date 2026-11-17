@@ -2,7 +2,7 @@ name: Release hosted Hermes image
 
 on:
   push:
-    branches: [main]
+    branches: [main, beta]
     paths:
       - "image/**"
       - ".dockerignore"
@@ -12,6 +12,9 @@ on:
       - "pyproject.toml"
       - "uv.lock"
       - ".github/workflows/release-hermes.yml"
+  # Creating beta from main changes no files, so the push above does not fire; release it on creation
+  # so beta starts on main's image.
+  create:
   workflow_dispatch:
 
 permissions:
@@ -19,7 +22,8 @@ permissions:
 
 jobs:
   dispatch:
-    if: github.ref == 'refs/heads/main'
+    # A create event fires for every new branch and tag; only main and beta release.
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -44,6 +48,9 @@ jobs:
           GH_TOKEN: ${{ secrets.METTA_RELEASE_DISPATCH_TOKEN }}
           SOURCE_REVISION: ${{ github.sha }}
           RELEASE_STARTED_AT: ${{ steps.origin.outputs.started_at }}
+          # The release channel is the branch name: main or beta.
+          CHANNEL: ${{ github.ref_name }}
         run: >-
           gh workflow run deploy-hermes-agent.yml --repo softmax-universe/softmax --ref main
           -f "source_revision=$SOURCE_REVISION" -f "release_started_at=$RELEASE_STARTED_AT"
+          -f "channel=$CHANNEL"

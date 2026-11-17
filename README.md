@@ -255,6 +255,8 @@ interactive session, or inside the hosted image), see [`docs/local-end-to-end.md
 
 Softmax hosting runs these distributions in its sandboxes. [`docs/hosting.md`](docs/hosting.md)
 is the handoff: the image, `prepare.py`, the environment variables, the gateway, sleep and
-drain, the bridge's seam, storage and releases. A push to `main` that changes what the image
-holds dispatches Metta's image release workflow (`.github/workflows/release-hermes.yml` lists the
-paths); a nightly workflow runs the read-only platform check.
+drain, the bridge's seam, storage and releases. A push to `main` that changes what the image holds
+dispatches Metta's image release for the `main` channel (`.github/workflows/release-hermes.yml` lists the paths); a
+nightly workflow runs the read-only platform check. `beta` is an opt-in playground that receives
+experimental pull requests and releases the beta channel; `main` is merged into it automatically,
+and an experiment ships only through a normal pull request to `main`.
