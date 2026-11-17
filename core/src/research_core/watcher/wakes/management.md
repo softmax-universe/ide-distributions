@@ -1,7 +1,6 @@
 # Management wake
 
-Event `{event_kind}` on `{subject}` (Coworld `{coworld_id}`). Something needs an Orchestrator
-decision the watcher cannot make without a model.
+Event `{event_kind}` on `{subject}` (Coworld `{coworld_id}`). Decide the next action for this event.
 
 Send user-facing updates from this background Session with
 `chat_update {category, text, refs?}` for what the user should hear now: `decision` (ask it
