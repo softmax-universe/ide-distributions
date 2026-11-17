@@ -376,7 +376,9 @@ class Coordinator:
                                 code="assignment_not_held",
                                 retryable=False,
                             )
-                        if admissions.reserved_workers(store, session_id) >= int(
+                        # The backlog reserves future capacity but must not prevent it from
+                        # draining after max_researchers was lowered.
+                        if admissions.dispatched_workers(store, exclude_session=session_id) >= int(
                             settings.get(store, "max_researchers")
                         ):
                             raise RunsBusy(
