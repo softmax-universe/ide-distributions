@@ -2048,18 +2048,22 @@ def test_tasks_goals_cancellation_and_pending_input(system):
 def test_scoped_board_changes_reach_only_subscribed_frontends(system):
     async def scenario(backend, gateway, ctx, hermes):
         goal = goals.create(ctx.store, HARNESS, title="Win", end_state="Top", reason="asked")
-        task = tasks.create(ctx.store, HARNESS, type="maintenance", title="Fix", description="Do")
+        task = tasks.create(
+            ctx.store, HARNESS, type="maintenance", title="Fix", description="Do", priority="high"
+        )
         task_params = {"resource": "tasks", "scope_id": COWORLD_ID}
         goal_params = {"resource": "goals", "scope_id": COWORLD_ID}
         task_snapshot = (await call(backend, "state.list", task_params))["result"]
         goal_snapshot = (await call(backend, "state.list", goal_params))["result"]
+        assert task_snapshot["items"][0]["priority"] == "high"
         await call(backend, "state.list", task_params, frontend=OTHER)
 
-        tasks.update(ctx.store, HARNESS, task["id"], title="Fix the new failure")
+        tasks.update(ctx.store, HARNESS, task["id"], title="Fix the new failure", priority="normal")
         goals.update(ctx.store, HARNESS, int(goal["id"][2:]), title="Win the next round")
         await until(lambda: len(backend.socket.notes("state.changed")) == 2)
         changed_task, changed_goal = backend.socket.notes("state.changed")
         assert changed_task["item"]["title"] == "Fix the new failure"
+        assert changed_task["item"]["priority"] == "normal"
         assert changed_task["previous_revision"] == task_snapshot["revision"]
         assert changed_goal["item"]["title"] == "Win the next round"
         assert changed_goal["previous_revision"] == goal_snapshot["revision"]
