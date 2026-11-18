@@ -384,6 +384,11 @@ async def main() -> None:
             with net_socket.socket() as listener:
                 assert listener.connect_ex(("127.0.0.1", 8642)) == errno.ECONNREFUSED
             await message_accepted.wait()
+            async with ClientSession("http://127.0.0.1:8650") as http:
+                async with http.get("/intake/health") as response:
+                    assert response.status == 200
+                async with http.get("/health") as response:
+                    assert response.status == 503
             print(
                 "PASS workspace accepted the message before the gateway opened its listener",
                 flush=True,

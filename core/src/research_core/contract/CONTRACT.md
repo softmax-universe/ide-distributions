@@ -41,7 +41,8 @@ hosted bridge:
 | `GET /models` | 2 | Each profile's model: `{profiles: [{profile, role, model, provider, fallbacks}]}`. See "Profile models". |
 | `GET /models/catalog` | 2 | The models a client may offer: `{source, models: [{id, name, context_length, usd_per_million_input, usd_per_million_output, free}]}`. |
 | `POST /models` `{profile, model, provider?, fallbacks?, actor?}` | 3 | Changes one profile's model as the user asked; returns `{profile, previous, changed, verified, seq}`. |
-| `GET /health` | — | `{ok, profile, coworld, contract_version}`. |
+| `GET /health` | — | `{ok, profile, coworld, contract_version}`. Hosted startup returns 503 until the supervisor verifies the gateway and releases dispatch. |
+| `GET /intake/health` | — | Same success body once the application owns the workspace and can access its stores. Used by the supervisor for early chat intake. |
 | `GET /` and `GET /ui` | — | A convenience of `research serve`, not a contract channel: the client page (`research_core/ui/index.html`), which exercises every channel above. |
 | `GET /status` | — | A convenience of `research serve`: what `research watcher status` prints (`heartbeat`, `has_work`, `waiting_on`, `paused`, `sleep_started`). |
 

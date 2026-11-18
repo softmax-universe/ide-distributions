@@ -127,6 +127,7 @@ PAGE_PATHS = ("/", "/ui")
 GET_ROUTES = {
     *PAGE_PATHS,
     "/health",
+    "/intake/health",
     "/status",
     "/scheduler-status",
     "/command",
@@ -296,6 +297,7 @@ class SeamServer:
         self._deliver_lock = threading.Lock()
         self._acknowledged_receipts: dict[str, str] = {}
         self._last_native_poll: dict[tuple[str, str], float] = {}
+        self.waiting_for_gateway = threading.Event()
         self.stopping = threading.Event()
         # What the coordinator records goes through here: metadata only, because it has no scanner.
         self.telemetry = TelemetryWriter(
@@ -331,9 +333,14 @@ class SeamServer:
         return f"http://{host}:{port}"
 
     def serve_forever(self, *, wait_for_gateway: bool = False) -> None:
+        if wait_for_gateway:
+            self.waiting_for_gateway.set()
+
         def dispatch_work() -> None:
-            if wait_for_gateway and sys.stdin.buffer.read(1) != b"1":
-                raise RuntimeError("Gateway startup ended before dispatch was enabled")
+            if wait_for_gateway:
+                if sys.stdin.buffer.read(1) != b"1":
+                    raise RuntimeError("Gateway startup ended before dispatch was enabled")
+                self.waiting_for_gateway.clear()
             asyncio.run(self.dispatch_forever())
 
         with ownership(self.ws):
@@ -1575,7 +1582,9 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 if url.path in PAGE_PATHS:
                     self._html(HTTPStatus.OK, seam.page())
-                elif url.path == "/health":
+                elif url.path in ("/health", "/intake/health"):
+                    if url.path == "/health" and seam.waiting_for_gateway.is_set():
+                        raise Refused(HTTPStatus.SERVICE_UNAVAILABLE, "Gateway startup in progress")
                     self._json(HTTPStatus.OK, seam.health())
                 elif url.path == "/status":
                     self._json(HTTPStatus.OK, seam.status())

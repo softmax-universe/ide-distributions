@@ -248,7 +248,7 @@ async def run(stack: AsyncExitStack) -> None:
                         timeout=SEAM_TIMEOUT_S,
                         transport=Observed("seam"),
                     ) as seam_client:
-                        (await seam_client.get("/health")).raise_for_status()
+                        (await seam_client.get("/intake/health")).raise_for_status()
                     return application
 
             gateway_ready = asyncio.Event()
