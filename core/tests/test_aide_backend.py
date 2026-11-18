@@ -2965,28 +2965,22 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
                 assert "prepared" in response and "metric" not in response, response
 
             tool = asyncio.create_task(invoke())
-            await until(lambda: backend.socket.notes("surface.listComponents"))
-            frame = next(
-                f["message"]
-                for f in backend.socket.frames
-                if f["message"].get("method") == "surface.listComponents"
-            )
-            assert "known_version" not in frame["params"]
-            result = {
-                "version": "v1",
-                "guidance": guide,
-                "components": [{"name": "metric", "definition": "metric accepts label and value"}],
-            }
-            backend.catalog_reply(
-                aide.Frame(frontend_id=OTHER, message={"id": frame["id"], "result": result})
-            )
+            await until(lambda: FRONTEND in backend.catalogs)
+
+            async def register(frontend, text):
+                response = await call(
+                    backend,
+                    "surface.event",
+                    {"scope": WORKSPACE, "data": {"kind": "component_catalog", "guide": text}},
+                    frontend=frontend,
+                )
+                assert response["result"]["data"]["registered"]
+
+            await register(OTHER, "A different browser renderer")
             assert not tool.done()
-            backend.catalog_reply(
-                aide.Frame(frontend_id=FRONTEND, message={"id": frame["id"], "result": result})
-            )
+            await register(FRONTEND, guide)
             await tool
             await invoke()
-            assert len(backend.socket.notes("surface.listComponents")) == 1
             gateway.gate.set()
             await until(lambda: backend.socket.notes("chat.finished"))
             backend.closed(FRONTEND)
@@ -2997,21 +2991,8 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
                 {"session_id": session_id, "messages": say("Again"), "scope": WORKSPACE},
                 frontend=OTHER,
             )
-            reconnect = asyncio.create_task(invoke())
-            await until(lambda: backend.socket.notes("surface.listComponents", OTHER))
-            frame = next(
-                f["message"]
-                for f in reversed(backend.socket.frames)
-                if f["message"].get("method") == "surface.listComponents"
-            )
-            assert frame["params"]["known_version"] == "v1"
-            backend.catalog_reply(
-                aide.Frame(
-                    frontend_id=OTHER,
-                    message={"id": frame["id"], "result": {"version": "v1", "unchanged": True}},
-                )
-            )
-            await reconnect
+            await register(OTHER, guide)
+            await invoke()
             gateway.gate.set()
         await until(lambda: backend.socket.notes("chat.finished", OTHER))
         actions = [

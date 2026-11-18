@@ -175,12 +175,6 @@
         },
         "policy_update_result": {
           "$ref": "#/components/messages/frontend_policy_update_result"
-        },
-        "surface_listComponents": {
-          "$ref": "#/components/messages/frontend_surface_listComponents"
-        },
-        "surface_listComponents_result": {
-          "$ref": "#/components/messages/frontend_surface_listComponents_result"
         }
       }
     },
@@ -343,12 +337,6 @@
         },
         "policy_update_result": {
           "$ref": "#/components/messages/backend_policy_update_result"
-        },
-        "surface_listComponents": {
-          "$ref": "#/components/messages/backend_surface_listComponents"
-        },
-        "surface_listComponents_result": {
-          "$ref": "#/components/messages/backend_surface_listComponents_result"
         }
       }
     }
@@ -1789,70 +1777,6 @@
         "messages": [
           {
             "$ref": "#/channels/backend/messages/policy_update_result"
-          },
-          {
-            "$ref": "#/channels/backend/messages/error"
-          }
-        ]
-      }
-    },
-    "frontend_surface_listComponents": {
-      "action": "send",
-      "channel": {
-        "$ref": "#/channels/frontend"
-      },
-      "title": "surface.listComponents",
-      "summary": "Read the target frontend's component catalog. A matching known_version returns unchanged.",
-      "description": "Read the target frontend's component catalog. A matching known_version returns unchanged.",
-      "messages": [
-        {
-          "$ref": "#/channels/frontend/messages/surface_listComponents"
-        }
-      ],
-      "tags": [
-        {
-          "name": "AIDE \u2192 Frontend"
-        }
-      ],
-      "reply": {
-        "channel": {
-          "$ref": "#/channels/frontend"
-        },
-        "messages": [
-          {
-            "$ref": "#/channels/frontend/messages/surface_listComponents_result"
-          },
-          {
-            "$ref": "#/channels/frontend/messages/error"
-          }
-        ]
-      }
-    },
-    "backend_surface_listComponents": {
-      "action": "receive",
-      "channel": {
-        "$ref": "#/channels/backend"
-      },
-      "title": "surface.listComponents",
-      "summary": "Read the target frontend's component catalog. A matching known_version returns unchanged.",
-      "description": "Read the target frontend's component catalog. A matching known_version returns unchanged.",
-      "messages": [
-        {
-          "$ref": "#/channels/backend/messages/surface_listComponents"
-        }
-      ],
-      "tags": [
-        {
-          "name": "AIDE \u2192 Frontend"
-        }
-      ],
-      "reply": {
-        "channel": {
-          "$ref": "#/channels/backend"
-        },
-        "messages": [
-          {
-            "$ref": "#/channels/backend/messages/surface_listComponents_result"
           },
           {
             "$ref": "#/channels/backend/messages/error"
@@ -6031,9 +5955,6 @@
           },
           {
             "$ref": "#/components/schemas/policy_updateMessage"
-          },
-          {
-            "$ref": "#/components/schemas/surface_listComponentsMessage"
           }
         ]
       },
@@ -7797,147 +7718,6 @@
               },
               "result": {
                 "$ref": "#/components/schemas/policy_updateResult"
-              }
-            },
-            "required": [
-              "jsonrpc",
-              "id",
-              "result"
-            ],
-            "additionalProperties": false
-          },
-          {
-            "$ref": "#/components/schemas/Error"
-          }
-        ]
-      },
-      "surface_listComponentsParams": {
-        "type": "object",
-        "properties": {
-          "scope": {
-            "$ref": "#/components/schemas/Scope"
-          },
-          "session_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "known_version": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128
-          }
-        },
-        "required": [
-          "scope",
-          "session_id"
-        ],
-        "additionalProperties": false
-      },
-      "surface_listComponentsResult": {
-        "oneOf": [
-          {
-            "type": "object",
-            "properties": {
-              "version": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128
-              },
-              "unchanged": {
-                "const": true
-              }
-            },
-            "required": [
-              "version",
-              "unchanged"
-            ],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "version": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128
-              },
-              "guidance": {
-                "type": "string",
-                "maxLength": 65536
-              },
-              "components": {
-                "type": "array",
-                "maxItems": 256,
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "name": {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 128
-                    },
-                    "definition": {
-                      "type": "string",
-                      "minLength": 1,
-                      "maxLength": 32768
-                    }
-                  },
-                  "required": [
-                    "name",
-                    "definition"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "required": [
-              "version",
-              "guidance",
-              "components"
-            ],
-            "additionalProperties": false
-          }
-        ]
-      },
-      "surface_listComponentsMessage": {
-        "type": "object",
-        "properties": {
-          "jsonrpc": {
-            "const": "2.0"
-          },
-          "id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "method": {
-            "const": "surface.listComponents"
-          },
-          "params": {
-            "$ref": "#/components/schemas/surface_listComponentsParams"
-          }
-        },
-        "required": [
-          "jsonrpc",
-          "id",
-          "method",
-          "params"
-        ],
-        "additionalProperties": false
-      },
-      "surface_listComponentsReply": {
-        "oneOf": [
-          {
-            "type": "object",
-            "properties": {
-              "jsonrpc": {
-                "const": "2.0"
-              },
-              "id": {
-                "type": "string",
-                "format": "uuid"
-              },
-              "result": {
-                "$ref": "#/components/schemas/surface_listComponentsResult"
               }
             },
             "required": [
@@ -10156,118 +9936,6 @@
                 },
                 "result": {
                   "$ref": "#/components/schemas/policy_updateResult"
-                }
-              },
-              "required": [
-                "jsonrpc",
-                "id",
-                "result"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "required": [
-            "frontend_id",
-            "message"
-          ],
-          "additionalProperties": false
-        },
-        "correlationId": {
-          "location": "$message.payload#/message/id"
-        }
-      },
-      "frontend_surface_listComponents": {
-        "name": "frontend_surface_listComponents",
-        "title": "surface_listComponents",
-        "contentType": "application/json",
-        "description": "Read the target frontend's component catalog. A matching known_version returns unchanged.",
-        "payload": {
-          "$ref": "#/components/schemas/surface_listComponentsMessage"
-        },
-        "correlationId": {
-          "location": "$message.payload#/id"
-        }
-      },
-      "frontend_surface_listComponents_result": {
-        "name": "frontend_surface_listComponents_result",
-        "title": "surface_listComponents_result",
-        "contentType": "application/json",
-        "description": "Read the target frontend's component catalog. A matching known_version returns unchanged.",
-        "payload": {
-          "type": "object",
-          "properties": {
-            "jsonrpc": {
-              "const": "2.0"
-            },
-            "id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "result": {
-              "$ref": "#/components/schemas/surface_listComponentsResult"
-            }
-          },
-          "required": [
-            "jsonrpc",
-            "id",
-            "result"
-          ],
-          "additionalProperties": false
-        },
-        "correlationId": {
-          "location": "$message.payload#/id"
-        }
-      },
-      "backend_surface_listComponents": {
-        "name": "backend_surface_listComponents",
-        "title": "surface_listComponents",
-        "contentType": "application/json",
-        "description": "Read the target frontend's component catalog. A matching known_version returns unchanged.",
-        "payload": {
-          "type": "object",
-          "properties": {
-            "frontend_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "message": {
-              "$ref": "#/components/schemas/surface_listComponentsMessage"
-            }
-          },
-          "required": [
-            "frontend_id",
-            "message"
-          ],
-          "additionalProperties": false
-        },
-        "correlationId": {
-          "location": "$message.payload#/message/id"
-        }
-      },
-      "backend_surface_listComponents_result": {
-        "name": "backend_surface_listComponents_result",
-        "title": "surface_listComponents_result",
-        "contentType": "application/json",
-        "description": "Read the target frontend's component catalog. A matching known_version returns unchanged.",
-        "payload": {
-          "type": "object",
-          "properties": {
-            "frontend_id": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "message": {
-              "type": "object",
-              "properties": {
-                "jsonrpc": {
-                  "const": "2.0"
-                },
-                "id": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "result": {
-                  "$ref": "#/components/schemas/surface_listComponentsResult"
                 }
               },
               "required": [

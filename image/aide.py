@@ -874,10 +874,9 @@ class Backend:
         self.subscribers: dict[str, Subscription] = {}
         self.session_locks: dict[str, asyncio.Lock] = {}
         self.publish_locks: dict[str, asyncio.Lock] = {}
-        self.view_calls: dict[tuple[str, str], tuple[str, Scope]] = {}
+        self.view_calls: dict[tuple[str, str], str] = {}
         self.view_started = asyncio.Condition()
-        self.catalog_replies: dict[tuple[UUID, str], asyncio.Future] = {}
-        self.catalogs: dict[tuple[UUID, str], str] = {}
+        self.catalogs: dict[UUID, asyncio.Future[str]] = {}
         self.page_origins: dict[str, UUID] = {}
         self.published_after: dict[str, int] = {}
         self.titles: dict[str, str] = {}  # session id -> non-empty title read from Hermes
@@ -1477,64 +1476,21 @@ class Backend:
                 }
                 await self.notify(request.session_id, "chat.chunk", params)
 
-    def catalog_reply(self, frame: Frame) -> None:
-        future = self.catalog_replies.get((frame.frontend_id, frame.message.get("id")))
-        if future is not None and not future.done():
-            future.set_result(frame.message.get("result"))
-
     async def component_catalog(self, session: str, call: str) -> str:
-        # The tool process and the gateway's tool.started event can arrive in either order.
+        # Registration, the tool process, and the gateway event may arrive in any order.
         async with asyncio.timeout(12):
             async with self.view_started:
                 await self.view_started.wait_for(lambda: (session, call) in self.view_calls)
-            request, scope = self.view_calls[session, call]
+            request = self.view_calls[session, call]
             owner = self.page_origins.get(request)
-            if owner is None or self.socket is None:
+            if owner is None:
                 raise ValueError("The frontend that sent this turn is disconnected")
-            key = (owner, session)
-            async with self.session_locks.setdefault("catalog/" + session, asyncio.Lock()):
-                if key in self.catalogs:
-                    return self.catalogs[key]
-                path = view_path(layout.from_env().state, session).with_suffix(".catalog")
-                cached = current_view(path)
-                params = {"session_id": session, "scope": scope.model_dump()}
-                if cached:
-                    params["known_version"] = cached["version"]
-                rid = str(uuid4())
-                pending = asyncio.get_running_loop().create_future()
-                self.catalog_replies[owner, rid] = pending
-                try:
-                    await self.send(
-                        self.socket,
-                        owner,
-                        {
-                            "jsonrpc": "2.0",
-                            "id": rid,
-                            "method": "surface.listComponents",
-                            "params": params,
-                        },
-                    )
-                    result = await pending
-                finally:
-                    self.catalog_replies.pop((owner, rid), None)
-                if not isinstance(result, dict):
-                    raise ValueError("The frontend could not provide its component catalog")
-                if result.get("unchanged") is True:
-                    if not cached or cached["version"] != result.get("version"):
-                        raise ValueError("The frontend returned an unknown catalog version")
-                    guide = cached["guide"]
-                else:
-                    guide = "\n\n".join(
-                        [result["guidance"], *(c["definition"] for c in result["components"])]
-                    )
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    pending_path = path.with_suffix(".catalog.part")
-                    pending_path.write_text(
-                        json.dumps({"version": result["version"], "guide": guide})
-                    )
-                    pending_path.replace(path)
-                self.catalogs[key] = guide
-                return guide
+            if owner not in self.catalogs:
+                self.catalogs[owner] = asyncio.get_running_loop().create_future()
+            guide = await asyncio.shield(self.catalogs[owner])
+            if not guide:
+                raise ValueError("The frontend that sent this turn is disconnected")
+            return guide
 
     async def relay(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """The gateway plugin's reasoning lines, each to the follower of the run that serves its
@@ -1653,10 +1609,7 @@ class Backend:
                                     and event.tool_call_id
                                 ):
                                     async with self.view_started:
-                                        self.view_calls[session_id, event.tool_call_id] = (
-                                            request_id,
-                                            scope,
-                                        )
+                                        self.view_calls[session_id, event.tool_call_id] = request_id
                                         self.view_started.notify_all()
                                 if event.event == "tool.completed":
                                     self.view_calls.pop((session_id, event.tool_call_id), None)
@@ -1761,7 +1714,7 @@ class Backend:
                     return
                 await wake.wait()
         finally:
-            self.view_calls = {k: v for k, v in self.view_calls.items() if v[0] != request_id}
+            self.view_calls = {k: v for k, v in self.view_calls.items() if v != request_id}
             self.page_origins.pop(request_id, None)
             del self.wakes[request_id]
 
@@ -1862,6 +1815,22 @@ class Backend:
         return {"kind": "offer", "target_session_id": target.id if target else None}
 
     async def surface_event(self, frontend_id: UUID, request_id: str, params: SurfaceEvent) -> dict:
+        if params.data.get("kind") == "component_catalog":
+            guide = params.data.get("guide")
+            if (
+                params.scope.scope != "workspace"
+                or params.scope.coworld
+                or params.scope.league
+                or not isinstance(guide, str)
+                or not guide.strip()
+                or len(guide.encode()) > 128 * 1024
+            ):
+                raise Refusal("invalid", "Expected a workspace renderer guide of at most 128 KiB")
+            ready = self.catalogs.get(frontend_id)
+            if ready is None or ready.done():
+                ready = self.catalogs[frontend_id] = asyncio.get_running_loop().create_future()
+            ready.set_result(guide)
+            return {"data": {"registered": True}}
         session_id = params.data.get("session_id")
         if params.data.get("kind") != "current_view" or not isinstance(session_id, str):
             raise Refusal("unsupported", "Unknown surface observation")
@@ -2209,10 +2178,9 @@ class Backend:
 
     def closed(self, frontend_id: UUID) -> None:
         """The relay reports a frontend connection ended: its subscriptions end with it."""
-        self.catalogs = {k: v for k, v in self.catalogs.items() if k[0] != frontend_id}
-        for (owner, _), future in self.catalog_replies.items():
-            if owner == frontend_id and not future.done():
-                future.set_result(None)
+        catalog = self.catalogs.pop(frontend_id, None)
+        if catalog is not None and not catalog.done():
+            catalog.set_result("")
         self.page_origins = {
             key: owner for key, owner in self.page_origins.items() if owner != frontend_id
         }
@@ -2251,16 +2219,14 @@ class Backend:
                                 self.closed(frame.frontend_id)
                             elif "method" in frame.message and "id" in frame.message:
                                 replies.create_task(self.answer(socket, frame))
-                            elif "id" in frame.message:
-                                self.catalog_reply(frame)
                     except ConnectionClosed:  # superseded or expired; in-flight commands finish
                         log.info("AIDE relay closed the connection")
             finally:
                 self.socket = None
+                for catalog in self.catalogs.values():
+                    if not catalog.done():
+                        catalog.set_result("")
                 self.catalogs.clear()
-                for future in self.catalog_replies.values():
-                    if not future.done():
-                        future.set_result(None)
                 for feed in self.boards.values():
                     if feed.watcher is not None:
                         feed.watcher.cancel()
