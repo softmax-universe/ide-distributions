@@ -428,7 +428,9 @@ def _validate_every_aide_frame(monkeypatch):
         return await real_answer(self, socket, frame)
 
     async def checked_send(self, socket, frontend, message):
-        if "method" in message and "id" not in message:
+        if "method" in message and "id" in message:
+            contract.validate_request(message)
+        elif "method" in message:
             contract.validate_notification(message)
         elif "error" in message:
             contract.validate_error(message)
@@ -2903,5 +2905,132 @@ def test_cached_hermes_title_skips_repeat_gateway_gets(system, monkeypatch):
             if note["resource"] == "sessions" and note["item"]["id"] == session_id
         ]
         assert changed_titles[-2:] == ["Settled Hermes Title", "Settled Hermes Title"]
+
+    run(system, scenario)
+
+
+def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch):
+    import openai
+
+    from research_core.tools.base import ToolContext, run_tool
+
+    ctx, _, _ = system
+    monkeypatch.setenv("IDE_WORKSPACE", str(ctx.workspace.root))
+    model = "fixture/view-author"
+    guide = "Render a version 1 view with a body of nodes."
+    view = {"version": 1, "body": [{"type": "metric", "label": "Score", "value": 8}]}
+
+    def generate(request):
+        payload = json.loads(request.content)
+        assert payload["model"] == model
+        assert guide in payload["messages"][0]["content"]
+        assert payload["messages"][1]["content"] == "Score is 8"
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": json.dumps(view)},
+                    }
+                ]
+            },
+        )
+
+    client = openai.OpenAI
+    monkeypatch.setattr(
+        openai,
+        "OpenAI",
+        lambda **kw: client(
+            **kw, http_client=httpx.Client(transport=httpx.MockTransport(generate))
+        ),
+    )
+
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        context = ToolContext.from_env(
+            "orchestrator",
+            {
+                **ctx.env,
+                "IDE_SESSION_ID": session_id,
+                "IDE_TOOL_CALL_ID": "call_view",
+                "OPENROUTER_API_KEY": "fixture",
+                "AIDE_VIEW_MODEL": model,
+            },
+        )
+
+        def script(run_id):
+            return [
+                {"event": "message.delta", "delta": "Score is 8."},
+                {"event": "tool.started", "tool": "display_view", "tool_call_id": "call_view"},
+                {"gate": True},
+                {"event": "tool.completed", "tool": "display_view", "tool_call_id": "call_view"},
+                {
+                    "event": "run.completed",
+                    "say": [{"role": "assistant", "content": "Score is 8."}],
+                },
+            ]
+
+        gateway.script = script
+        await call(
+            backend,
+            "chat.send",
+            {"session_id": session_id, "messages": say("Score?"), "scope": WORKSPACE},
+        )
+        async with await asyncio.start_server(backend.relay, "127.0.0.1", 0) as server:
+            context.env["IDE_REASONING_RELAY"] = f"127.0.0.1:{server.sockets[0].getsockname()[1]}"
+
+            async def invoke():
+                response = await asyncio.to_thread(
+                    run_tool, "display_view", {"brief": "Score is 8"}, context
+                )
+                assert "prepared" in response and "metric" not in response, response
+
+            tool = asyncio.create_task(invoke())
+            await until(lambda: FRONTEND in backend.catalogs)
+
+            async def register(frontend, text):
+                response = await call(
+                    backend,
+                    "surface.event",
+                    {"scope": WORKSPACE, "data": {"kind": "component_catalog", "guide": text}},
+                    frontend=frontend,
+                )
+                assert response["result"]["data"]["registered"]
+
+            await register(OTHER, "A different browser renderer")
+            assert not tool.done()
+            await register(FRONTEND, guide)
+            await tool
+            await invoke()
+            gateway.gate.set()
+            await until(lambda: backend.socket.notes("chat.finished"))
+            backend.closed(FRONTEND)
+            gateway.gate.clear()
+            await call(
+                backend,
+                "chat.send",
+                {"session_id": session_id, "messages": say("Again"), "scope": WORKSPACE},
+                frontend=OTHER,
+            )
+            await register(OTHER, guide)
+            await invoke()
+            gateway.gate.set()
+        await until(lambda: backend.socket.notes("chat.finished", OTHER))
+        actions = [
+            f["message"]["params"]["data"]
+            for f in backend.socket.frames
+            if f["message"].get("method") == "surface.act"
+        ]
+        assert len(actions) == 2 and actions[-1]["view"] == view
+        assert any(
+            n["event"].get("delta") == "Score is 8." for n in backend.socket.notes("chat.event")
+        )
+        backend = await backend.restart()
+        params = {"scope": WORKSPACE, "data": {"kind": "current_view", "session_id": session_id}}
+        assert (await call(backend, "surface.event", params))["result"]["data"][
+            "current"
+        ] == actions[-1]
+        assert "error" in await call(backend, "surface.event", params | {"scope": LEAGUE})
 
     run(system, scenario)

@@ -412,6 +412,16 @@ QUESTIONS: dict[str, list[Question]] = {
         q("Where does a progress update go?", r"notice"),
         q("How do you ask the user from a wake?", r"decision"),
     ],
+    "tool:display_view": [
+        q("Which inputs must a view request supply?", r"brief"),
+        q("What does the brief contain?", r"facts|data|show"),
+        q("Where will the component appear?", r"Views|conversation"),
+    ],
+    "tool:page_interaction": [
+        q("Which action points out a page element?", r"point"),
+        q("Which input identifies that element?", r"ref"),
+        q("Who confirms a page interaction?", r"page|user|frontend|client"),
+    ],
     "tool:chat_update": [
         q("What are the required arguments?", r"category", r"text"),
         q("Is it allowed in a chat?", r"\bno\b|refused|not"),

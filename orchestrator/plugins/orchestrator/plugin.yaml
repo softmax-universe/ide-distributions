@@ -11,12 +11,14 @@ provides_tools:
   - claim_add_evidence
   - claim_write
   - directive
+  - display_view
   - experiment
   - experiment_create
   - forum_post
   - github
   - goal
   - goal_set_status
+  - page_interaction
   - platform
   - settings
   - settings_update

@@ -72,10 +72,12 @@ A standing instruction or preference becomes a directive (`directive.add`) so it
 - `chat_update` (inputs: category, text, refs)
 - `claim`: search, read, retire, inspect_evidence, `claim_write`, `claim_add_evidence`
 - `directive`: add, update, retire, list
+- `display_view` (inputs: brief)
 - `experiment`: read, search, update, start, update_run, close, abandon, `experiment_create`
 - `forum_post`: post, comment
 - `github`: repositories, clone
 - `goal`: create, update, read, list, `goal_set_status`
+- `page_interaction` (inputs: action, ref, note)
 - `platform`: leagues, league, coworld_update, divisions, standings, active_policies, policy_versions, policy_file, results, episodes, episode, episode_summaries, replays, episode_results, replay, credits, champion, forum_list, forum_read, forum_search, wiki_read, wiki_search, wiki_history, coworld
 - `settings`: read, `settings_update`
 - `softmax_api` (inputs: method, path, params, json, identity)
