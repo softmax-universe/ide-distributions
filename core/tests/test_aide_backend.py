@@ -2975,13 +2975,16 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
 
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)
-        tool_env = {
-            **ctx.env,
-            "IDE_SESSION_ID": session_id,
-            "IDE_TOOL_CALL_ID": "call_view",
-            "OPENROUTER_API_KEY": "fixture",
-            "AIDE_VIEW_MODEL": model,
-        }
+        context = ToolContext.from_env(
+            "orchestrator",
+            {
+                **ctx.env,
+                "IDE_SESSION_ID": session_id,
+                "IDE_TOOL_CALL_ID": "call_view",
+                "OPENROUTER_API_KEY": "fixture",
+                "AIDE_VIEW_MODEL": model,
+            },
+        )
 
         def script(run_id):
             return [
@@ -3002,14 +3005,11 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
             {"session_id": session_id, "messages": say("Score?"), "scope": WORKSPACE},
         )
         async with await asyncio.start_server(backend.relay, "127.0.0.1", 0) as server:
-            tool_env["IDE_REASONING_RELAY"] = f"127.0.0.1:{server.sockets[0].getsockname()[1]}"
+            context.env["IDE_REASONING_RELAY"] = f"127.0.0.1:{server.sockets[0].getsockname()[1]}"
 
             async def invoke():
                 response = await asyncio.to_thread(
-                    run_tool,
-                    "display_view",
-                    {"brief": "Score is 8"},
-                    ToolContext.from_env("orchestrator", tool_env),
+                    run_tool, "display_view", {"brief": "Score is 8"}, context
                 )
                 assert "prepared" in response and "metric" not in response, response
 
