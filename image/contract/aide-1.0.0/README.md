@@ -8,8 +8,8 @@ request, result, error, and notification frame without depending on an external 
 
 - **Source repository:** `softmax-universe/softmax`
 - **Source path:** `workspaces/web/docs/public/static/aide/1.0.0/asyncapi.json`
-- **Source commit:** `802250f7c2`
-- **SHA-256:** `b44a2ad6d2c3bf904d3b09f2d25a9c1da6426e8d5a2c12cc2229e0df0340c098`
+- **Source commit:** `f4900b76042f54a3f8f730749683302666f85eb4`
+- **SHA-256:** `f8f408060baf9c01e75bb5b36fd5841b008c30b102a61e80e3bb95875b176f77`
 
 ## Verify and Refresh
 

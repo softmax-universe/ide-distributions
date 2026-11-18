@@ -38,10 +38,12 @@ from pydantic import (
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
+from research_core import layout
 from research_core.run_failures import CONTINUATION_PREFIX
 from research_core.store.db import DEFAULT_MAX_HOLD_S
 from research_core.store.migrate import BUSY_TIMEOUT_MS
 from research_core.telemetry import propagator, span, tracer
+from research_core.tools.display_view import current_view, view_path
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +124,17 @@ class Client(Closed):
 class Open(Closed):
     scope: Scope
     client: Client | None = None
+
+
+class PageInteraction(Closed):
+    action: Literal["point", "open", "press", "go", "remember"]
+    note: str = Field(min_length=1, max_length=200)
+    ref: str | None = None
+
+
+class SurfaceEvent(Closed):
+    scope: Scope
+    data: dict[str, JsonValue]
 
 
 class PageScope(Scope):
@@ -861,6 +874,7 @@ class Backend:
         self.subscribers: dict[str, Subscription] = {}
         self.session_locks: dict[str, asyncio.Lock] = {}
         self.publish_locks: dict[str, asyncio.Lock] = {}
+        self.page_origins: dict[str, UUID] = {}
         self.published_after: dict[str, int] = {}
         self.titles: dict[str, str] = {}  # session id -> non-empty title read from Hermes
         self.boards: dict[str, BoardFeed] = {}
@@ -1379,6 +1393,38 @@ class Backend:
                         }
                     if native.request_id not in steered:
                         break
+                origin = self.page_origins.get(native.request_id or request_id)
+                if self.socket is not None and origin is not None and native.role == "assistant":
+                    for entry in native.tool_calls or []:
+                        function = entry.get("function") if isinstance(entry, dict) else None
+                        if (
+                            isinstance(function, dict)
+                            and function.get("name") == "page_interaction"
+                        ):
+                            try:
+                                parsed = PageInteraction.model_validate_json(
+                                    function.get("arguments", "")
+                                )
+                            except ValidationError:
+                                continue
+                            await self.send(
+                                self.socket,
+                                origin,
+                                {
+                                    "jsonrpc": "2.0",
+                                    "id": str(uuid4()),
+                                    "method": "surface.act",
+                                    "params": {
+                                        "scope": scope.model_dump(),
+                                        "data": {
+                                            **parsed.model_dump(),
+                                            "kind": "page_interaction",
+                                            "session_id": session_id,
+                                            "request_id": native.request_id or request_id,
+                                        },
+                                    },
+                                },
+                            )
                 visible = record(native, session_id)
                 if visible is not None:
                     visible.request_id = native.request_id or request_id
@@ -1529,6 +1575,10 @@ class Backend:
                                 progress.consumed[run.run_id] = last_seq
                                 await record(progress.place(run.run_id, event))
                                 if event.event == "tool.completed":
+                                    if event.tool == "display_view":
+                                        await self.display_view(
+                                            session_id, scope, event.tool_call_id
+                                        )
                                     after = await self.publish(request_id, session_id, scope, after)
                                 elif event.event in CONTROLS:
                                     await self.changed(session_id)
@@ -1626,6 +1676,7 @@ class Backend:
                     return
                 await wake.wait()
         finally:
+            self.page_origins.pop(request_id, None)
             del self.wakes[request_id]
 
     def ensure_consumer(self, request_id: str, session_id: str, scope: Scope) -> None:
@@ -1724,6 +1775,34 @@ class Backend:
         )
         return {"kind": "offer", "target_session_id": target.id if target else None}
 
+    async def surface_event(self, frontend_id: UUID, request_id: str, params: SurfaceEvent) -> dict:
+        session_id = params.data.get("session_id")
+        if params.data.get("kind") != "current_view" or not isinstance(session_id, str):
+            raise Refusal("unsupported", "Unknown surface observation")
+        await self.touch(session_id, params.scope, frontend_id)
+        view = current_view(view_path(layout.from_env().state, session_id))
+        return {"data": {"current": view}}
+
+    async def display_view(self, session_id: str, scope: Scope, call_id: str | None) -> None:
+        socket = self.socket
+        subscription = self.subscribers.get(session_id)
+        if socket is None or subscription is None:
+            return
+        view = current_view(view_path(layout.from_env().state, session_id))
+        if view is None or (view.get("call_id") and view["call_id"] != call_id):
+            return
+        for frontend_id in list(subscription.frontends):
+            await self.send(
+                socket,
+                frontend_id,
+                {
+                    "jsonrpc": "2.0",
+                    "id": str(uuid4()),
+                    "method": "surface.act",
+                    "params": {"scope": scope.model_dump(), "data": view},
+                },
+            )
+
     async def send_chat(self, frontend_id: UUID, request_id: str, params: Send) -> dict:
         await self.touch(params.session_id, params.scope, frontend_id)
         if len(params.messages) != 1 or params.messages[0]["role"] != "user":
@@ -1748,6 +1827,7 @@ class Backend:
         } | params.model_dump(mode="json", include={"context", "instructions"}, exclude_none=True)
         await self.call(self.seam, "POST", "/message", command=True, json=body)
         if not replay:
+            self.page_origins[request_id] = frontend_id
             self.ensure_consumer(request_id, params.session_id, params.scope)
         return {"accepted": True, "session_id": params.session_id, "request_id": request_id}
 
@@ -2002,6 +2082,7 @@ class Backend:
             handlers = {
                 "session.open": (Open, self.open),
                 "session.page": (SessionPage, self.session_page),
+                "surface.event": (SurfaceEvent, self.surface_event),
                 "chat.send": (Send, self.send_chat),
                 "chat.history": (History, self.history),
                 "chat.events": (Events, self.read_events),
@@ -2042,6 +2123,9 @@ class Backend:
 
     def closed(self, frontend_id: UUID) -> None:
         """The relay reports a frontend connection ended: its subscriptions end with it."""
+        self.page_origins = {
+            key: owner for key, owner in self.page_origins.items() if owner != frontend_id
+        }
         for subscription in self.subscribers.values():
             subscription.frontends.discard(frontend_id)
         for coworld, feed in list(self.boards.items()):
@@ -2063,6 +2147,7 @@ class Backend:
             Bound.model_validate_json(await socket.recv())
             # Frontends subscribe through one binding; after a rebind they subscribe again by
             # reading their sessions, so the last binding's frontends are stale.
+            self.page_origins.clear()
             self.subscribers.clear()
             self.titles.clear()
             self.socket = socket
@@ -2071,7 +2156,7 @@ class Backend:
                     try:
                         async for raw in socket:
                             frame = Frame.model_validate_json(raw)
-                            # This backend sends no reverse requests, so no replies arrive.
+                            # A reconnect reads the stored view.
                             if frame.message.get("method") == "frontend.closed":
                                 self.closed(frame.frontend_id)
                             elif "method" in frame.message and "id" in frame.message:

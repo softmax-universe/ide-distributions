@@ -112,7 +112,7 @@ nowhere.
 
 - **Tool:** a module under `tools/` with `SPEC = tool(ToolSpec(...))`, listed in
   `catalog.TOOL_MODULES`; in-process tools import only what Hermes's interpreter has; `core/tests/test_tool_budget.py`
-  pins the role sets (23 Orchestrator, 23 Researcher) and the executor table; run
+  pins the role sets (25 Orchestrator, 23 Researcher) and the executor table; run
   `uv run python tools/build_prompts.py --write --manifests`. Describe the tool, every field
   and every key, shortly: every request carries the whole list. Build field schemas with
   `tools/_args.py`: an object field lists its keys (`obj`, `objects`; `free_object` only for

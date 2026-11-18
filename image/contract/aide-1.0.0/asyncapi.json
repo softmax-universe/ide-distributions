@@ -139,6 +139,42 @@
         },
         "session_page_result": {
           "$ref": "#/components/messages/frontend_session_page_result"
+        },
+        "surface_event": {
+          "$ref": "#/components/messages/frontend_surface_event"
+        },
+        "surface_event_result": {
+          "$ref": "#/components/messages/frontend_surface_event_result"
+        },
+        "surface_act": {
+          "$ref": "#/components/messages/frontend_surface_act"
+        },
+        "surface_act_result": {
+          "$ref": "#/components/messages/frontend_surface_act_result"
+        },
+        "clarification_request": {
+          "$ref": "#/components/messages/frontend_clarification_request"
+        },
+        "clarification_request_result": {
+          "$ref": "#/components/messages/frontend_clarification_request_result"
+        },
+        "clarification_response": {
+          "$ref": "#/components/messages/frontend_clarification_response"
+        },
+        "clarification_response_result": {
+          "$ref": "#/components/messages/frontend_clarification_response_result"
+        },
+        "policy_create": {
+          "$ref": "#/components/messages/frontend_policy_create"
+        },
+        "policy_create_result": {
+          "$ref": "#/components/messages/frontend_policy_create_result"
+        },
+        "policy_update": {
+          "$ref": "#/components/messages/frontend_policy_update"
+        },
+        "policy_update_result": {
+          "$ref": "#/components/messages/frontend_policy_update_result"
         }
       }
     },
@@ -265,6 +301,42 @@
         },
         "session_page_result": {
           "$ref": "#/components/messages/backend_session_page_result"
+        },
+        "surface_event": {
+          "$ref": "#/components/messages/backend_surface_event"
+        },
+        "surface_event_result": {
+          "$ref": "#/components/messages/backend_surface_event_result"
+        },
+        "surface_act": {
+          "$ref": "#/components/messages/backend_surface_act"
+        },
+        "surface_act_result": {
+          "$ref": "#/components/messages/backend_surface_act_result"
+        },
+        "clarification_request": {
+          "$ref": "#/components/messages/backend_clarification_request"
+        },
+        "clarification_request_result": {
+          "$ref": "#/components/messages/backend_clarification_request_result"
+        },
+        "clarification_response": {
+          "$ref": "#/components/messages/backend_clarification_response"
+        },
+        "clarification_response_result": {
+          "$ref": "#/components/messages/backend_clarification_response_result"
+        },
+        "policy_create": {
+          "$ref": "#/components/messages/backend_policy_create"
+        },
+        "policy_create_result": {
+          "$ref": "#/components/messages/backend_policy_create_result"
+        },
+        "policy_update": {
+          "$ref": "#/components/messages/backend_policy_update"
+        },
+        "policy_update_result": {
+          "$ref": "#/components/messages/backend_policy_update_result"
         }
       }
     }
@@ -788,7 +860,7 @@
         "$ref": "#/channels/frontend"
       },
       "title": "input.respond",
-      "summary": "Answer a pending session approval (once or deny) or clarification. request_id identifies the pending input. A stale answer returns conflict.",
+      "summary": "Answer a pending session approval (once or deny). request_id identifies the pending input. A stale answer returns conflict. Answering a pending clarification is deprecated; see clarification.response.",
       "description": "Frontend \u2192 AIDE. Every defined request may return a correlated unsupported error. Commands request action; they do not directly mutate receiver-owned state.",
       "messages": [
         {
@@ -820,7 +892,7 @@
         "$ref": "#/channels/backend"
       },
       "title": "input.respond",
-      "summary": "Answer a pending session approval (once or deny) or clarification. request_id identifies the pending input. A stale answer returns conflict.",
+      "summary": "Answer a pending session approval (once or deny). request_id identifies the pending input. A stale answer returns conflict. Answering a pending clarification is deprecated; see clarification.response.",
       "description": "Frontend \u2192 AIDE. Every defined request may return a correlated unsupported error. Commands request action; they do not directly mutate receiver-owned state.",
       "messages": [
         {
@@ -1321,6 +1393,390 @@
         "messages": [
           {
             "$ref": "#/channels/backend/messages/session_page_result"
+          },
+          {
+            "$ref": "#/channels/backend/messages/error"
+          }
+        ]
+      }
+    },
+    "frontend_surface_event": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/frontend"
+      },
+      "title": "surface.event",
+      "summary": "Report an observation of how the frontend's own state is changing. The object travels in `data`, beside its `scope`, and is defined by the frontend and AIDE; the relay checks only that it is a JSON object.",
+      "description": "Frontend \u2192 AIDE. Every defined request may return a correlated unsupported error. Commands request action; they do not directly mutate receiver-owned state.",
+      "messages": [
+        {
+          "$ref": "#/channels/frontend/messages/surface_event"
+        }
+      ],
+      "tags": [
+        {
+          "name": "Frontend \u2192 AIDE"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/frontend"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/frontend/messages/surface_event_result"
+          },
+          {
+            "$ref": "#/channels/frontend/messages/error"
+          }
+        ]
+      }
+    },
+    "backend_surface_event": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/backend"
+      },
+      "title": "surface.event",
+      "summary": "Report an observation of how the frontend's own state is changing. The object travels in `data`, beside its `scope`, and is defined by the frontend and AIDE; the relay checks only that it is a JSON object.",
+      "description": "Frontend \u2192 AIDE. Every defined request may return a correlated unsupported error. Commands request action; they do not directly mutate receiver-owned state.",
+      "messages": [
+        {
+          "$ref": "#/channels/backend/messages/surface_event"
+        }
+      ],
+      "tags": [
+        {
+          "name": "Frontend \u2192 AIDE"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/backend"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/backend/messages/surface_event_result"
+          },
+          {
+            "$ref": "#/channels/backend/messages/error"
+          }
+        ]
+      }
+    },
+    "frontend_surface_act": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/frontend"
+      },
+      "title": "surface.act",
+      "summary": "Ask the frontend to apply an action to itself. The object travels in `data`, beside its `scope`, and is defined by AIDE and the frontend; the relay checks only that it is a JSON object. Never replay after reconnect.",
+      "description": "AIDE \u2192 Frontend. Every defined request may return a correlated unsupported error. Commands request action; they do not directly mutate receiver-owned state.",
+      "messages": [
+        {
+          "$ref": "#/channels/frontend/messages/surface_act"
+        }
+      ],
+      "tags": [
+        {
+          "name": "AIDE \u2192 Frontend"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/frontend"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/frontend/messages/surface_act_result"
+          },
+          {
+            "$ref": "#/channels/frontend/messages/error"
+          }
+        ]
+      }
+    },
+    "backend_surface_act": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/backend"
+      },
+      "title": "surface.act",
+      "summary": "Ask the frontend to apply an action to itself. The object travels in `data`, beside its `scope`, and is defined by AIDE and the frontend; the relay checks only that it is a JSON object. Never replay after reconnect.",
+      "description": "AIDE \u2192 Frontend. Every defined request may return a correlated unsupported error. Commands request action; they do not directly mutate receiver-owned state.",
+      "messages": [
+        {
+          "$ref": "#/channels/backend/messages/surface_act"
+        }
+      ],
+      "tags": [
+        {
+          "name": "AIDE \u2192 Frontend"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/backend"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/backend/messages/surface_act_result"
+          },
+          {
+            "$ref": "#/channels/backend/messages/error"
+          }
+        ]
+      }
+    },
+    "frontend_clarification_request": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/frontend"
+      },
+      "title": "clarification.request",
+      "summary": "Ask the frontend a question without holding any work. The result only confirms the frontend took the question; the answer arrives later as clarification.response. Never replay after reconnect.",
+      "description": "AIDE \u2192 Frontend. Every defined request may return a correlated unsupported error. Commands request action; they do not directly mutate receiver-owned state.",
+      "messages": [
+        {
+          "$ref": "#/channels/frontend/messages/clarification_request"
+        }
+      ],
+      "tags": [
+        {
+          "name": "AIDE \u2192 Frontend"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/frontend"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/frontend/messages/clarification_request_result"
+          },
+          {
+            "$ref": "#/channels/frontend/messages/error"
+          }
+        ]
+      }
+    },
+    "backend_clarification_request": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/backend"
+      },
+      "title": "clarification.request",
+      "summary": "Ask the frontend a question without holding any work. The result only confirms the frontend took the question; the answer arrives later as clarification.response. Never replay after reconnect.",
+      "description": "AIDE \u2192 Frontend. Every defined request may return a correlated unsupported error. Commands request action; they do not directly mutate receiver-owned state.",
+      "messages": [
+        {
+          "$ref": "#/channels/backend/messages/clarification_request"
+        }
+      ],
+      "tags": [
+        {
+          "name": "AIDE \u2192 Frontend"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/backend"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/backend/messages/clarification_request_result"
+          },
+          {
+            "$ref": "#/channels/backend/messages/error"
+          }
+        ]
+      }
+    },
+    "frontend_clarification_response": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/frontend"
+      },
+      "title": "clarification.response",
+      "summary": "Answer a question asked with clarification.request. request_id is that request's outer id. An unwanted or differently answered question returns conflict; an unknown request_id returns not_found.",
+      "description": "Frontend \u2192 AIDE. Every defined request may return a correlated unsupported error. Commands request action; they do not directly mutate receiver-owned state.",
+      "messages": [
+        {
+          "$ref": "#/channels/frontend/messages/clarification_response"
+        }
+      ],
+      "tags": [
+        {
+          "name": "Frontend \u2192 AIDE"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/frontend"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/frontend/messages/clarification_response_result"
+          },
+          {
+            "$ref": "#/channels/frontend/messages/error"
+          }
+        ]
+      }
+    },
+    "backend_clarification_response": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/backend"
+      },
+      "title": "clarification.response",
+      "summary": "Answer a question asked with clarification.request. request_id is that request's outer id. An unwanted or differently answered question returns conflict; an unknown request_id returns not_found.",
+      "description": "Frontend \u2192 AIDE. Every defined request may return a correlated unsupported error. Commands request action; they do not directly mutate receiver-owned state.",
+      "messages": [
+        {
+          "$ref": "#/channels/backend/messages/clarification_response"
+        }
+      ],
+      "tags": [
+        {
+          "name": "Frontend \u2192 AIDE"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/backend"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/backend/messages/clarification_response_result"
+          },
+          {
+            "$ref": "#/channels/backend/messages/error"
+          }
+        ]
+      }
+    },
+    "frontend_policy_create": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/frontend"
+      },
+      "title": "policy.create",
+      "summary": "Ask the frontend to deploy a new policy under name. An existing name returns conflict. Never replay after reconnect.",
+      "description": "AIDE \u2192 Frontend. Every defined request may return a correlated unsupported error. Commands request action; they do not directly mutate receiver-owned state.",
+      "messages": [
+        {
+          "$ref": "#/channels/frontend/messages/policy_create"
+        }
+      ],
+      "tags": [
+        {
+          "name": "AIDE \u2192 Frontend"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/frontend"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/frontend/messages/policy_create_result"
+          },
+          {
+            "$ref": "#/channels/frontend/messages/error"
+          }
+        ]
+      }
+    },
+    "backend_policy_create": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/backend"
+      },
+      "title": "policy.create",
+      "summary": "Ask the frontend to deploy a new policy under name. An existing name returns conflict. Never replay after reconnect.",
+      "description": "AIDE \u2192 Frontend. Every defined request may return a correlated unsupported error. Commands request action; they do not directly mutate receiver-owned state.",
+      "messages": [
+        {
+          "$ref": "#/channels/backend/messages/policy_create"
+        }
+      ],
+      "tags": [
+        {
+          "name": "AIDE \u2192 Frontend"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/backend"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/backend/messages/policy_create_result"
+          },
+          {
+            "$ref": "#/channels/backend/messages/error"
+          }
+        ]
+      }
+    },
+    "frontend_policy_update": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/frontend"
+      },
+      "title": "policy.update",
+      "summary": "Ask the frontend to deploy new content for the policy it holds under name. An unknown name returns not_found. Never replay after reconnect.",
+      "description": "AIDE \u2192 Frontend. Every defined request may return a correlated unsupported error. Commands request action; they do not directly mutate receiver-owned state.",
+      "messages": [
+        {
+          "$ref": "#/channels/frontend/messages/policy_update"
+        }
+      ],
+      "tags": [
+        {
+          "name": "AIDE \u2192 Frontend"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/frontend"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/frontend/messages/policy_update_result"
+          },
+          {
+            "$ref": "#/channels/frontend/messages/error"
+          }
+        ]
+      }
+    },
+    "backend_policy_update": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/backend"
+      },
+      "title": "policy.update",
+      "summary": "Ask the frontend to deploy new content for the policy it holds under name. An unknown name returns not_found. Never replay after reconnect.",
+      "description": "AIDE \u2192 Frontend. Every defined request may return a correlated unsupported error. Commands request action; they do not directly mutate receiver-owned state.",
+      "messages": [
+        {
+          "$ref": "#/channels/backend/messages/policy_update"
+        }
+      ],
+      "tags": [
+        {
+          "name": "AIDE \u2192 Frontend"
+        }
+      ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/backend"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/backend/messages/policy_update_result"
           },
           {
             "$ref": "#/channels/backend/messages/error"
@@ -2866,7 +3322,9 @@
               "prompt",
               "kind"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "deprecated": true,
+            "description": "Deprecated: AIDE asks questions with clarification.request instead. Producers stop emitting this kind; it stays valid until no runtime emits it."
           }
         ]
       },
@@ -2910,7 +3368,9 @@
               "kind",
               "answer"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "deprecated": true,
+            "description": "Deprecated: answers only a deprecated clarification pending input. Answer a clarification.request with clarification.response."
           }
         ]
       },
@@ -3001,6 +3461,9 @@
             },
             "description": "Up to 1000 non-terminal requests of this session plus its 10 most recently updated terminal ones, ordered by created_at, oldest first, without messages. active_request_ids lists every non-terminal request, so it can name requests this list omits; read state.list requests for the rest.",
             "maxItems": 1010
+          },
+          "source": {
+            "$ref": "#/components/schemas/Source"
           }
         },
         "required": [
@@ -3208,6 +3671,9 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
           }
         },
         "required": [
@@ -3935,6 +4401,9 @@
           },
           "root": {
             "$ref": "#/components/schemas/DomNode"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
           }
         },
         "required": [
@@ -4022,6 +4491,9 @@
                 "additionalProperties": false
               }
             ]
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
           }
         },
         "required": [
@@ -4413,6 +4885,9 @@
               },
               "item": {
                 "$ref": "#/components/schemas/Session"
+              },
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
               }
             },
             "required": [
@@ -4455,6 +4930,9 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200
+              },
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
               }
             },
             "required": [
@@ -4492,6 +4970,9 @@
                 "enum": [
                   "invalidate"
                 ]
+              },
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
               }
             },
             "required": [
@@ -4531,6 +5012,9 @@
               },
               "item": {
                 "$ref": "#/components/schemas/Task"
+              },
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
               }
             },
             "required": [
@@ -4573,6 +5057,9 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200
+              },
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
               }
             },
             "required": [
@@ -4610,6 +5097,9 @@
                 "enum": [
                   "invalidate"
                 ]
+              },
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
               }
             },
             "required": [
@@ -4649,6 +5139,9 @@
               },
               "item": {
                 "$ref": "#/components/schemas/Goal"
+              },
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
               }
             },
             "required": [
@@ -4691,6 +5184,9 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 200
+              },
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
               }
             },
             "required": [
@@ -4728,6 +5224,9 @@
                 "enum": [
                   "invalidate"
                 ]
+              },
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
               }
             },
             "required": [
@@ -4749,6 +5248,9 @@
           },
           "client": {
             "$ref": "#/components/schemas/Client"
+          },
+          "source": {
+            "$ref": "#/components/schemas/Source"
           }
         },
         "required": [
@@ -5184,7 +5686,11 @@
       },
       "browser_snapshotParams": {
         "type": "object",
-        "properties": {},
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          }
+        },
         "required": [],
         "additionalProperties": false
       },
@@ -5254,6 +5760,9 @@
               }
             ],
             "description": "The cursor of the text.delta event this chunk mirrors. Requires request_id."
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
           }
         },
         "required": [
@@ -5292,6 +5801,9 @@
           },
           "event": {
             "$ref": "#/components/schemas/ChatEvent"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
           }
         },
         "required": [
@@ -5329,6 +5841,9 @@
                 "type": "integer",
                 "minimum": 0,
                 "description": "The request record's revision after it finished."
+              },
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
               }
             },
             "required": [
@@ -5367,6 +5882,9 @@
                 "type": "integer",
                 "minimum": 0,
                 "description": "The request record's revision after it finished."
+              },
+              "scope": {
+                "$ref": "#/components/schemas/Scope"
               }
             },
             "required": [
@@ -5419,6 +5937,24 @@
           },
           {
             "$ref": "#/components/schemas/session_pageMessage"
+          },
+          {
+            "$ref": "#/components/schemas/surface_eventMessage"
+          },
+          {
+            "$ref": "#/components/schemas/surface_actMessage"
+          },
+          {
+            "$ref": "#/components/schemas/clarification_requestMessage"
+          },
+          {
+            "$ref": "#/components/schemas/clarification_responseMessage"
+          },
+          {
+            "$ref": "#/components/schemas/policy_createMessage"
+          },
+          {
+            "$ref": "#/components/schemas/policy_updateMessage"
           }
         ]
       },
@@ -6659,6 +7195,542 @@
             "additionalProperties": false
           }
         ]
+      },
+      "surface_eventParams": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "data": {
+            "type": "object",
+            "description": "Observation of a change in the frontend's state, passed to AIDE unchanged. The platform does not interpret it."
+          }
+        },
+        "required": [
+          "scope",
+          "data"
+        ],
+        "additionalProperties": false
+      },
+      "surface_eventResult": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "AIDE-defined answer to the observation, passed to the frontend unchanged. Empty when there is none."
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "additionalProperties": false
+      },
+      "surface_eventMessage": {
+        "type": "object",
+        "properties": {
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "method": {
+            "const": "surface.event"
+          },
+          "params": {
+            "$ref": "#/components/schemas/surface_eventParams"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "method",
+          "params"
+        ],
+        "additionalProperties": false
+      },
+      "surface_eventReply": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "jsonrpc": {
+                "const": "2.0"
+              },
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "result": {
+                "$ref": "#/components/schemas/surface_eventResult"
+              }
+            },
+            "required": [
+              "jsonrpc",
+              "id",
+              "result"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "$ref": "#/components/schemas/Error"
+          }
+        ]
+      },
+      "surface_actParams": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "data": {
+            "type": "object",
+            "description": "Action for the frontend to apply to itself, passed to the frontend unchanged. The platform does not interpret it."
+          }
+        },
+        "required": [
+          "scope",
+          "data"
+        ],
+        "additionalProperties": false
+      },
+      "surface_actResult": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "Frontend-defined outcome of the action, passed to AIDE unchanged. Empty when there is none."
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "additionalProperties": false
+      },
+      "surface_actMessage": {
+        "type": "object",
+        "properties": {
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "method": {
+            "const": "surface.act"
+          },
+          "params": {
+            "$ref": "#/components/schemas/surface_actParams"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "method",
+          "params"
+        ],
+        "additionalProperties": false
+      },
+      "surface_actReply": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "jsonrpc": {
+                "const": "2.0"
+              },
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "result": {
+                "$ref": "#/components/schemas/surface_actResult"
+              }
+            },
+            "required": [
+              "jsonrpc",
+              "id",
+              "result"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "$ref": "#/components/schemas/Error"
+          }
+        ]
+      },
+      "Source": {
+        "enum": [
+          "user",
+          "surface"
+        ],
+        "description": "Who writes a session's messages to the agent: the person using the frontend (user) or the frontend itself (surface)."
+      },
+      "clarification_requestParams": {
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The question to answer."
+          },
+          "session_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "The session the question belongs to, when there is one."
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          }
+        },
+        "required": [
+          "prompt",
+          "scope"
+        ],
+        "additionalProperties": false
+      },
+      "clarification_requestResult": {
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "const": true
+          }
+        },
+        "required": [
+          "accepted"
+        ],
+        "additionalProperties": false
+      },
+      "clarification_requestMessage": {
+        "type": "object",
+        "properties": {
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "method": {
+            "const": "clarification.request"
+          },
+          "params": {
+            "$ref": "#/components/schemas/clarification_requestParams"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "method",
+          "params"
+        ],
+        "additionalProperties": false
+      },
+      "clarification_requestReply": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "jsonrpc": {
+                "const": "2.0"
+              },
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "result": {
+                "$ref": "#/components/schemas/clarification_requestResult"
+              }
+            },
+            "required": [
+              "jsonrpc",
+              "id",
+              "result"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "$ref": "#/components/schemas/Error"
+          }
+        ]
+      },
+      "clarification_responseParams": {
+        "type": "object",
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The outer id of the clarification.request being answered."
+          },
+          "answer": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          }
+        },
+        "required": [
+          "request_id",
+          "answer",
+          "scope"
+        ],
+        "additionalProperties": false
+      },
+      "clarification_responseResult": {
+        "type": "object",
+        "properties": {
+          "applied": {
+            "const": true
+          }
+        },
+        "required": [
+          "applied"
+        ],
+        "additionalProperties": false
+      },
+      "clarification_responseMessage": {
+        "type": "object",
+        "properties": {
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "method": {
+            "const": "clarification.response"
+          },
+          "params": {
+            "$ref": "#/components/schemas/clarification_responseParams"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "method",
+          "params"
+        ],
+        "additionalProperties": false
+      },
+      "clarification_responseReply": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "jsonrpc": {
+                "const": "2.0"
+              },
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "result": {
+                "$ref": "#/components/schemas/clarification_responseResult"
+              }
+            },
+            "required": [
+              "jsonrpc",
+              "id",
+              "result"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "$ref": "#/components/schemas/Error"
+          }
+        ]
+      },
+      "PolicyBlob": {
+        "type": "object",
+        "description": "The policy's content. Only inline text is defined; kind leaves room for other carriers.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "text"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000000,
+            "description": "The complete policy source, one file."
+          }
+        },
+        "required": [
+          "kind",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "Policy": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[^:]+$",
+            "description": "The frontend's key for the policy."
+          },
+          "blob": {
+            "$ref": "#/components/schemas/PolicyBlob"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          }
+        },
+        "required": [
+          "name",
+          "blob",
+          "scope"
+        ],
+        "additionalProperties": false
+      },
+      "PolicyVersion": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[^:]+$",
+            "description": "The frontend's key for the policy."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The version the frontend deployed."
+          }
+        },
+        "required": [
+          "name",
+          "version"
+        ],
+        "additionalProperties": false
+      },
+      "policy_createParams": {
+        "$ref": "#/components/schemas/Policy"
+      },
+      "policy_createResult": {
+        "$ref": "#/components/schemas/PolicyVersion"
+      },
+      "policy_createMessage": {
+        "type": "object",
+        "properties": {
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "method": {
+            "const": "policy.create"
+          },
+          "params": {
+            "$ref": "#/components/schemas/policy_createParams"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "method",
+          "params"
+        ],
+        "additionalProperties": false
+      },
+      "policy_createReply": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "jsonrpc": {
+                "const": "2.0"
+              },
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "result": {
+                "$ref": "#/components/schemas/policy_createResult"
+              }
+            },
+            "required": [
+              "jsonrpc",
+              "id",
+              "result"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "$ref": "#/components/schemas/Error"
+          }
+        ]
+      },
+      "policy_updateParams": {
+        "$ref": "#/components/schemas/Policy"
+      },
+      "policy_updateResult": {
+        "$ref": "#/components/schemas/PolicyVersion"
+      },
+      "policy_updateMessage": {
+        "type": "object",
+        "properties": {
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "method": {
+            "const": "policy.update"
+          },
+          "params": {
+            "$ref": "#/components/schemas/policy_updateParams"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "method",
+          "params"
+        ],
+        "additionalProperties": false
+      },
+      "policy_updateReply": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "jsonrpc": {
+                "const": "2.0"
+              },
+              "id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "result": {
+                "$ref": "#/components/schemas/policy_updateResult"
+              }
+            },
+            "required": [
+              "jsonrpc",
+              "id",
+              "result"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "$ref": "#/components/schemas/Error"
+          }
+        ]
       }
     },
     "messages": {
@@ -7526,7 +8598,7 @@
         "name": "frontend_input_respond",
         "title": "input_respond",
         "contentType": "application/json",
-        "description": "Answer a pending session approval (once or deny) or clarification. request_id identifies the pending input. A stale answer returns conflict.",
+        "description": "Answer a pending session approval (once or deny). request_id identifies the pending input. A stale answer returns conflict. Answering a pending clarification is deprecated; see clarification.response.",
         "payload": {
           "$ref": "#/components/schemas/input_respondMessage"
         },
@@ -7568,7 +8640,7 @@
         "name": "backend_input_respond",
         "title": "input_respond",
         "contentType": "application/json",
-        "description": "Answer a pending session approval (once or deny) or clarification. request_id identifies the pending input. A stale answer returns conflict.",
+        "description": "Answer a pending session approval (once or deny). request_id identifies the pending input. A stale answer returns conflict. Answering a pending clarification is deprecated; see clarification.response.",
         "payload": {
           "type": "object",
           "properties": {
@@ -8192,6 +9264,678 @@
                 },
                 "result": {
                   "$ref": "#/components/schemas/session_pageResult"
+                }
+              },
+              "required": [
+                "jsonrpc",
+                "id",
+                "result"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "frontend_id",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/message/id"
+        }
+      },
+      "frontend_surface_event": {
+        "name": "frontend_surface_event",
+        "title": "surface_event",
+        "contentType": "application/json",
+        "description": "Report an observation of how the frontend's own state is changing. The object travels in `data`, beside its `scope`, and is defined by the frontend and AIDE; the relay checks only that it is a JSON object.",
+        "payload": {
+          "$ref": "#/components/schemas/surface_eventMessage"
+        },
+        "correlationId": {
+          "location": "$message.payload#/id"
+        }
+      },
+      "frontend_surface_event_result": {
+        "name": "frontend_surface_event_result",
+        "title": "surface_event_result",
+        "contentType": "application/json",
+        "description": "Correlated success. Validate the result and target identity against the originating request.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "result": {
+              "$ref": "#/components/schemas/surface_eventResult"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "id",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/id"
+        }
+      },
+      "backend_surface_event": {
+        "name": "backend_surface_event",
+        "title": "surface_event",
+        "contentType": "application/json",
+        "description": "Report an observation of how the frontend's own state is changing. The object travels in `data`, beside its `scope`, and is defined by the frontend and AIDE; the relay checks only that it is a JSON object.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "frontend_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "message": {
+              "$ref": "#/components/schemas/surface_eventMessage"
+            }
+          },
+          "required": [
+            "frontend_id",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/message/id"
+        }
+      },
+      "backend_surface_event_result": {
+        "name": "backend_surface_event_result",
+        "title": "surface_event_result",
+        "contentType": "application/json",
+        "description": "Correlated success. Validate the result and target identity against the originating request.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "frontend_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "message": {
+              "type": "object",
+              "properties": {
+                "jsonrpc": {
+                  "const": "2.0"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "result": {
+                  "$ref": "#/components/schemas/surface_eventResult"
+                }
+              },
+              "required": [
+                "jsonrpc",
+                "id",
+                "result"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "frontend_id",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/message/id"
+        }
+      },
+      "frontend_surface_act": {
+        "name": "frontend_surface_act",
+        "title": "surface_act",
+        "contentType": "application/json",
+        "description": "Ask the frontend to apply an action to itself. The object travels in `data`, beside its `scope`, and is defined by AIDE and the frontend; the relay checks only that it is a JSON object. Never replay after reconnect.",
+        "payload": {
+          "$ref": "#/components/schemas/surface_actMessage"
+        },
+        "correlationId": {
+          "location": "$message.payload#/id"
+        }
+      },
+      "frontend_surface_act_result": {
+        "name": "frontend_surface_act_result",
+        "title": "surface_act_result",
+        "contentType": "application/json",
+        "description": "Correlated success. Validate the result and target identity against the originating request.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "result": {
+              "$ref": "#/components/schemas/surface_actResult"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "id",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/id"
+        }
+      },
+      "backend_surface_act": {
+        "name": "backend_surface_act",
+        "title": "surface_act",
+        "contentType": "application/json",
+        "description": "Ask the frontend to apply an action to itself. The object travels in `data`, beside its `scope`, and is defined by AIDE and the frontend; the relay checks only that it is a JSON object. Never replay after reconnect.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "frontend_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "message": {
+              "$ref": "#/components/schemas/surface_actMessage"
+            }
+          },
+          "required": [
+            "frontend_id",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/message/id"
+        }
+      },
+      "backend_surface_act_result": {
+        "name": "backend_surface_act_result",
+        "title": "surface_act_result",
+        "contentType": "application/json",
+        "description": "Correlated success. Validate the result and target identity against the originating request.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "frontend_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "message": {
+              "type": "object",
+              "properties": {
+                "jsonrpc": {
+                  "const": "2.0"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "result": {
+                  "$ref": "#/components/schemas/surface_actResult"
+                }
+              },
+              "required": [
+                "jsonrpc",
+                "id",
+                "result"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "frontend_id",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/message/id"
+        }
+      },
+      "frontend_clarification_request": {
+        "name": "frontend_clarification_request",
+        "title": "clarification_request",
+        "contentType": "application/json",
+        "description": "Ask the frontend a question without holding any work. The result only confirms the frontend took the question; the answer arrives later as clarification.response. Never replay after reconnect.",
+        "payload": {
+          "$ref": "#/components/schemas/clarification_requestMessage"
+        },
+        "correlationId": {
+          "location": "$message.payload#/id"
+        }
+      },
+      "frontend_clarification_request_result": {
+        "name": "frontend_clarification_request_result",
+        "title": "clarification_request_result",
+        "contentType": "application/json",
+        "description": "Correlated success. Validate the result and target identity against the originating request.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "result": {
+              "$ref": "#/components/schemas/clarification_requestResult"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "id",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/id"
+        }
+      },
+      "backend_clarification_request": {
+        "name": "backend_clarification_request",
+        "title": "clarification_request",
+        "contentType": "application/json",
+        "description": "Ask the frontend a question without holding any work. The result only confirms the frontend took the question; the answer arrives later as clarification.response. Never replay after reconnect.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "frontend_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "message": {
+              "$ref": "#/components/schemas/clarification_requestMessage"
+            }
+          },
+          "required": [
+            "frontend_id",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/message/id"
+        }
+      },
+      "backend_clarification_request_result": {
+        "name": "backend_clarification_request_result",
+        "title": "clarification_request_result",
+        "contentType": "application/json",
+        "description": "Correlated success. Validate the result and target identity against the originating request.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "frontend_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "message": {
+              "type": "object",
+              "properties": {
+                "jsonrpc": {
+                  "const": "2.0"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "result": {
+                  "$ref": "#/components/schemas/clarification_requestResult"
+                }
+              },
+              "required": [
+                "jsonrpc",
+                "id",
+                "result"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "frontend_id",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/message/id"
+        }
+      },
+      "frontend_clarification_response": {
+        "name": "frontend_clarification_response",
+        "title": "clarification_response",
+        "contentType": "application/json",
+        "description": "Answer a question asked with clarification.request. request_id is that request's outer id. An unwanted or differently answered question returns conflict; an unknown request_id returns not_found.",
+        "payload": {
+          "$ref": "#/components/schemas/clarification_responseMessage"
+        },
+        "correlationId": {
+          "location": "$message.payload#/id"
+        }
+      },
+      "frontend_clarification_response_result": {
+        "name": "frontend_clarification_response_result",
+        "title": "clarification_response_result",
+        "contentType": "application/json",
+        "description": "Correlated success. Validate the result and target identity against the originating request.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "result": {
+              "$ref": "#/components/schemas/clarification_responseResult"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "id",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/id"
+        }
+      },
+      "backend_clarification_response": {
+        "name": "backend_clarification_response",
+        "title": "clarification_response",
+        "contentType": "application/json",
+        "description": "Answer a question asked with clarification.request. request_id is that request's outer id. An unwanted or differently answered question returns conflict; an unknown request_id returns not_found.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "frontend_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "message": {
+              "$ref": "#/components/schemas/clarification_responseMessage"
+            }
+          },
+          "required": [
+            "frontend_id",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/message/id"
+        }
+      },
+      "backend_clarification_response_result": {
+        "name": "backend_clarification_response_result",
+        "title": "clarification_response_result",
+        "contentType": "application/json",
+        "description": "Correlated success. Validate the result and target identity against the originating request.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "frontend_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "message": {
+              "type": "object",
+              "properties": {
+                "jsonrpc": {
+                  "const": "2.0"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "result": {
+                  "$ref": "#/components/schemas/clarification_responseResult"
+                }
+              },
+              "required": [
+                "jsonrpc",
+                "id",
+                "result"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "frontend_id",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/message/id"
+        }
+      },
+      "frontend_policy_create": {
+        "name": "frontend_policy_create",
+        "title": "policy_create",
+        "contentType": "application/json",
+        "description": "Ask the frontend to deploy a new policy under name. An existing name returns conflict. Never replay after reconnect.",
+        "payload": {
+          "$ref": "#/components/schemas/policy_createMessage"
+        },
+        "correlationId": {
+          "location": "$message.payload#/id"
+        }
+      },
+      "frontend_policy_create_result": {
+        "name": "frontend_policy_create_result",
+        "title": "policy_create_result",
+        "contentType": "application/json",
+        "description": "Correlated success. Validate the result and target identity against the originating request.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "result": {
+              "$ref": "#/components/schemas/policy_createResult"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "id",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/id"
+        }
+      },
+      "backend_policy_create": {
+        "name": "backend_policy_create",
+        "title": "policy_create",
+        "contentType": "application/json",
+        "description": "Ask the frontend to deploy a new policy under name. An existing name returns conflict. Never replay after reconnect.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "frontend_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "message": {
+              "$ref": "#/components/schemas/policy_createMessage"
+            }
+          },
+          "required": [
+            "frontend_id",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/message/id"
+        }
+      },
+      "backend_policy_create_result": {
+        "name": "backend_policy_create_result",
+        "title": "policy_create_result",
+        "contentType": "application/json",
+        "description": "Correlated success. Validate the result and target identity against the originating request.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "frontend_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "message": {
+              "type": "object",
+              "properties": {
+                "jsonrpc": {
+                  "const": "2.0"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "result": {
+                  "$ref": "#/components/schemas/policy_createResult"
+                }
+              },
+              "required": [
+                "jsonrpc",
+                "id",
+                "result"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "frontend_id",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/message/id"
+        }
+      },
+      "frontend_policy_update": {
+        "name": "frontend_policy_update",
+        "title": "policy_update",
+        "contentType": "application/json",
+        "description": "Ask the frontend to deploy new content for the policy it holds under name. An unknown name returns not_found. Never replay after reconnect.",
+        "payload": {
+          "$ref": "#/components/schemas/policy_updateMessage"
+        },
+        "correlationId": {
+          "location": "$message.payload#/id"
+        }
+      },
+      "frontend_policy_update_result": {
+        "name": "frontend_policy_update_result",
+        "title": "policy_update_result",
+        "contentType": "application/json",
+        "description": "Correlated success. Validate the result and target identity against the originating request.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "jsonrpc": {
+              "const": "2.0"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "result": {
+              "$ref": "#/components/schemas/policy_updateResult"
+            }
+          },
+          "required": [
+            "jsonrpc",
+            "id",
+            "result"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/id"
+        }
+      },
+      "backend_policy_update": {
+        "name": "backend_policy_update",
+        "title": "policy_update",
+        "contentType": "application/json",
+        "description": "Ask the frontend to deploy new content for the policy it holds under name. An unknown name returns not_found. Never replay after reconnect.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "frontend_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "message": {
+              "$ref": "#/components/schemas/policy_updateMessage"
+            }
+          },
+          "required": [
+            "frontend_id",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        "correlationId": {
+          "location": "$message.payload#/message/id"
+        }
+      },
+      "backend_policy_update_result": {
+        "name": "backend_policy_update_result",
+        "title": "policy_update_result",
+        "contentType": "application/json",
+        "description": "Correlated success. Validate the result and target identity against the originating request.",
+        "payload": {
+          "type": "object",
+          "properties": {
+            "frontend_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "message": {
+              "type": "object",
+              "properties": {
+                "jsonrpc": {
+                  "const": "2.0"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "result": {
+                  "$ref": "#/components/schemas/policy_updateResult"
                 }
               },
               "required": [
