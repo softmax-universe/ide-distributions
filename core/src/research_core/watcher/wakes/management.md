@@ -16,8 +16,8 @@ Payload:
 Read the records the event names first (`task.read`, `goal.read`, `experiment.read`,
 `workspace.doctor`), then act by event kind and end the run:
 
-- `task.asked`: answer the named question with `task.answer`, or send one `decision` update if
-  only the user can answer. The watcher resumes the researcher when the question is resolved.
+- `task.asked`: finish by answering the named question with `task.answer`, or by asking the
+  user with one `decision` update. Use `wait_on` if the answer leaves another blocker.
 - `task.proposed`: nobody asked for this Task yet, so approve it only when it serves what
   the user asked for. Read the active directives and the Goal's open Tasks first. Reject it,
   with what to do instead, when it repeats an open Task's lever, or when it would spend credits

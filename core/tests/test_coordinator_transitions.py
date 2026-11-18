@@ -5,10 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from research_core import intake
+from research_core import intake, transitions
 from research_core.coordinator import Coordinator
 from research_core.store import admissions, events, sessions, tasks
 from research_core.store.actors import Actor
+from research_core.tools.base import ToolContext, run_tool
 from research_core.watcher import wakes
 from research_core.watcher.hermes_api import (
     FakeHermesRuns,
@@ -257,6 +258,80 @@ def test_repeated_events_join_live_wake_without_second_admission(tmp_path):
     owner.reconcile()
     owner.advance_attempts(ctx)
     assert not events.unhandled(ctx.store, {"task.asked"})
+
+
+@pytest.mark.parametrize("disposition", ["answer", "escalation", "abandon", "empty_reply"])
+def test_question_wake_finishes_from_its_durable_disposition(tmp_path, monkeypatch, disposition):
+    ctx = make_ctx(tmp_path)
+    worker = assigned(ctx)
+    task = tasks.ask(ctx.store, Actor.session(worker["session_id"]), 1, question="Which seed?")
+    question = task["waiting_on"]["ref"]
+    owner = coordinator(ctx)
+    owner.advance_events(ctx)
+    dispatch_inputs(ctx)
+    [wake] = ctx.wstore.q("SELECT * FROM client_admissions WHERE origin='wake'")
+    assert wake["status"] == "running"
+    tool_ctx = ToolContext(
+        "orchestrator",
+        Actor.session(wake["session_id"]),
+        ctx.ws,
+        {**ctx.env, "IDE_SESSION_ID": wake["session_id"]},
+    )
+    tool_ctx.store, tool_ctx.wstore = ctx.store, ctx.wstore
+    monkeypatch.setattr(transitions, "REQUEST_WAIT_SECONDS", 0)
+    forbidden = json.loads(
+        run_tool("task", {"action": "message", "task": "T-1", "text": "Unrelated work"}, tool_ctx)
+    )
+    assert not forbidden["ok"] and "bound question" in forbidden["error"]
+
+    if disposition == "answer":
+        json.loads(
+            run_tool(
+                "task",
+                {
+                    "action": "answer",
+                    "task": "T-1",
+                    "question_id": question,
+                    "text": "Use seed 7 when credits refill.",
+                    "wait_on": {"kind": "credits", "detail": "Need 10 credits"},
+                },
+                tool_ctx,
+            )
+        )
+        transitions.apply(ctx, owner.instance_id)
+        assert tasks.read(ctx.store, 1)["waiting_on"]["kind"] == "credits"
+    elif disposition == "escalation":
+        set_setting(ctx, "chat_updates.categories", [])
+        result = json.loads(
+            run_tool(
+                "chat_update",
+                {"category": "decision", "text": "Which seed should we use?"},
+                tool_ctx,
+            )
+        )
+        assert result["ok"] and result["notice"]["refs"] == ["T-1"]
+        assert tasks.read(ctx.store, 1)["waiting_on"]["ref"] == question
+    elif disposition == "abandon":
+        tasks.abandon(
+            ctx.store, HARNESS, 1, failure={"what_failed": "Deprecated", "next_step": "None"}
+        )
+    else:
+        ctx.hermes.complete(wake["run_id"])
+        owner.reconcile()
+        owner.advance_attempts(ctx)
+        event = ctx.store.one("SELECT * FROM handled_events WHERE kind='task.asked'")
+        assert event["handled_at"] is None and "before handling" in event["last_error"]
+        return
+
+    owner.advance_events(ctx)
+    dispatch_inputs(ctx)
+    assert ("stop", {"run_id": wake["run_id"], "profile": "orchestrator"}) in ctx.hermes.calls
+    ctx.hermes.runs[wake["run_id"]].status = "cancelled"
+    owner.reconcile()
+    owner.advance_attempts(ctx)
+    owner.advance_events(ctx)
+    assert not events.unhandled(ctx.store, {"task.asked"})
+    assert len(ctx.wstore.q("SELECT * FROM client_admissions WHERE origin='wake'")) == 1
 
 
 def test_model_planning_is_durable_and_observer_cannot_schedule(tmp_path):

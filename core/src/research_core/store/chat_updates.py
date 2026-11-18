@@ -65,6 +65,7 @@ def add(
     text: str,
     refs: Sequence[str] = (),
     coworld_id: str | None = None,
+    question_id: int | None = None,
 ) -> dict[str, Any]:
     """Record one update and its ``chat_update.recorded`` event: ``{"update": row}``.
 
@@ -94,23 +95,32 @@ def add(
     if problems:
         raise StoreError(problems)
     refs = list(refs)
-    if category == CHAT_UPDATE_PROGRESS or category not in settings.get(
+    notice_only = category == CHAT_UPDATE_PROGRESS or category not in settings.get(
         store, "chat_updates.categories"
-    ):
-        notice = notices.add(store, actor, text=text, refs=refs, coworld_id=coworld_id)
-        return {"notice": notice}
-    with store.tx(actor) as tx:
+    )
+    if notice_only and question_id is None:
+        return {"notice": notices.add(store, actor, text=text, refs=refs, coworld_id=coworld_id)}
+    with store.atomic(actor) as tx:
+        payload = {"coworld_id": coworld_id, "category": category, "refs": refs}
+        if question_id is not None:
+            if tx.one(
+                "SELECT 1 FROM events WHERE kind='chat_update.recorded' AND actor=?"
+                " AND json_extract(payload,'$.question_id')=?",
+                (str(actor), question_id),
+            ):
+                return {"already_recorded": True}
+            payload["question_id"] = question_id
+        if notice_only:
+            notice = notices.add(store, actor, text=text, refs=refs, coworld_id=coworld_id)
+            tx.event("chat_update.recorded", notice["id"], payload)
+            return {"notice": notice}
         cursor = tx.execute(
             "INSERT INTO chat_updates(coworld_id, category, text, refs, created, created_by)"
             " VALUES (?, ?, ?, ?, ?, ?)",
             (coworld_id, category, text, json_field(refs), tx.at, str(actor)),
         )
         row = tx.one("SELECT * FROM chat_updates WHERE id = ?", (cursor.lastrowid,))
-        tx.event(
-            "chat_update.recorded",
-            f"chat_update:{row['id']}",
-            {"coworld_id": coworld_id, "category": category, "refs": refs},
-        )
+        tx.event("chat_update.recorded", f"chat_update:{row['id']}", payload)
         return {"update": _record(row)}
 
 

@@ -35,6 +35,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, ConfigDict
+
 from research_core import refs, task_types
 from research_core.store import settings
 from research_core.store._common import (
@@ -549,45 +551,58 @@ def release(store: Store, actor: Actor, task_id: int | str, *, reason: str) -> d
 # --- waits and messages ---------------------------------------------------------------------
 
 
+class WaitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: str
+    detail: str
+    ref: int | str | list[str] | None = None
+
+
 def wait(
     store: Store, actor: Actor, task_id: int | str, *, kind: str, detail: str, ref: Any = None
 ) -> dict[str, Any]:
-    """The holder records what the Task waits on; its run then ends (B.13).
-
-    A later ``wait`` replaces the earlier one: a Task waits on one thing at a time.
-    """
+    """The holder records what the Task waits on; its run then ends (B.13)."""
     n = _task_number(task_id)
     with store.tx(actor) as tx:
         row = _row(store, n)
         _check_holder(store, row, actor)
+        _set_wait(tx, row, WaitRequest(kind=kind, detail=detail, ref=ref))
+        return _record(store, _row(store, n))
+
+
+def _set_wait(tx: Tx, row: sqlite3.Row, wait: WaitRequest | None) -> None:
+    n = row["id"]
+    waiting_on = None
+    if wait is not None:
         problems: list[str] = []
         require(
             problems,
-            kind in WAIT_KINDS,
-            f"kind must be one of {', '.join(WAIT_KINDS)}, not {kind!r}",
+            wait.kind in WAIT_KINDS,
+            f"kind must be one of {', '.join(WAIT_KINDS)}, not {wait.kind!r}",
         )
-        require(problems, _text(detail), "detail is required: what the Task waits for")
+        require(problems, _text(wait.detail), "detail is required: what the Task waits for")
         require(
             problems, row["status"] == "in-progress", f"{_t(n)} is {row['status']}, not in-progress"
         )
-        if kind == "dependency":
+        if wait.kind == "dependency":
             require(
                 problems,
-                _names_a_dependency(store, n, ref),
+                _names_a_dependency(tx, n, wait.ref),
                 "a dependency wait names the Task it waits on: ref T-n",
             )
         if problems:
             raise StoreError(problems)
-        waiting_on = {"kind": kind, "detail": detail, "ref": ref, "since": tx.at}
-        tx.execute(
-            "UPDATE tasks SET waiting_on = ?, updated = ? WHERE id = ?",
-            (json_field(waiting_on), tx.at, n),
-        )
-        tx.event("task.waiting", _t(n), {"kind": kind, "detail": detail, "ref": ref})
-        return _record(store, _row(store, n))
+        waiting_on = {**wait.model_dump(), "since": tx.at}
+    tx.execute(
+        "UPDATE tasks SET waiting_on = ?, updated = ? WHERE id = ?",
+        (None if waiting_on is None else json_field(waiting_on), tx.at, n),
+    )
+    if wait is not None:
+        tx.event("task.waiting", _t(n), wait.model_dump())
 
 
-def _names_a_dependency(store: Store, n: int, ref: Any) -> bool:
+def _names_a_dependency(store: Store | Tx, n: int, ref: Any) -> bool:
     """A wait on nothing would resolve on the next tick and restart the Task for no reason."""
     if ref is None:
         return store.one("SELECT 1 FROM task_deps WHERE task_id = ?", (n,)) is not None
@@ -599,18 +614,27 @@ def _names_a_dependency(store: Store, n: int, ref: Any) -> bool:
     )
 
 
-def resolve_wait(store: Store, actor: Actor, task_id: int | str, *, note: str) -> dict[str, Any]:
-    """Clear ``waiting_on`` (the watcher or the Orchestrator); the holder's Session resumes."""
+def resolve_wait(
+    store: Store,
+    actor: Actor,
+    task_id: int | str,
+    *,
+    note: str,
+    expected: Mapping[str, Any] | None = None,
+    wait_on: WaitRequest | None = None,
+) -> dict[str, Any]:
+    """Resolve the observed wait. A concurrent replacement owns the next decision."""
     n = _task_number(task_id)
     with store.tx(actor) as tx:
         row = _row(store, n)
-        problems: list[str] = []
-        require(problems, _text(note), "note is required: what resolved the wait")
         waiting_on = parse_json(row["waiting_on"])
-        require(problems, waiting_on, f"{_t(n)} is not waiting")
-        if problems:
-            raise StoreError(problems)
-        tx.execute("UPDATE tasks SET waiting_on = NULL, updated = ? WHERE id = ?", (tx.at, n))
+        if expected is not None and waiting_on != expected:
+            return _record(store, row)
+        if not waiting_on:
+            raise StoreError([f"{_t(n)} is not waiting"])
+        if not _text(note):
+            raise StoreError(["note is required: what resolved the wait"])
+        _set_wait(tx, row, wait_on)
         tx.event(
             "task.wait_resolved",
             _t(n),
@@ -649,10 +673,11 @@ def answer(
     *,
     text: str,
     question_id: int | None = None,
+    wait_on: WaitRequest | None = None,
 ) -> dict[str, Any]:
     """Answer the Task's open question (the latest one unless ``question_id`` says which).
 
-    Resolves the ``question`` wait when it is for that question.
+    Atomically resolves or replaces the wait when it matches that question.
     """
     n = _task_number(task_id)
     with store.tx(actor) as tx:
@@ -670,8 +695,12 @@ def answer(
             and waiting_on.get("ref") == question["id"]
         )
         if resolved:
-            tx.execute("UPDATE tasks SET waiting_on = NULL, updated = ? WHERE id = ?", (tx.at, n))
+            if wait_on is not None and wait_on.kind == "question":
+                raise StoreError(["a new question wait requires task.ask"])
+            _set_wait(tx, row, wait_on)
         else:
+            if wait_on is not None:
+                raise StoreError(["only the current question wait can be replaced"])
             tx.execute("UPDATE tasks SET updated = ? WHERE id = ?", (tx.at, n))
         tx.event("task.answered", _t(n), {"message_id": message_id, "question_id": question["id"]})
         return _record(store, _row(store, n))

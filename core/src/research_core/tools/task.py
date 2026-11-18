@@ -22,6 +22,7 @@ from research_core.store.registry import TASK_STATUSES, TASK_TYPES, WAIT_KINDS
 from research_core.tools import _args as a
 from research_core.tools.base import ActionSpec, ToolCall, ToolContext, ToolError, ToolSpec
 from research_core.transitions import NOT_THE_HOLDER, durable_tool, read_command, submit
+from research_core.watcher import wakes
 from research_core.watcher.context import workers
 
 ORCHESTRATOR = frozenset({"orchestrator"})
@@ -273,8 +274,25 @@ def handle(call: ToolCall) -> dict:
         deps = a.record_numbers(call.get("depends_on"), "task", "depends_on")
         return {"record": tasks.link(store, actor, n, deps)}
     if call.action == "answer":
+        wait_on = call.get("wait_on")
+        question_id = call.get("question_id")
+        session = sessions.read(ctx.wstore, ctx.hermes_session_id())
+        if session is not None and session["event"] == "task.asked":
+            event = wakes.question_for_session(store, session["id"])
+            if event is None or (bound_question := wakes.question_id(event)) is None:
+                raise ToolError("This wake has no bound question.")
+            if event.subject != f"T-{n}" or question_id not in (None, bound_question):
+                raise ToolError("This wake can only answer its bound question.")
+            question_id = bound_question
+            if wakes.question_settled(store, ctx.wstore, event, session["id"]):
+                raise ToolError("This question is already handled. End the wake.")
         record = tasks.answer(
-            store, actor, n, text=call.get("text"), question_id=call.get("question_id")
+            store,
+            actor,
+            n,
+            text=call.get("text"),
+            question_id=question_id,
+            wait_on=tasks.WaitRequest.model_validate(wait_on) if wait_on is not None else None,
         )
         return {"record": record}
     if call.action == "message":
@@ -521,11 +539,23 @@ SPEC = durable_tool(
             ),
             ActionSpec(
                 "answer",
-                "Answer a Researcher's question; the Task's question wait resolves.",
+                "Answer a Researcher's question and optionally record the next blocker.",
                 {
                     "task": TASK,
                     "text": a.string("The answer."),
                     "question_id": a.integer("Which question, when more than one is open."),
+                    "wait_on": a.obj(
+                        "The next blocker if the answer does not make the Task runnable.",
+                        {
+                            "kind": a.string("What the Task must wait for.", enum=TASK_WAIT_KINDS),
+                            "detail": a.string("What must happen before the Task can resume."),
+                            "ref": a.any_of(
+                                "The watcher reference.", a.STRING, a.INTEGER, a.STRINGS
+                            ),
+                        },
+                        required=("kind", "detail"),
+                        closed=True,
+                    ),
                 },
                 ("task", "text"),
                 ORCHESTRATOR,
