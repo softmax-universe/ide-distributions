@@ -220,7 +220,7 @@ def system(tmp_path):
     worker.join(timeout=10)
 
 
-def run(system, scenario, inference=None, seam_transport=None, gateway=None):
+def run(system, scenario, inference=None, seam_transport=None, gateway=None, *, watch=True):
     ctx, hermes, server = system
     gateway = gateway or Gateway(hermes)
 
@@ -262,7 +262,8 @@ def run(system, scenario, inference=None, seam_transport=None, gateway=None):
                 backend.socket = Socket()
                 backend.restart = restart
                 backends.append(backend)
-                watchers.append(work.create_task(backend.watch()))
+                if watch:
+                    watchers.append(work.create_task(backend.watch()))
                 return backend
 
             try:
@@ -386,7 +387,7 @@ class _AideContract:
         self._validate(self.param_schemas[method], frame["params"])
 
 
-# Canonical Metta schema at c6650c9042bef56daae7c2e4b20af16580ba9601.
+# Canonical Metta schema at f28e0c0f23b805eb472aa649a473f5e9f5f81393.
 _AIDE_ASYNCAPI_SHA256 = "08182e9fd5d1663136049fa6e65e223786056cce955a6dd61d7ec5d381b4c408"
 
 
@@ -2605,7 +2606,8 @@ def test_seam_500_returns_internal_error_without_traceback(system, monkeypatch):
         assert cmd_reply["error"]["message"] == "Internal error"
         assert "secret commit detail" not in cmd_reply["error"]["message"]
 
-    run(system, scenario)
+    # Inject faults into the request/reply paths without racing the background stream.
+    run(system, scenario, watch=False)
 
 
 def test_session_title_preserved_across_open_page_and_state_changed(system):
@@ -2902,6 +2904,8 @@ def test_cached_hermes_title_skips_repeat_gateway_gets(system, monkeypatch):
         # Untitled at first: fallback is not cached so Hermes can supply a title later.
         await backend.changed(session_id)
         assert title_gets >= 1
+        # Opening is durable before the gateway creates its native session.
+        await until(lambda: session_id in hermes.sessions)
         gateway.titles[session_id] = "Settled Hermes Title"
         await backend.changed(session_id)
         # The live watcher can also read an untitled session before the title resolves.

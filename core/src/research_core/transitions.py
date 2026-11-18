@@ -250,6 +250,15 @@ def note_delivery(ctx: ToolContext, result: dict) -> None:
 def _accept(tx, ctx: ToolContext, tool: str, args: dict, command_id: str, payload: str) -> None:
     from research_core.store import tasks
     from research_core.tools import _args as arguments
+    from research_core.watcher.wakes import question_for_session
+
+    if (
+        ctx.role == "orchestrator"
+        and ctx.actor.is_session
+        and (tool != "task" or args["action"] != "answer")
+        and question_for_session(ctx.store, ctx.actor.id) is not None
+    ):
+        raise ToolError("This wake is scoped to answering or escalating its bound question.")
 
     issuer_attempt_id = None
     task_updated = None

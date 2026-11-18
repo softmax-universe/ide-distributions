@@ -4,7 +4,7 @@ Daily check at the configured hour (event `{event_kind}`, subject `{subject}`, C
 `{coworld_id}`). Nothing is known to be wrong; decide whether anything should be moving and is
 not.
 
-This is a background Session: never answer in this conversation; nobody reads it. Use
+Send user-facing updates from this background Session with
 `chat_update {category, text, refs?}` for what the user should hear now: `decision` (ask it
 plainly; they answer in the chat), `outcome` (work they asked for finished), `submission`,
 `failure` (needs them) or `merge`, and `progress` for routine news, which becomes a notice.

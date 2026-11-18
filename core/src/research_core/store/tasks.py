@@ -584,6 +584,8 @@ def wait(
             (json_field(waiting_on), tx.at, n),
         )
         tx.event("task.waiting", _t(n), {"kind": kind, "detail": detail, "ref": ref})
+        if kind == "user" and ref is None:
+            tx.event("task.user_action_needed", _t(n), {"detail": detail})
         return _record(store, _row(store, n))
 
 
@@ -599,17 +601,25 @@ def _names_a_dependency(store: Store, n: int, ref: Any) -> bool:
     )
 
 
-def resolve_wait(store: Store, actor: Actor, task_id: int | str, *, note: str) -> dict[str, Any]:
-    """Clear ``waiting_on`` (the watcher or the Orchestrator); the holder's Session resumes."""
+def resolve_wait(
+    store: Store,
+    actor: Actor,
+    task_id: int | str,
+    *,
+    note: str,
+    expected: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve the observed wait. A concurrent replacement owns the next decision."""
     n = _task_number(task_id)
     with store.tx(actor) as tx:
         row = _row(store, n)
-        problems: list[str] = []
-        require(problems, _text(note), "note is required: what resolved the wait")
         waiting_on = parse_json(row["waiting_on"])
-        require(problems, waiting_on, f"{_t(n)} is not waiting")
-        if problems:
-            raise StoreError(problems)
+        if expected is not None and waiting_on != expected:
+            return _record(store, row)
+        if not waiting_on:
+            raise StoreError([f"{_t(n)} is not waiting"])
+        if not _text(note):
+            raise StoreError(["note is required: what resolved the wait"])
         tx.execute("UPDATE tasks SET waiting_on = NULL, updated = ? WHERE id = ?", (tx.at, n))
         tx.event(
             "task.wait_resolved",

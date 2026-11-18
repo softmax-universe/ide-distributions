@@ -26,7 +26,7 @@ def test_make_register_builds_a_callable_per_role():
         ctx = FakeContext()
         register.make_register(role)(ctx)
         assert [name for name, _ in ctx.middleware] == [
-            *["llm_request"] * 3,
+            *["llm_request"] * (4 if role == "orchestrator" else 3),
             "tool_request",
             "tool_execution",
         ]

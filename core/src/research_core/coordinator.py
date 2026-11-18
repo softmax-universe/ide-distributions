@@ -76,6 +76,8 @@ from research_core.watcher.wakes import (
     _is_record_ref,
     _subject_ids,
     counted_attempts,
+    question_id,
+    question_settled,
     render_batch,
     render_wake,
 )
@@ -88,10 +90,10 @@ REPEAT_WINDOW = timedelta(hours=6)
 PLANNED_STOPS_PREFIX = "wake_planned_stops:"
 ERROR_CHARS = 2000
 WAKE_INSTRUCTIONS = (
-    "You are the Orchestrator in a background wake Session that the watcher started, not a "
-    "person: nobody reads this conversation. Act on the event below with the record and "
-    "platform tools, read the records before you write, and finish within this run. Never "
-    "answer in this conversation; nobody reads it. Use chat_update for what the user should "
+    "You are the Orchestrator in a background Session started by the watcher. Handle the events "
+    "named in this wake. Read the records before you write. After acting and sending any update, "
+    "finish the turn with one internal status sentence. Leave pending work to the watcher, which "
+    "starts a new wake when another decision is needed. Use chat_update for what the user should "
     "hear, with the category that says why: decision (only they can decide; ask it plainly, they "
     "answer in the chat), outcome (work they asked for finished), submission (a Version "
     "submitted, placed or rejected), failure (something broke that needs them), merge (a "
@@ -697,6 +699,33 @@ class Coordinator:
     def _is_experiment_completion(event: Event) -> bool:
         return event.payload.get("kind") == "xp" and "experiment" in event.payload
 
+    def task_user_action_needed(self, ctx: TickContext, event: Event, store: Store) -> None:
+        """A manual user wait stops the holder and asks the user for the action once."""
+        task = tasks.read(store, event.subject)
+        waiting = task["waiting_on"]
+        if (
+            task["status"] != "in-progress"
+            or not waiting
+            or waiting["kind"] != "user"
+            or waiting["ref"] is not None
+            or waiting["since"] != event.at
+        ):
+            return
+        if (holder := holder_session(ctx, task)) is not None:
+            self._stop_session_input(ctx.wstore, holder["id"])
+        heading = f"{event.subject} is waiting for you. "
+        confirmation = " Confirm here when done."
+        detail = waiting["detail"][: chat_updates.MAX_TEXT - len(heading) - len(confirmation)]
+        chat_updates.add(
+            ctx.wstore,
+            ctx.actor,
+            coworld_id=ctx.coworld.coworld_id,
+            category="decision",
+            text=heading + detail + confirmation,
+            refs=[event.subject],
+            task_wait_event=event.seq,
+        )
+
     def wait_resolved(self, ctx: TickContext, event: Event, store: Store) -> dict[str, Any]:
         """Resume the holder of a Task whose wait the watcher (or the Orchestrator) resolved."""
         task = tasks.read(store, event.subject)
@@ -767,8 +796,12 @@ class Coordinator:
             if session is None:
                 report["held"].append({"task": task["id"], "reason": "no holder Session"})
                 continue
-            if task["waiting_on"] and (not is_live(run_status(ctx, session))):
-                kind = task["waiting_on"]["kind"]
+            waiting = task["waiting_on"]
+            if waiting and (
+                (waiting["kind"] == "user" and waiting["ref"] is None)
+                or not is_live(run_status(ctx, session))
+            ):
+                kind = waiting["kind"]
                 report["held"].append(
                     {"task": task["id"], "reason": f"delivered when the {kind} wait resolves"}
                 )
@@ -988,7 +1021,7 @@ class Coordinator:
                 continue
             if (
                 task["id"] in ready_xp
-                or (task["waiting_on"] or {}).get("kind") == "xp"
+                or task["waiting_on"]
                 or self._pending_task_xp(ctx.store, task["id"])
             ):
                 sessions.mark_drained(ctx.wstore, ctx.actor, [session["id"]], False)
@@ -1026,6 +1059,25 @@ class Coordinator:
             return None
         return task
 
+    def _stop_session_input(self, wstore: Store, session_id: str) -> bool:
+        """Stop active input through the dispatcher, including a start awaiting its receipt."""
+        with admissions.dispatch_lock(wstore):
+            active = wstore.one(
+                "SELECT 1 FROM client_admissions WHERE session_id=? AND kind='message'"
+                " AND (status IN ('queued','running') OR execution_uncertain=1)",
+                (session_id,),
+            )
+            if active is None:
+                return False
+            with wstore.tx(ACTOR) as tx:
+                tx.execute(
+                    "UPDATE client_admissions SET cancel_requested=1"
+                    " WHERE session_id=? AND kind='message' AND status IN ('queued','running')"
+                    " AND cancel_requested=0",
+                    (session_id,),
+                )
+        return True
+
     def _dispatch_wake(
         self,
         ctx: TickContext,
@@ -1038,6 +1090,18 @@ class Coordinator:
     ) -> None:
         ref = f"{label}:{event.seq}"
         row = self._handled_row(store, event.seq)
+        session_id = row["session_id"] if row is not None else None
+        if question_settled(store, ctx.wstore, event, session_id):
+            if session_id and self._stop_session_input(ctx.wstore, session_id):
+                report["waiting"].append(ref)
+                return
+            if session_id:
+                session = sessions.read(ctx.wstore, session_id)
+                if session is not None and session["ended"] is None:
+                    sessions.end(ctx.wstore, ctx.actor, session_id)
+            events.mark_handled(store, ctx.actor, event.seq, None)
+            report["handled"].append(ref)
+            return
         if (
             row is not None
             and counted_attempts(ctx, label, event.seq, row["attempts"]) > max_attempts
@@ -1060,7 +1124,9 @@ class Coordinator:
             events.mark_handled(store, ctx.actor, event.seq, None)
             report["handled"].append(ref)
             return
-        open_session = self._open_wake_session(ctx, store, event)
+        open_session = (
+            self._open_wake_session(ctx, store, event) if question_id(event) is None else None
+        )
         if open_session is not None:
             if event.kind == "goal.needs_ideation":
                 # The previous wake has not seen the new gap in the Goal's work.
@@ -1450,25 +1516,34 @@ class Coordinator:
                         sessions.end(ctx.wstore, ctx.actor, session["id"])
                     if session["kind"] == "wake":
                         for label, store in labelled_stores(ctx):
-                            for event in store.q(
-                                "SELECT seq FROM handled_events WHERE session_id=?"
-                                " AND handled_at IS NULL",
+                            for claimed in store.q(
+                                "SELECT e.* FROM handled_events h JOIN events e ON e.seq=h.seq"
+                                " WHERE h.session_id=? AND h.handled_at IS NULL",
                                 (session["id"],),
                             ):
-                                if row["status"] == "completed":
-                                    events.mark_handled(
-                                        store, ctx.actor, event["seq"], row["run_id"]
-                                    )
+                                event = Event.from_row(claimed)
+                                done = (
+                                    question_settled(store, ctx.wstore, event, session["id"])
+                                    if question_id(event) is not None
+                                    else row["status"] == "completed"
+                                )
+                                if done:
+                                    events.mark_handled(store, ctx.actor, event.seq, row["run_id"])
                                 else:
                                     events.mark_failed(
                                         store,
                                         ctx.actor,
-                                        event["seq"],
-                                        row["error"] or row["status"],
+                                        event.seq,
+                                        row["error"]
+                                        or (
+                                            "Wake ended before handling its question"
+                                            if row["status"] == "completed"
+                                            else row["status"]
+                                        ),
                                     )
                                     if session["stopped_by"] == sessions.SLEEP_STOP:
-                                        marker = f"wake_stop:{row['op_id']}:{label}:{event['seq']}"
-                                        counter = f"{PLANNED_STOPS_PREFIX}{label}:{event['seq']}"
+                                        marker = f"wake_stop:{row['op_id']}:{label}:{event.seq}"
+                                        counter = f"{PLANNED_STOPS_PREFIX}{label}:{event.seq}"
                                         with ctx.wstore.tx(ctx.actor):
                                             if ctx.meta(marker) is None:
                                                 ctx.set_meta(
@@ -1889,10 +1964,10 @@ class Coordinator:
                     if event.kind == "task.completed":
                         task = tasks.read(store, event.subject)
                         holder = holder_session(ctx, task)
-                        if holder is not None and ctx.wstore.one(
-                            "SELECT 1 FROM client_admissions WHERE session_id=? AND"
-                            " (status IN ('queued','running') OR execution_uncertain=1)",
-                            (holder["id"],),
+                        if (
+                            task["status"] == "complete"
+                            and holder is not None
+                            and self._stop_session_input(ctx.wstore, holder["id"])
                         ):
                             report["waiting"].append(ref)
                             continue
@@ -1901,6 +1976,9 @@ class Coordinator:
                 match event.kind:
                     case "task.reviewed":
                         result = self.review_worker(ctx, event, store)
+                    case "task.user_action_needed":
+                        self.task_user_action_needed(ctx, event, store)
+                        result = {}
                     case "task.wait_resolved":
                         result = self.wait_resolved(ctx, event, store)
                     case "workspace.resumed":
@@ -1912,6 +1990,12 @@ class Coordinator:
                     case "repair.failed_twice":
                         result = checks.handle_repair_failed_twice(ctx, event, store)
                     case "task.failed":
+                        task = tasks.read(store, event.subject)
+                        if (
+                            task["status"] == "complete"
+                            and (holder := holder_session(ctx, task)) is not None
+                        ):
+                            self._stop_session_input(ctx.wstore, holder["id"])
                         result = checks.handle_task_failed(ctx, event, store)
                 if not result.get("deferred"):
                     events.mark_handled(store, ctx.actor, event.seq, None)

@@ -13,6 +13,7 @@ from research_core.store import chat_updates, sessions
 from research_core.store.registry import CHAT_UPDATE_CATEGORIES, CHAT_UPDATE_PROGRESS
 from research_core.tools import _args as a
 from research_core.tools.base import ToolCall, ToolError, ToolSpec, tool
+from research_core.watcher import wakes
 
 ORCHESTRATOR = frozenset({"orchestrator"})
 IN_CHAT = (
@@ -46,14 +47,28 @@ def handle(call: ToolCall) -> dict:
         in_chat = session is not None and session["kind"] == "chat"
         raise ToolError(IN_CHAT if in_chat else NOT_A_WAKE)
     category = call.get("category")
+    ident = None
+    refs = call.get("refs") or []
+    if session["event"] == "task.asked":
+        event = wakes.question_for_session(ctx.store, session_id)
+        if event is None or (ident := wakes.question_id(event)) is None:
+            raise ToolError("This wake has no bound question.")
+        if category != "decision":
+            raise ToolError("This wake can only ask the user to resolve its question.")
+        if wakes.question_settled(ctx.store, ctx.wstore, event, session_id):
+            return {"already_recorded": True, "next": "The question is handled. End the wake."}
+        refs = list(dict.fromkeys([event.subject, *refs]))
     result = chat_updates.add(
         ctx.wstore,
         ctx.actor,
         coworld_id=session["coworld_id"],
         category=category,
         text=call.get("text"),
-        refs=call.get("refs") or [],
+        refs=refs,
+        question_id=ident,
     )
+    if ident is not None:
+        return {**result, "next": "The decision is recorded. End the wake."}
     if "update" in result:
         return {**result, "next": TO_CHAT_NEXT}
     if category == CHAT_UPDATE_PROGRESS:

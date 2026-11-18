@@ -18,6 +18,62 @@ HARNESS = Actor.harness()
 CLAIM_ARGS = {"action": "write", "text": "the champion is pv_1"}
 
 
+def test_orchestrator_yields_after_repeated_unchanged_state_reads():
+    messages = [{"role": "user", "content": "Check on the assigned work."}]
+
+    def call(name, args, result):
+        call_id = f"call-{len(messages)}"
+        messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"id": call_id, "function": {"name": name, "arguments": json.dumps(args)}}
+                    ],
+                },
+                {"role": "tool", "tool_call_id": call_id, "content": json.dumps(result)},
+            ]
+        )
+
+    def cycle(tick, *, status="in-progress"):
+        call(
+            "task",
+            {"action": "read", "task": "T-1"},
+            {
+                "ok": True,
+                "record": {
+                    "id": "T-1",
+                    "status": status,
+                    "updated": tick,
+                    "last_error_seen": {"command": str(tick)},
+                },
+            },
+        )
+        call("goal", {"action": "list", "status": "active"}, {"ok": True, "records": []})
+        call("workspace", {"action": "doctor"}, {"ok": True, "watcher": {"heartbeat": tick}})
+        call(
+            "chat_update",
+            {"category": "progress", "text": "Still waiting."},
+            {"ok": True, "notice": {"id": tick}},
+        )
+        call("terminal", {"command": "true"}, {"exit_code": 0, "output": ""})
+
+    request = {"messages": messages, "tools": [{"type": "function"}]}
+    cycle(1)
+    cycle(2)
+    assert repeats.finish_stalled_orchestration(request=request, provider="openrouter") is None
+    cycle(3)
+    finished = repeats.finish_stalled_orchestration(request=request, provider="openrouter")[
+        "request"
+    ]
+    assert finished["tool_choice"] == "none"
+    assert "watcher" in finished["messages"][-1]["content"]
+    assert "tool_choice" not in request and "watcher" not in messages[-1]["content"]
+
+    cycle(4, status="complete")
+    assert repeats.finish_stalled_orchestration(request=request, provider="openrouter") is None
+
+
 @pytest.fixture(autouse=True)
 def fresh_counts(monkeypatch):
     """The hooks keep per-Session counts in module state; each test starts without any."""

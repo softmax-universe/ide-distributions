@@ -22,6 +22,7 @@ from research_core.store.registry import TASK_STATUSES, TASK_TYPES, WAIT_KINDS
 from research_core.tools import _args as a
 from research_core.tools.base import ActionSpec, ToolCall, ToolContext, ToolError, ToolSpec
 from research_core.transitions import NOT_THE_HOLDER, durable_tool, read_command, submit
+from research_core.watcher import wakes
 from research_core.watcher.context import workers
 
 ORCHESTRATOR = frozenset({"orchestrator"})
@@ -273,9 +274,38 @@ def handle(call: ToolCall) -> dict:
         deps = a.record_numbers(call.get("depends_on"), "task", "depends_on")
         return {"record": tasks.link(store, actor, n, deps)}
     if call.action == "answer":
+        question_id = call.get("question_id")
+        session = sessions.read(ctx.wstore, ctx.hermes_session_id())
+        if session is not None and session["event"] == "task.asked":
+            event = wakes.question_for_session(store, session["id"])
+            if event is None or (bound_question := wakes.question_id(event)) is None:
+                raise ToolError("This wake has no bound question.")
+            if event.subject != f"T-{n}" or question_id not in (None, bound_question):
+                raise ToolError("This wake can only answer its bound question.")
+            question_id = bound_question
+            if wakes.question_settled(store, ctx.wstore, event, session["id"]):
+                raise ToolError("This question is already handled. End the wake.")
         record = tasks.answer(
-            store, actor, n, text=call.get("text"), question_id=call.get("question_id")
+            store,
+            actor,
+            n,
+            text=call.get("text"),
+            question_id=question_id,
         )
+        return {"record": record}
+    if call.action == "unblock":
+        session = sessions.read(ctx.wstore, ctx.hermes_session_id())
+        if session is None or session["kind"] != "chat":
+            raise ToolError("Only the user's chat can confirm a user-action wait is resolved.")
+        waiting = tasks.read(store, n)["waiting_on"]
+        if (
+            not waiting
+            or waiting["kind"] != "user"
+            or waiting["ref"] is not None
+            or waiting["since"] != call.get("wait_since")
+        ):
+            raise ToolError("That user-action wait is no longer current. Read the Task again.")
+        record = tasks.resolve_wait(store, actor, n, note=call.get("reason"), expected=waiting)
         return {"record": record}
     if call.action == "message":
         record = tasks.message(store, actor, n, text=call.get("text"), direction="to_researcher")
@@ -296,13 +326,15 @@ def handle(call: ToolCall) -> dict:
         return {"record": tasks.reject(store, actor, n, next_step=call.get("next_step"))}
     if call.action == "wait":
         ref = call.get("ref")
-        if call.get("kind") == "user" and not (
-            ref in settings.SETTINGS or refs.parse(str(ref)).record_kind == "task"
-        ):
-            raise ToolError(
-                "a user wait needs ref: the setting or Task (T-n) the user's answer changes; "
-                "nothing else ends it. For a decision, use task_ask"
+        if (
+            call.get("kind") == "user"
+            and ref is not None
+            and not (
+                isinstance(ref, str)
+                and (ref in settings.SETTINGS or refs.parse(ref).record_kind == "task")
             )
+        ):
+            raise ToolError("A user wait ref must name a setting or Task (T-n), or be omitted.")
         if call.get("kind") == "xp":
             ref = xp_wait_refs(store, n, ref)
             tracked = {
@@ -521,13 +553,24 @@ SPEC = durable_tool(
             ),
             ActionSpec(
                 "answer",
-                "Answer a Researcher's question; the Task's question wait resolves.",
+                "Answer a Researcher's question so they can act on the answer.",
                 {
                     "task": TASK,
                     "text": a.string("The answer."),
                     "question_id": a.integer("Which question, when more than one is open."),
                 },
                 ("task", "text"),
+                ORCHESTRATOR,
+            ),
+            ActionSpec(
+                "unblock",
+                "In a user chat, resume a Task after the user confirms the action it waits for.",
+                {
+                    "task": TASK,
+                    "wait_since": a.string("The current waiting_on.since returned by task.read."),
+                    "reason": a.string("What the user confirmed was done."),
+                },
+                ("task", "wait_since", "reason"),
                 ORCHESTRATOR,
             ),
             ActionSpec(
@@ -588,8 +631,8 @@ SPEC = durable_tool(
                     "ref": a.any_of(
                         "What to watch: a pid (process), request ids (xp; omit for the Task's "
                         "open requests), a policy version id "
-                        "(submission), a route (permit), a setting key or Task (user; required: "
-                        "nothing else ends a user wait).",
+                        "(submission), a route (permit), or a setting key or Task (user). "
+                        "Omit ref for user only when the user must confirm doing something.",
                         a.STRING,
                         a.INTEGER,
                         a.STRINGS,

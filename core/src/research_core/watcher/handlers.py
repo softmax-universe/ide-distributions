@@ -38,6 +38,7 @@ HANDLERS: dict[str, Handler] = {
         # A merged Version the Researcher marked as a submission candidate: the Orchestrator
         # decides under the submissions settings and the quality bar (now met on the merge).
         _wake("submission.candidate", "management"),
+        _function("task.user_action_needed"),
         _function("task.wait_resolved"),
         _function("capability.failed"),
         # After the second failed repair the user hears about it through a notice.

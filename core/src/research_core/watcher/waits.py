@@ -20,8 +20,9 @@ Kinds and what resolves them:
 - ``platform``: the recorded route answers again (a GET route is probed itself; for any other
   method ``whoami`` stands in, since the probe must not repeat a write);
 - ``process``: the pid in ``ref`` is gone;
-- ``question``: an undelivered answer exists for the Task;
-- ``user``: the setting named in ``ref`` has been set, or the Task named in ``ref`` is approved;
+- ``question``: the exact question has an answer; normally the answer commits the next state;
+- ``user``: the setting in ``ref`` is set or the Task in ``ref`` is approved. With no ``ref``,
+  the user must confirm the action in chat; the watcher leaves it blocked.
 - ``dependency``: every Task this one depends on is complete and did not fail.
 """
 
@@ -77,7 +78,7 @@ def run(ctx: TickContext) -> dict[str, Any]:
         if note is None:
             report["waiting"].append({"task": task["id"], "kind": kind})
             continue
-        tasks.resolve_wait(store, ctx.actor, task["id"], note=note)
+        tasks.resolve_wait(store, ctx.actor, task["id"], note=note, expected=waiting)
         report["resolved"].append({"task": task["id"], "kind": kind, "note": note})
     return report
 
@@ -212,11 +213,15 @@ def process_alive(pid: int) -> bool:
 
 
 def _question(ctx: TickContext, store: Store, task: dict, waiting: dict) -> str | None:
-    pending = tasks.pending_messages(store, task["id"], "to_researcher")
-    answers = [message for message in pending if message["kind"] == "answer"]
-    if not answers:
-        return None
-    return f"answered: {answers[-1]['text']}"[:NOTE_LIMIT]
+    row = store.one(
+        "SELECT m.text FROM events e JOIN task_messages m"
+        " ON m.id=json_extract(e.payload,'$.message_id')"
+        " WHERE e.kind='task.answered' AND e.subject=?"
+        " AND json_extract(e.payload,'$.question_id')=?"
+        " ORDER BY e.seq DESC LIMIT 1",
+        (task["id"], waiting["ref"]),
+    )
+    return f"answered: {row['text']}"[:NOTE_LIMIT] if row is not None else None
 
 
 def _user(ctx: TickContext, store: Store, task: dict, waiting: dict) -> str | None:

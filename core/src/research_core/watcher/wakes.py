@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any
 
 from research_core.store import events, settings
-from research_core.store._common import parse_display_id
+from research_core.store._common import parse_display_id, parse_json
+from research_core.store.actors import Actor
+from research_core.store.db import Store
 from research_core.store.events import Event
 from research_core.watcher.context import TickContext
 from research_core.watcher.handlers import MODEL_KINDS
@@ -35,6 +37,44 @@ def has_queued_wakes(ctx: TickContext) -> bool:
 def counted_attempts(ctx: TickContext, label: str, seq: int, attempts: int) -> int:
     """The attempts that count toward ``recovery.max_attempts``: stops for sleep do not."""
     return attempts - int(ctx.meta(f"{PLANNED_STOPS_PREFIX}{label}:{seq}") or 0)
+
+
+def question_id(event: Event) -> int | None:
+    return event.payload.get("message_id") if event.kind == "task.asked" else None
+
+
+def question_for_session(store: Store, session_id: str) -> Event | None:
+    row = store.one(
+        "SELECT e.* FROM handled_events h JOIN events e ON e.seq=h.seq"
+        " WHERE h.session_id=? AND e.kind='task.asked' ORDER BY e.seq LIMIT 1",
+        (session_id,),
+    )
+    return Event.from_row(row) if row is not None else None
+
+
+def question_settled(store: Store, wstore: Store, event: Event, session_id: str | None) -> bool:
+    """A question is current only while its exact Task wait remains open."""
+    ident = question_id(event)
+    if ident is None:
+        return False
+    row = store.one(
+        "SELECT status,waiting_on FROM tasks WHERE id=?",
+        (_subject_ids(event.subject)["task_id"],),
+    )
+    if row is None or row["status"] != "in-progress":
+        return True
+    waiting = parse_json(row["waiting_on"])
+    if not waiting or waiting["kind"] != "question" or waiting["ref"] != ident:
+        return True
+    return (
+        session_id is not None
+        and wstore.one(
+            "SELECT 1 FROM events WHERE kind='chat_update.recorded' AND actor=?"
+            " AND json_extract(payload,'$.question_id')=? LIMIT 1",
+            (str(Actor.session(session_id)), ident),
+        )
+        is not None
+    )
 
 
 def render_wake(kind: str, event: Event, ctx: TickContext) -> str:

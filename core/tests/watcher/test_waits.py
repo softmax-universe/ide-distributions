@@ -209,18 +209,17 @@ def test_process_wait_resolves_when_the_pid_is_gone(tmp_path):
     assert waits.run(ctx)["resolved"][0]["note"] == f"process {child.pid} has ended"
 
 
-def test_question_wait_resolves_on_an_undelivered_answer(tmp_path):
+def test_old_answer_cannot_resolve_a_new_question(tmp_path):
     ctx = make_ctx(tmp_path)
-    task, session, run_id = working_session(ctx)
+    task, session, _ = working_session(ctx)
     holder = Actor.session(session["id"])
-    asked = tasks.ask(ctx.store, holder, task["id"], question="Which seed?")
-    question_id = asked["waiting_on"]["ref"]
-    # The wait points at another question, so tasks.answer leaves it; the resolver sees the answer.
-    tasks.wait(ctx.store, holder, task["id"], kind="question", detail="Which seed?", ref=999)
+    first = tasks.ask(ctx.store, holder, task["id"], question="Which seed?")
+    second = tasks.ask(ctx.store, holder, task["id"], question="Which version?")
+    tasks.answer(
+        ctx.store, HARNESS, task["id"], text="Seed 7.", question_id=first["waiting_on"]["ref"]
+    )
     assert waits.run(ctx)["resolved"] == []
-    tasks.answer(ctx.store, HARNESS, task["id"], text="Seed 7.", question_id=question_id)
-    report = waits.run(ctx)
-    assert report["resolved"][0]["note"] == "answered: Seed 7." and resolved(ctx, task)
+    assert tasks.read(ctx.store, task["id"])["waiting_on"] == second["waiting_on"]
 
 
 def test_user_wait_resolves_on_a_setting_or_an_approval(tmp_path):

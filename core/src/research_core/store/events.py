@@ -44,6 +44,7 @@ KINDS: frozenset[str] = frozenset(
         "task.claimed",
         "task.released",
         "task.waiting",
+        "task.user_action_needed",
         "task.wait_resolved",
         "task.asked",
         "task.answered",

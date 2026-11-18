@@ -39,7 +39,6 @@ from research_core.tools.base import ToolContext, run_tool
 from research_core.tools.catalog import TOOLS
 from tests.telemetry.conftest import processed, raw_lines, stored_records
 from tests.telemetry.fake_datadog import FakeDatadog
-from tests.test_coordinator_transitions import assigned
 from tests.test_serve_run_failures import Dispatch
 from tests.watcher._support import COWORLD, coordinator, make_ctx, make_task
 
@@ -476,11 +475,18 @@ def test_a_wake_names_its_admission_and_the_events_it_covers(seam):
     assert (wake["admission_id"], wake["session_id"]) == (row["op_id"], row["session_id"])
     assert (wake["native_event_type"], wake["coworld_id"]) == ("task.asked", COWORLD)
     assert (wake["details"]["first_seq"], wake["details"]["batch_size"]) == (seq, 1)
+    instructions = json.loads(row["payload"])["instructions"]
+    assert "finish the turn with one internal status sentence" in instructions
+    assert "Leave pending work to the watcher" in instructions
 
 
 def test_a_failed_worker_names_its_successor(seam):
     ctx = seam.ctx
-    predecessor = assigned(ctx)
+    reserved = _assigned(seam)
+    seam.dispatch()
+    predecessor = ctx.wstore.one(
+        "SELECT * FROM client_admissions WHERE op_id=?", (reserved["op_id"],)
+    )
     ctx.hermes.fail(predecessor["run_id"], "crash")
     owner = coordinator(ctx)
     owner.reconcile()
@@ -496,9 +502,13 @@ def test_a_failed_worker_names_its_successor(seam):
 
 def test_a_new_runtime_records_what_it_retired(seam):
     ctx = seam.ctx
-    assigned(ctx)
+    reserved = _assigned(seam)
+    seam.dispatch()
     with ctx.wstore.tx(Actor.harness()) as tx:
-        tx.execute("UPDATE client_admissions SET runtime_id='old', execution_uncertain=1")
+        tx.execute(
+            "UPDATE client_admissions SET runtime_id='old', execution_uncertain=1 WHERE op_id=?",
+            (reserved["op_id"],),
+        )
     Coordinator(ctx.ws, ctx.hermes, "new").reconcile_inputs(ctx.wstore)
     (record,) = _operations(seam.records(), action="coordinator", stage="runtime_recovered")
     assert record["details"] == {"retired_runtimes": 1}

@@ -23,6 +23,7 @@ EXPECTED_WAKES = {
     "task.proposed_submission": "management",
     "merge.failed": "management",
     "submission.candidate": "management",
+    "task.user_action_needed": None,
     "task.wait_resolved": None,
     "capability.failed": None,
     "repair.failed_twice": None,
@@ -60,11 +61,11 @@ def test_metadata_cannot_dispatch_code():
         assert entry.wake is None or entry.wake in WAKE_KINDS
 
 
-def test_every_wake_kind_has_a_template_that_keeps_wakes_out_of_conversations():
+def test_every_wake_kind_has_a_template_that_routes_user_updates():
     for kind in WAKE_KINDS:
         text = (TEMPLATES_DIR / f"{kind}.md").read_text(encoding="utf-8")
         for placeholder in ("{event_kind}", "{subject}", "{payload_json}", "{coworld_id}"):
             assert placeholder in text, (kind, placeholder)
-        assert "never answer in this conversation" in text, kind
+        assert "Send user-facing updates from this background Session" in text, kind
         assert "`chat_update {category, text, refs?}`" in text and "`progress`" in text, kind
     assert "pending_request" in (TEMPLATES_DIR / "setup.md").read_text(encoding="utf-8")
