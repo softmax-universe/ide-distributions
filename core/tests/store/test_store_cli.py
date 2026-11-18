@@ -603,7 +603,8 @@ def run_lines(capsys, *argv: str) -> tuple[int, list[dict]]:
 
 def start_quiesce(*argv: str) -> subprocess.Popen:
     """``research store quiesce`` in its own process, its stdout a pipe of JSON lines."""
-    command = [sys.executable, "-m", "research_core.cli", "store", "quiesce", *argv]
+    # Match the hosted image, which sets PYTHONUNBUFFERED=1.
+    command = [sys.executable, "-u", "-m", "research_core.cli", "store", "quiesce", *argv]
     return subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
 
 
