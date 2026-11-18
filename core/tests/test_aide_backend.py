@@ -47,6 +47,7 @@ class Availability:
 sys.modules.setdefault("inference", types.SimpleNamespace(Availability=Availability))
 sys.path.insert(0, str(IMAGE))
 import aide  # noqa: E402
+from control import Lifecycle  # noqa: E402
 
 from research_core.plugin.reasoning_relay import Relay  # noqa: E402
 
@@ -258,7 +259,9 @@ def run(system, scenario, inference=None, seam_transport=None, gateway=None, *, 
             async def restart():
                 """A new backend process: every worker of the previous one has exited."""
                 await stop()
-                backend = aide.Backend(seam, native, inference or Availability(), work)
+                backend = aide.Backend(
+                    seam, native, inference or Availability(), work, Lifecycle({})
+                )
                 backend.socket = Socket()
                 backend.restart = restart
                 backends.append(backend)
@@ -930,7 +933,7 @@ def test_a_seam_call_outlasts_the_longest_lock_wait_of_a_default_quiesce(tmp_pat
             ) as seam,
             asyncio.TaskGroup() as work,
         ):
-            backend = aide.Backend(seam, seam, Availability(), work)
+            backend = aide.Backend(seam, seam, Availability(), work, Lifecycle({}))
             await backend.call(seam, "POST", "/message-events", json={})
 
     asyncio.run(main())
@@ -2190,8 +2193,13 @@ def test_relay_failures_reconnect_without_touching_the_control_connection(monkey
             common = {"platform_url": url, "workspace_id": "w", "credential": "proof"}
             env = {"API_SERVER_KEY": "proof", "IDE_REASONING_RELAY": "127.0.0.1:0"}
             connected = asyncio.Event()
-            control = asyncio.create_task(control_serve(**common, env=env, connected=connected))
-            backend = asyncio.create_task(aide.serve(**common, env=env, inference=Availability()))
+            lifecycle = Lifecycle(env)
+            control = asyncio.create_task(
+                control_serve(**common, lifecycle=lifecycle, connected=connected)
+            )
+            backend = asyncio.create_task(
+                aide.serve(**common, env=env, inference=Availability(), lifecycle=lifecycle)
+            )
             async with asyncio.timeout(10):
                 await bound.wait()
                 await connected.wait()

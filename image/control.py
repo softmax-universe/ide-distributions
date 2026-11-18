@@ -27,7 +27,10 @@ class Lifecycle:
     def __init__(self, env: dict[str, str]):
         self.env = env
         self.sleep_task: asyncio.Task[int] | None = None
-        self.last_busy = time.monotonic()
+        self.last_activity = time.monotonic()
+
+    def mark_active(self) -> None:
+        self.last_activity = time.monotonic()
 
     async def prepare_sleep(self) -> int:
         process = await asyncio.create_subprocess_exec(
@@ -46,8 +49,8 @@ class Lifecycle:
                 "detail": "Recovering native execution",
             }
         if activity["has_work"]:
-            self.last_busy = time.monotonic()
-        automatic = time.monotonic() - self.last_busy >= 900
+            self.mark_active()
+        automatic = time.monotonic() - self.last_activity >= 900
         if (request.control == "sleep_request" or automatic) and (
             self.sleep_task is None or (self.sleep_task.done() and self.sleep_task.result() != 0)
         ):
@@ -118,11 +121,10 @@ async def serve(
     platform_url: str,
     workspace_id: str,
     credential: str,
-    env: dict[str, str],
+    lifecycle: Lifecycle,
     connected: asyncio.Event,
 ) -> None:
     """One bidirectional transport for hosting control; chat is the AIDE backend's (aide.py)."""
-    lifecycle = Lifecycle(env)
     root = f"v2/workspaces/{workspace_id}"
     async with (
         httpx.AsyncClient(
