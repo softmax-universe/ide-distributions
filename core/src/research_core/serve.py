@@ -1286,9 +1286,16 @@ class SeamServer:
                 revision_sql = (
                     "COALESCE((SELECT MAX(seq) FROM events WHERE subject = ? || id), 0) AS revision"
                 )
+                projection = revision_sql
+                if spec is TASK:
+                    projection += (
+                        ", (SELECT json_group_array('T-' || depends_on)"
+                        " FROM (SELECT depends_on FROM task_deps"
+                        " WHERE task_id = tasks.id ORDER BY depends_on)) AS depends_on"
+                    )
                 if item_id is None:
                     rows = store.q(
-                        f"SELECT *, {revision_sql} FROM {spec.table} ORDER BY rowid",
+                        f"SELECT *, {projection} FROM {spec.table} ORDER BY rowid",
                         (prefix,),
                     )
                 else:
@@ -1305,7 +1312,7 @@ class SeamServer:
                             code="not_found",
                         )
                     rows = store.q(
-                        f"SELECT *, {revision_sql} FROM {spec.table} WHERE id = ?",
+                        f"SELECT *, {projection} FROM {spec.table} WHERE id = ?",
                         (prefix, number),
                     )
                 return {

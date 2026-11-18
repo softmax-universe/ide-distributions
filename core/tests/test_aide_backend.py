@@ -2069,6 +2069,9 @@ def test_tasks_goals_cancellation_and_pending_input(system):
 def test_scoped_board_changes_reach_only_subscribed_frontends(system):
     async def scenario(backend, gateway, ctx, hermes):
         goal = goals.create(ctx.store, HARNESS, title="Win", end_state="Top", reason="asked")
+        prerequisite = tasks.create(
+            ctx.store, HARNESS, type="maintenance", title="Inspect", description="Find the cause"
+        )
         task = tasks.create(
             ctx.store, HARNESS, type="maintenance", title="Fix", description="Do", priority="high"
         )
@@ -2076,7 +2079,10 @@ def test_scoped_board_changes_reach_only_subscribed_frontends(system):
         goal_params = {"resource": "goals", "scope_id": COWORLD_ID}
         task_snapshot = (await call(backend, "state.list", task_params))["result"]
         goal_snapshot = (await call(backend, "state.list", goal_params))["result"]
-        assert task_snapshot["items"][0]["priority"] == "high"
+        prerequisite_row, task_row = task_snapshot["items"]
+        assert prerequisite_row["depends_on"] == []
+        assert task_row["priority"] == "high"
+        assert task_row["depends_on"] == []
         await call(backend, "state.list", task_params, frontend=OTHER)
 
         tasks.update(ctx.store, HARNESS, task["id"], title="Fix the new failure", priority="normal")
@@ -2091,12 +2097,13 @@ def test_scoped_board_changes_reach_only_subscribed_frontends(system):
         assert backend.socket.notes("state.changed", OTHER) == [changed_task]
 
         backend.closed(OTHER)
-        tasks.update(ctx.store, HARNESS, task["id"], title="Fix the remaining failure")
+        tasks.link(ctx.store, HARNESS, task["id"], [prerequisite["id"]])
         await until(lambda: len(backend.socket.notes("state.changed")) == 3)
-        assert (
-            backend.socket.notes("state.changed")[-1]["item"]["title"]
-            == "Fix the remaining failure"
-        )
+        linked = backend.socket.notes("state.changed")[-1]["item"]
+        assert linked["id"] == task_row["id"]
+        assert linked["depends_on"] == [prerequisite_row["id"]]
+        snapshot = (await call(backend, "state.list", task_params))["result"]
+        assert snapshot["items"][-1]["depends_on"] == linked["depends_on"]
         assert backend.socket.notes("state.changed", OTHER) == [changed_task]
 
     run(system, scenario)
@@ -2327,7 +2334,11 @@ def test_tasks_and_goals_carry_monotonic_item_revisions(system):
         assert t_rev_1 > g_rev_1 >= 1
 
         tasks.update(ctx.store, HARNESS, task["id"], title="Task v2")
-        await until(lambda: backend.socket.notes("state.changed"))
+        await until(
+            lambda: any(
+                note["resource"] == "tasks" for note in backend.socket.notes("state.changed")
+            )
+        )
         t_pushed = [n for n in backend.socket.notes("state.changed") if n["resource"] == "tasks"][
             -1
         ]
