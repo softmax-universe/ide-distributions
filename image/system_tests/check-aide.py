@@ -265,6 +265,8 @@ async def main() -> None:
             notes.append(frame["message"])
         (finished,) = [note["params"] for note in notes if note["method"] == "chat.finished"]
         assert finished["status"] == "completed", finished
+        async with ClientSession() as http, http.get("http://127.0.0.1:8650/health") as health:
+            assert health.status == 200 and (await health.json())["ok"] is True
         chunks = [n["params"] for n in notes if n["method"] == "chat.chunk"]
         text = "".join(c["chunk"]["choices"][0]["delta"]["content"] for c in chunks)
         assert text == "".join(REPLY), notes
