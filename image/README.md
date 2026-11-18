@@ -39,7 +39,7 @@ below are separate: payload-free timing on stderr. No process exit waits for eit
 The lifecycle adapter sends replies over the platform's authenticated outbound workspace
 connection. Explicit sleep starts the distribution command asynchronously; status reports
 ready for sleep only after its successful exit. The image also initiates sleep after fifteen
-minutes without work. Restart calls wake with the retained filesystem.
+minutes without reported work or a successful AIDE session open. Restart calls wake with the retained filesystem.
 
 The release dispatcher passes the distribution commit to Metta's generic build workflow.
 That workflow builds `image/Dockerfile`, runs `image/system_tests/start-stop.sh`, and publishes

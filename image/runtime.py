@@ -16,7 +16,7 @@ from uuid import uuid4
 import httpx
 from aide import SEAM_TIMEOUT_S
 from aide import serve as serve_aide
-from control import serve
+from control import Lifecycle, serve
 from inference import Availability
 from inference import maintain as maintain_inference
 from opentelemetry import trace
@@ -285,13 +285,14 @@ async def run(stack: AsyncExitStack) -> None:
             startup.set_attribute("startup.complete", True)
             startup.end()
 
+            lifecycle = Lifecycle(profile_env)
             group.create_task(observe_ready("relay_connected", relay_connected))
             control = group.create_task(
                 serve(
                     platform_url=bootstrap.platform_url,
                     workspace_id=bootstrap.workspace_id,
                     credential=bootstrap.credential.get_secret_value(),
-                    env=profile_env,
+                    lifecycle=lifecycle,
                     connected=relay_connected,
                 )
             )
@@ -304,6 +305,7 @@ async def run(stack: AsyncExitStack) -> None:
                     credential=bootstrap.credential.get_secret_value(),
                     env=profile_env,
                     inference=inference,
+                    lifecycle=lifecycle,
                 )
             )
             await asyncio.wait(

@@ -18,6 +18,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Annotated, Literal
@@ -25,6 +26,7 @@ from urllib.parse import quote
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import httpx
+from control import Lifecycle
 from inference import Availability
 from outbound import Observed
 from pydantic import (
@@ -50,6 +52,7 @@ log = logging.getLogger(__name__)
 # A seam write waits out a ``research store quiesce``: at most the default hold plus the usual lock
 # wait, and then it has to commit and answer. Timing out first ends the backend for a normal hold.
 SEAM_TIMEOUT_S = DEFAULT_MAX_HOLD_S + BUSY_TIMEOUT_MS / 1000 + 5
+CONNECT_TIMEOUT_S = 10
 MAX_BYTES = 1048576
 ACTIVE = frozenset({"queued", "running", "waiting"})
 TERMINAL = frozenset({"completed", "cancelled", "failed", "interrupted"})
@@ -871,8 +874,10 @@ class Backend:
         gateway: httpx.AsyncClient,
         inference: Availability,
         work: asyncio.TaskGroup,
+        lifecycle: Lifecycle,
     ):
         self.seam, self.gateway, self.inference, self.work = seam, gateway, inference, work
+        self.lifecycle = lifecycle
         self.epoch, self.revision = str(uuid4()), 0
         self.socket: ClientConnection | None = None
         self.subscribers: dict[str, Subscription] = {}
@@ -1771,6 +1776,7 @@ class Backend:
         (row,) = snapshot.records.sessions
         session = await self.project(row, snapshot.records.requests)
         await self.title_sessions([session], snapshot.records.requests, read_hermes=False)
+        self.lifecycle.mark_active()
         return {"session": session.model_dump(mode="json")}
 
     async def session_page(self, frontend_id: UUID, request_id: str, params: SessionPage) -> dict:
@@ -2202,13 +2208,23 @@ class Backend:
                 del self.boards[coworld]
 
     async def connect(self, url: str, credential: str) -> None:
-        async with connect(
-            url,
-            additional_headers={"Authorization": f"Bearer {credential}"},
-            subprotocols=["aide.1.0.0"],
-            max_size=2 * MAX_BYTES,
-        ) as socket:
-            Bound.model_validate_json(await socket.recv())
+        async with AsyncExitStack() as connection:
+            with span("workspace.aide.connect") as attempt:
+                headers = {"Authorization": f"Bearer {credential}"}
+                propagator.inject(headers)
+                socket = await connection.enter_async_context(
+                    connect(
+                        url,
+                        additional_headers=headers,
+                        subprotocols=["aide.1.0.0"],
+                        max_size=2 * MAX_BYTES,
+                        open_timeout=CONNECT_TIMEOUT_S,
+                    )
+                )
+                attempt.add_event("websocket.upgraded")
+                async with asyncio.timeout(CONNECT_TIMEOUT_S):
+                    Bound.model_validate_json(await socket.recv())
+                attempt.add_event("websocket.bound")
             # Frontends subscribe through one binding; after a rebind they subscribe again by
             # reading their sessions, so the last binding's frontends are stale.
             self.page_origins.clear()
@@ -2225,8 +2241,8 @@ class Backend:
                                 self.closed(frame.frontend_id)
                             elif "method" in frame.message and "id" in frame.message:
                                 replies.create_task(self.answer(socket, frame))
-                    except ConnectionClosed:  # superseded or expired; in-flight commands finish
-                        log.info("AIDE relay closed the connection")
+                    except ConnectionClosed:  # in-flight commands finish
+                        log.info("AIDE relay closed the connection (code %s)", socket.close_code)
             finally:
                 self.socket = None
                 for catalog in self.catalogs.values():
@@ -2246,6 +2262,7 @@ async def serve(
     credential: str,
     env: dict[str, str],
     inference: Availability,
+    lifecycle: Lifecycle,
 ) -> None:
     """Hold the platform's AIDE backend socket forever: a lost connection only delays reconnection.
     A failed consumer or event watcher ends this, and ``runtime.py`` then recycles the runtime."""
@@ -2260,7 +2277,7 @@ async def serve(
         ) as gateway,
         asyncio.TaskGroup() as work,
     ):
-        backend = Backend(seam, gateway, inference, work)
+        backend = Backend(seam, gateway, inference, work, lifecycle)
         host, port = env["IDE_REASONING_RELAY"].rsplit(":", 1)
         # A relay connection's failure ends that connection alone; the plugin reconnects.
         relay = await asyncio.start_server(backend.relay, host, int(port), limit=MAX_BYTES)
@@ -2268,10 +2285,11 @@ async def serve(
         work.create_task(backend.watch())
         delay = 1
         while True:
-            started = time.monotonic()
             try:
                 await backend.connect(url, credential)
             except (ConnectionClosed, InvalidHandshake, OSError) as error:  # retry forever
                 log.info("AIDE relay connection ended: %s", type(error).__name__)
-            delay = 1 if time.monotonic() - started > 60 else min(delay * 2, 30)
+            else:
+                delay = 1  # a completed binding resets the failed-dial backoff
             await asyncio.sleep(delay)
+            delay = min(delay * 2, 30)

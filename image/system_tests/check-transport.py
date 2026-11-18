@@ -10,6 +10,7 @@ from uuid import uuid4
 from websockets.asyncio.server import serve
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from control import Lifecycle
 from control import serve as bridge  # noqa: E402
 
 
@@ -106,7 +107,7 @@ async def main():
                 platform_url=f"http://127.0.0.1:{port}",
                 workspace_id=str(uuid4()),
                 credential="proof",
-                env={},
+                lifecycle=Lifecycle({}),
                 connected=connected,
             )
         )

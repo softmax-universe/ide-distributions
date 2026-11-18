@@ -13,6 +13,7 @@ from dotenv import dotenv_values
 sys.path.insert(0, "/opt/distribution/image")
 sys.path.insert(0, "/opt/hermes")
 from aide import Backend, History, Open, Refusal, StateList
+from control import Lifecycle
 from gateway.session_context import scoped_current_session_id
 from hermes_cli.plugins import discover_plugins
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -43,7 +44,7 @@ async def main():
             ) as gateway,
             asyncio.TaskGroup() as work,
         ):
-            backend = Backend(seam, gateway, Availability(), work)
+            backend = Backend(seam, gateway, Availability(), work, Lifecycle({}))
             frontend = uuid4()
             bound = []
             for game in ("cow_scope_diplomacy", "cow_scope_arena"):

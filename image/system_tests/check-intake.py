@@ -17,6 +17,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from aide import Backend, History, Open, Refusal, Send, StateList  # noqa: E402
+from control import Lifecycle
 from inference import Availability  # noqa: E402
 
 WORKSPACE = {"scope": "workspace", "coworld": None, "league": None}
@@ -42,7 +43,7 @@ async def main():
         asyncio.TaskGroup() as work,
     ):
         # The fixture has no inference lease, so model work cannot start.
-        backend = Backend(seam, gateway, Availability(), work)
+        backend = Backend(seam, gateway, Availability(), work, Lifecycle({}))
         opening = Open.model_validate(
             {"scope": WORKSPACE, "client": {"id": "intake-proof", "kind": "test"}}
         )

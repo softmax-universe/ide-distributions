@@ -26,7 +26,7 @@ from tests.hermes.capture_rig import (
     whole_reply,
 )
 from tests.hermes.test_spike_s1 import free_port, hermes_python
-from tests.test_aide_backend import Availability, aide
+from tests.test_aide_backend import Availability, Lifecycle, aide
 
 SESSION = "api_reasoning_relay"
 CHUNKS = 40  # reasoning deltas in each model reply
@@ -95,7 +95,7 @@ def test_reasoning_streams_into_the_request_log_before_the_tool(hermes_bin, tmp_
             ) as native,
             asyncio.TaskGroup() as work,
         ):
-            backend = aide.Backend(s, native, Availability(), work)
+            backend = aide.Backend(s, native, Availability(), work, Lifecycle({}))
             server = await asyncio.start_server(backend.relay, "127.0.0.1", relay_port)
             started = await native.post("v1/runs", json={"input": "hi", "session_id": SESSION})
             run_id = started.raise_for_status().json()["run_id"]
