@@ -304,7 +304,14 @@ def _is_rfc3339_datetime(value: object) -> bool:
 
 class _AideContract:
     def __init__(self, spec_path: Path):
-        document = json.loads(spec_path.read_bytes())
+        schema = spec_path.read_bytes()
+        actual = hashlib.sha256(schema).hexdigest()
+        if actual != _AIDE_ASYNCAPI_SHA256:
+            pytest.fail(
+                f"AIDE schema checksum mismatch for {spec_path}: "
+                f"expected {_AIDE_ASYNCAPI_SHA256}, got {actual}"
+            )
+        document = json.loads(schema)
         self._uri = spec_path.as_uri()
         self._registry = Registry().with_resource(self._uri, DRAFT202012.create_resource(document))
         self._validators: dict[str, Draft202012Validator] = {}
@@ -380,9 +387,20 @@ class _AideContract:
         self._validate(self.param_schemas[method], frame["params"])
 
 
+# Canonical Metta schema at f28e0c0f23b805eb472aa649a473f5e9f5f81393.
+_AIDE_ASYNCAPI_SHA256 = "08182e9fd5d1663136049fa6e65e223786056cce955a6dd61d7ec5d381b4c408"
+
+
 @lru_cache(maxsize=1)
 def _aide_contract() -> _AideContract:
-    return _AideContract(IMAGE / "contract/aide-1.0.0/asyncapi.json")
+    default_path = IMAGE.parent / ".pytest_cache/aide-asyncapi.json"
+    path = Path(os.environ.get("AIDE_ASYNCAPI_PATH", default_path)).resolve()
+    if not path.is_file():
+        pytest.fail(
+            f"AIDE schema missing at {path}. "
+            "See 'Develop and test' in README.md to fetch the canonical schema."
+        )
+    return _AideContract(path)
 
 
 @pytest.fixture(autouse=True)
@@ -411,7 +429,9 @@ def _validate_every_aide_frame(monkeypatch):
         return await real_answer(self, socket, frame)
 
     async def checked_send(self, socket, frontend, message):
-        if "method" in message and "id" not in message:
+        if "method" in message and "id" in message:
+            contract.validate_request(message)
+        elif "method" in message:
             contract.validate_notification(message)
         elif "error" in message:
             contract.validate_error(message)
@@ -2049,18 +2069,22 @@ def test_tasks_goals_cancellation_and_pending_input(system):
 def test_scoped_board_changes_reach_only_subscribed_frontends(system):
     async def scenario(backend, gateway, ctx, hermes):
         goal = goals.create(ctx.store, HARNESS, title="Win", end_state="Top", reason="asked")
-        task = tasks.create(ctx.store, HARNESS, type="maintenance", title="Fix", description="Do")
+        task = tasks.create(
+            ctx.store, HARNESS, type="maintenance", title="Fix", description="Do", priority="high"
+        )
         task_params = {"resource": "tasks", "scope_id": COWORLD_ID}
         goal_params = {"resource": "goals", "scope_id": COWORLD_ID}
         task_snapshot = (await call(backend, "state.list", task_params))["result"]
         goal_snapshot = (await call(backend, "state.list", goal_params))["result"]
+        assert task_snapshot["items"][0]["priority"] == "high"
         await call(backend, "state.list", task_params, frontend=OTHER)
 
-        tasks.update(ctx.store, HARNESS, task["id"], title="Fix the new failure")
+        tasks.update(ctx.store, HARNESS, task["id"], title="Fix the new failure", priority="normal")
         goals.update(ctx.store, HARNESS, int(goal["id"][2:]), title="Win the next round")
         await until(lambda: len(backend.socket.notes("state.changed")) == 2)
         changed_task, changed_goal = backend.socket.notes("state.changed")
         assert changed_task["item"]["title"] == "Fix the new failure"
+        assert changed_task["item"]["priority"] == "normal"
         assert changed_task["previous_revision"] == task_snapshot["revision"]
         assert changed_goal["item"]["title"] == "Win the next round"
         assert changed_goal["previous_revision"] == goal_snapshot["revision"]
@@ -2885,5 +2909,132 @@ def test_cached_hermes_title_skips_repeat_gateway_gets(system, monkeypatch):
             if note["resource"] == "sessions" and note["item"]["id"] == session_id
         ]
         assert changed_titles[-2:] == ["Settled Hermes Title", "Settled Hermes Title"]
+
+    run(system, scenario)
+
+
+def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch):
+    import openai
+
+    from research_core.tools.base import ToolContext, run_tool
+
+    ctx, _, _ = system
+    monkeypatch.setenv("IDE_WORKSPACE", str(ctx.workspace.root))
+    model = "fixture/view-author"
+    guide = "Render a version 1 view with a body of nodes."
+    view = {"version": 1, "body": [{"type": "metric", "label": "Score", "value": 8}]}
+
+    def generate(request):
+        payload = json.loads(request.content)
+        assert payload["model"] == model
+        assert guide in payload["messages"][0]["content"]
+        assert payload["messages"][1]["content"] == "Score is 8"
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": json.dumps(view)},
+                    }
+                ]
+            },
+        )
+
+    client = openai.OpenAI
+    monkeypatch.setattr(
+        openai,
+        "OpenAI",
+        lambda **kw: client(
+            **kw, http_client=httpx.Client(transport=httpx.MockTransport(generate))
+        ),
+    )
+
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        context = ToolContext.from_env(
+            "orchestrator",
+            {
+                **ctx.env,
+                "IDE_SESSION_ID": session_id,
+                "IDE_TOOL_CALL_ID": "call_view",
+                "OPENROUTER_API_KEY": "fixture",
+                "AIDE_VIEW_MODEL": model,
+            },
+        )
+
+        def script(run_id):
+            return [
+                {"event": "message.delta", "delta": "Score is 8."},
+                {"event": "tool.started", "tool": "display_view", "tool_call_id": "call_view"},
+                {"gate": True},
+                {"event": "tool.completed", "tool": "display_view", "tool_call_id": "call_view"},
+                {
+                    "event": "run.completed",
+                    "say": [{"role": "assistant", "content": "Score is 8."}],
+                },
+            ]
+
+        gateway.script = script
+        await call(
+            backend,
+            "chat.send",
+            {"session_id": session_id, "messages": say("Score?"), "scope": WORKSPACE},
+        )
+        async with await asyncio.start_server(backend.relay, "127.0.0.1", 0) as server:
+            context.env["IDE_REASONING_RELAY"] = f"127.0.0.1:{server.sockets[0].getsockname()[1]}"
+
+            async def invoke():
+                response = await asyncio.to_thread(
+                    run_tool, "display_view", {"brief": "Score is 8"}, context
+                )
+                assert "prepared" in response and "metric" not in response, response
+
+            tool = asyncio.create_task(invoke())
+            await until(lambda: FRONTEND in backend.catalogs)
+
+            async def register(frontend, text):
+                response = await call(
+                    backend,
+                    "surface.event",
+                    {"scope": WORKSPACE, "data": {"kind": "component_catalog", "guide": text}},
+                    frontend=frontend,
+                )
+                assert response["result"]["data"]["registered"]
+
+            await register(OTHER, "A different browser renderer")
+            assert not tool.done()
+            await register(FRONTEND, guide)
+            await tool
+            await invoke()
+            gateway.gate.set()
+            await until(lambda: backend.socket.notes("chat.finished"))
+            backend.closed(FRONTEND)
+            gateway.gate.clear()
+            await call(
+                backend,
+                "chat.send",
+                {"session_id": session_id, "messages": say("Again"), "scope": WORKSPACE},
+                frontend=OTHER,
+            )
+            await register(OTHER, guide)
+            await invoke()
+            gateway.gate.set()
+        await until(lambda: backend.socket.notes("chat.finished", OTHER))
+        actions = [
+            f["message"]["params"]["data"]
+            for f in backend.socket.frames
+            if f["message"].get("method") == "surface.act"
+        ]
+        assert len(actions) == 2 and actions[-1]["view"] == view
+        assert any(
+            n["event"].get("delta") == "Score is 8." for n in backend.socket.notes("chat.event")
+        )
+        backend = await backend.restart()
+        params = {"scope": WORKSPACE, "data": {"kind": "current_view", "session_id": session_id}}
+        assert (await call(backend, "surface.event", params))["result"]["data"][
+            "current"
+        ] == actions[-1]
+        assert "error" in await call(backend, "surface.event", params | {"scope": LEAGUE})
 
     run(system, scenario)

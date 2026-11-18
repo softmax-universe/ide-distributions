@@ -43,8 +43,11 @@ OWN_TOOLS_RESEARCHER = {
 RESEARCHER = (
     (ORCHESTRATOR - {"chat_update", "submit", "github"}) | OWN_TOOLS_BOTH | OWN_TOOLS_RESEARCHER
 )
-ORCHESTRATOR = ORCHESTRATOR | OWN_TOOLS_BOTH | OWN_TOOLS_ORCHESTRATOR
+ORCHESTRATOR = (
+    ORCHESTRATOR | {"display_view", "page_interaction"} | OWN_TOOLS_BOTH | OWN_TOOLS_ORCHESTRATOR
+)
 INPROC = {
+    "page_interaction",
     "goal",
     "goal_set_status",
     "task",
@@ -75,7 +78,7 @@ def test_a_broken_tool_module_fails_loudly(tmp_path, monkeypatch):
 
 
 def test_tool_counts_match_the_design():
-    assert names("orchestrator") == ORCHESTRATOR and len(ORCHESTRATOR) == 23
+    assert names("orchestrator") == ORCHESTRATOR and len(ORCHESTRATOR) == 25
     assert names("researcher") == RESEARCHER and len(RESEARCHER) == 23
     assert len(ORCHESTRATOR) <= catalog.TOOL_BUDGET
 
