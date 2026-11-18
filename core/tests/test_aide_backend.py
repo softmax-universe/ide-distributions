@@ -220,7 +220,7 @@ def system(tmp_path):
     worker.join(timeout=10)
 
 
-def run(system, scenario, inference=None, seam_transport=None, gateway=None):
+def run(system, scenario, inference=None, seam_transport=None, gateway=None, *, watch=True):
     ctx, hermes, server = system
     gateway = gateway or Gateway(hermes)
 
@@ -262,7 +262,8 @@ def run(system, scenario, inference=None, seam_transport=None, gateway=None):
                 backend.socket = Socket()
                 backend.restart = restart
                 backends.append(backend)
-                watchers.append(work.create_task(backend.watch()))
+                if watch:
+                    watchers.append(work.create_task(backend.watch()))
                 return backend
 
             try:
@@ -2570,7 +2571,8 @@ def test_seam_500_returns_internal_error_without_traceback(system, monkeypatch):
         assert cmd_reply["error"]["message"] == "Internal error"
         assert "secret commit detail" not in cmd_reply["error"]["message"]
 
-    run(system, scenario)
+    # Inject faults into the request/reply paths without racing the background stream.
+    run(system, scenario, watch=False)
 
 
 def test_session_title_preserved_across_open_page_and_state_changed(system):
