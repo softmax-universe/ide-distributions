@@ -42,6 +42,16 @@ async def main():
         ) as gateway,
         asyncio.TaskGroup() as work,
     ):
+        # This component test calls Hermes directly. Application health can precede its listener.
+        async with asyncio.timeout(180):
+            while True:
+                try:
+                    capabilities = await gateway.get("http://127.0.0.1:8642/v1/capabilities")
+                except httpx.ConnectError:
+                    await asyncio.sleep(0.2)
+                    continue
+                capabilities.raise_for_status()
+                break
         # The fixture has no inference lease, so model work cannot start.
         backend = Backend(seam, gateway, Availability(), work, Lifecycle({}))
         opening = Open.model_validate(
