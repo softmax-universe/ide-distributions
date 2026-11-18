@@ -217,7 +217,9 @@ async def main() -> None:
         title_config = settings["auxiliary"]["title_generation"]
         title_model = title_config["model"]
         title_config["base_url"] = mirror
-        config.write_text(yaml.safe_dump(settings))
+        mirrored = config.with_suffix(".mirror.tmp")
+        mirrored.write_text(yaml.safe_dump(settings))
+        mirrored.replace(config)
 
         frontend = str(uuid4())
         notes: list[dict] = []
