@@ -1361,7 +1361,11 @@ def test_a_relay_rebind_ends_the_last_bindings_subscriptions(system):
         async with websocket_server(
             relay, "127.0.0.1", 0, select_subprotocol=lambda _, offered: offered[0]
         ) as server:
-            await backend.connect(f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}", "proof")
+            await backend.connect(
+                f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}",
+                "proof",
+                workspace_id="proof",
+            )
         assert backend.subscribers == {}
 
     run(system, scenario)
@@ -3057,3 +3061,85 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
         assert "error" in await call(backend, "surface.event", params | {"scope": LEAGUE})
 
     run(system, scenario)
+
+
+@pytest.mark.parametrize(
+    ("fault", "stage", "error_type", "code_field", "code"),
+    [
+        ("refused", "transport_setup", "ConnectionRefusedError", "error.errno", None),
+        ("upgrade_timeout", "http_upgrade", "TimeoutError", None, None),
+        (401, "http_upgrade", "InvalidStatus", "http.response.status_code", 401),
+        (429, "http_upgrade", "InvalidStatus", "http.response.status_code", 429),
+        (503, "http_upgrade", "InvalidStatus", "http.response.status_code", 503),
+        ("binding_timeout", "aide_binding", "TimeoutError", None, None),
+        ("binding_closed", "aide_binding", "ConnectionClosedError", "websocket.close.code", 1013),
+    ],
+)
+def test_relay_failure_logs_the_observed_stage_and_code(
+    fault, stage, error_type, code_field, code, caplog, monkeypatch
+):
+    import errno
+    import socket
+    from http import HTTPStatus
+
+    from websockets.asyncio.server import serve
+
+    from research_core.telemetry import JsonLines
+
+    monkeypatch.setattr(aide, "CONNECT_TIMEOUT_S", 0.3)
+    workspace_id = str(uuid4())
+    trace_headers = []
+
+    async def process_request(connection, request):
+        trace_headers.append(request.headers["traceparent"])
+        if fault == "upgrade_timeout":
+            await connection.wait_closed()
+        if isinstance(fault, int):
+            return connection.respond(HTTPStatus(fault), "private response body")
+        return None
+
+    async def platform(connection):
+        if fault == "binding_closed":
+            await connection.close(1013, "private close reason")
+        else:
+            await connection.wait_closed()
+
+    async def scenario():
+        async with httpx.AsyncClient() as http:
+            backend = aide.Backend(http, http, Availability(), asyncio.TaskGroup(), Lifecycle({}))
+            if fault == "refused":
+                with socket.socket() as reserved:
+                    reserved.bind(("127.0.0.1", 0))
+                    port = reserved.getsockname()[1]
+                with pytest.raises(OSError):
+                    await backend.connect(
+                        f"ws://127.0.0.1:{port}", "private bearer", workspace_id=workspace_id
+                    )
+                return
+            async with serve(
+                platform,
+                "127.0.0.1",
+                0,
+                subprotocols=["aide.1.0.0"],
+                process_request=process_request,
+            ) as server:
+                port = server.sockets[0].getsockname()[1]
+                with pytest.raises((aide.InvalidStatus, aide.ConnectionClosed, TimeoutError)):
+                    await backend.connect(
+                        f"ws://127.0.0.1:{port}", "private bearer", workspace_id=workspace_id
+                    )
+
+    asyncio.run(scenario())
+    (record,) = [
+        record for record in caplog.records if record.message == "AIDE relay connection failed"
+    ]
+    line = JsonLines(lambda value: value).format(record)
+    assert "private" not in line
+    event = json.loads(line)
+    assert event["workspace.id"] == workspace_id
+    assert event["connection.stage"] == stage
+    assert event["error.type"] == error_type
+    if code_field is not None:
+        assert event[code_field] == (errno.ECONNREFUSED if fault == "refused" else code)
+    if trace_headers:
+        assert event["otel_trace_id"] == trace_headers[0].split("-")[1]

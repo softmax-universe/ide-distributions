@@ -102,6 +102,19 @@ control connection, gates neither readiness nor sleep, and reconnects forever; i
 chat takes into the image (#236). The contract stays in Metta; this image does not
 bundle or validate it, the relay does.
 
+For connection failures, search the workspace runtime logs for `AIDE relay connection failed`
+and the workspace ID. `connection.stage` identifies transport setup, HTTP upgrade, or the
+AIDE binding frame. DNS, TLS and proxy errors have separate stages when the client can identify
+them. The same record carries the exception type, elapsed seconds, and any HTTP status, OS
+error number, certificate verification code, or WebSocket close code. A disconnect after
+binding is logged as `AIDE relay connection closed` with its close code.
+
+During HTTP upgrade, a 401 indicates authentication rejection, a 403 indicates refusal,
+and a 429 indicates throttling. A timeout after transport setup or a generic 503 can come
+from several upstream components. Use `otel_trace_id` to check the gateway, Observatory
+upgrade, and identity spans before attributing the failure to relay capacity or authentication.
+The logs carry no response bodies, credentials, or close reasons.
+
 Each method maps to seam and gateway calls. The AIDE request id
 is the seam `op_id` or gateway `Idempotency-Key`, so retries need no new tables. The gateway
 forgets a prompt once it is resolved, so an applied `input.respond` is also recorded at the
