@@ -1904,7 +1904,7 @@ def test_a_send_that_fails_after_its_commit_still_runs_once_and_finishes(system,
 def test_first_history_read_validates_scope_without_loading_all_admissions(system):
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)
-        await until(lambda: session_id in hermes.sessions)
+        await until(lambda: not system[2].session_pending(session_id)["pending"])
         gateway.say(session_id, role="assistant", content="retained reply")
         backend = await backend.restart()
         reads = []
@@ -1928,7 +1928,7 @@ def test_first_history_read_validates_scope_without_loading_all_admissions(syste
 def test_history_pages_by_a_stable_boundary_reads_forward_and_bounds_each_reply(system):
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)
-        await until(lambda: session_id in hermes.sessions)
+        await until(lambda: not system[2].session_pending(session_id)["pending"])
         for text in ("a", "b", "c", "d", "e"):
             gateway.say(session_id, role="assistant", content=text)
         params = {"session_id": session_id, "scope": WORKSPACE, "limit": 2}
