@@ -263,6 +263,5 @@ Softmax hosting runs these distributions in its sandboxes. [`docs/hosting.md`](d
 is the handoff: the image, `prepare.py`, the environment variables, the gateway, sleep and
 drain, the bridge's seam, storage and releases. A push to `main` that changes what the image holds
 dispatches Metta's image release for the `main` channel (`.github/workflows/release-hermes.yml` lists the paths); a
-nightly workflow runs the read-only platform check. `beta` is an opt-in playground that receives
-experimental pull requests and releases the beta channel; `main` is merged into it automatically,
-and an experiment ships only through a normal pull request to `main`.
+nightly workflow runs the read-only platform check. The `beta` channel is not released from this
+repository: it is the aide-harness image.
