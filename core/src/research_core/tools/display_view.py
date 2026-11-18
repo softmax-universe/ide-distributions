@@ -98,7 +98,10 @@ def handle(call: ToolCall) -> dict:
 SPEC = tool(
     ToolSpec(
         name="display_view",
-        description="Display a component in the current conversation's Views tab.",
+        description=(
+            "Display a component in the current conversation’s Views tab when it would help explain "
+            "your answer, even if the user did not ask for a visual. You can also reply in chat."
+        ),
         handler=handle,
         roles=frozenset({"orchestrator"}),
         executor="workspace",
