@@ -52,19 +52,10 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: uv run python tools/check_prompts.py --model
       - name: Fetch canonical AIDE schema
-        run: |
-          schema=.pytest_cache/aide-asyncapi.json
-          curl --fail --silent --show-error --location --max-time 30 --create-dirs \
-            https://softmax.com/docs/static/aide/1.0.0/asyncapi.json --output "$schema"
-          # Before the docs deployment, PR checks can use the exact Metta candidate
-          # bytes already retained in this PR's history. Pytest verifies their SHA-256.
-          published_sha=$(sha256sum "$schema" | cut -d ' ' -f 1)
-          previous_sha=f8f408060baf9c01e75bb5b36fd5841b008c30b102a61e80e3bb95875b176f77
-          if [[ "$GITHUB_EVENT_NAME" == pull_request && "$published_sha" == "$previous_sha" ]]; then
-            curl --fail --silent --show-error --location --max-time 30 \
-              https://raw.githubusercontent.com/softmax-universe/ide-distributions/f1006965e68c3e931ca84f6443947dae39d0443d/image/contract/aide-1.0.0/asyncapi.json \
-              --output "$schema"
-          fi
+        run: >-
+          curl --fail --silent --show-error --location --max-time 30 --create-dirs
+          https://softmax.com/docs/static/aide/1.0.0/asyncapi.json
+          --output .pytest_cache/aide-asyncapi.json
       - name: Unit and scenario tests
         run: uv run pytest -q -n 4 --dist=loadfile --durations=20
 
