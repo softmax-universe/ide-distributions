@@ -8,11 +8,8 @@ backend opens after the platform drops the first one.
 """
 
 import asyncio
-import errno
 import json
 import os
-import signal
-import socket as net_socket
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -79,7 +76,6 @@ experiments.start(ctx.store, ctx.actor, record["id"])
 async def main() -> None:
     control_sockets, backend, done = asyncio.Queue(), asyncio.Queue(), asyncio.Event()
     title_model = None
-    message_accepted = asyncio.Event()
 
     async def lease(request: web.Request) -> web.Response:
         expires = datetime.now(UTC) + timedelta(hours=1)
@@ -197,7 +193,8 @@ async def main() -> None:
         await runner.setup()
         await web.TCPSite(runner, "127.0.0.1", port).start()
 
-    async def check_control() -> None:
+    async def exercise() -> None:
+        nonlocal title_model
         control = await control_sockets.get()
         await control.send_json(
             {"stream_id": "status", "envelope": {"id": str(uuid4()), "control": "status"}}
@@ -205,10 +202,6 @@ async def main() -> None:
         header = await control.receive_json()
         assert header["status"] == 200, header
         print("PASS control connection answers beside the AIDE backend", flush=True)
-
-    async def exercise() -> None:
-        nonlocal title_model
-        relay = await backend.get()
         # Hermes treats a config base_url under provider openrouter as a mirror (#10622).
         config = Path("/workspace/host/profiles/orchestrator/config.yaml")
         settings = yaml.safe_load(config.read_text())
@@ -217,10 +210,9 @@ async def main() -> None:
         title_config = settings["auxiliary"]["title_generation"]
         title_model = title_config["model"]
         title_config["base_url"] = mirror
-        mirrored = config.with_suffix(".mirror.tmp")
-        mirrored.write_text(yaml.safe_dump(settings))
-        mirrored.replace(config)
+        config.write_text(yaml.safe_dump(settings))
 
+        relay = await backend.get()
         frontend = str(uuid4())
         notes: list[dict] = []
 
@@ -259,7 +251,6 @@ async def main() -> None:
         accepted = await request("chat.send", sent)
         request_id = accepted["request_id"]
         assert accepted["accepted"] is True, accepted
-        message_accepted.set()
         while not any(note["method"] == "chat.finished" for note in notes):
             frame = json.loads((await relay.receive()).data)
             notes.append(frame["message"])
@@ -367,35 +358,8 @@ async def main() -> None:
             notes.append(json.loads((await relay.receive()).data)["message"])
         XP_SESSION.write_text(xp_session)
 
-    async def hold_gateway_until_admission() -> None:
-        # Stop the real child at launch, before it can bind its API listener.
-        while True:
-            probe = await asyncio.create_subprocess_exec(
-                "pgrep", "-f", r" -m gateway\.run$", stdout=asyncio.subprocess.PIPE
-            )
-            output, _ = await probe.communicate()
-            if probe.returncode == 0:
-                break
-            assert probe.returncode == 1
-            await asyncio.sleep(0.05)
-        pid = int(output)
-        os.kill(pid, signal.SIGSTOP)
-        try:
-            with net_socket.socket() as listener:
-                assert listener.connect_ex(("127.0.0.1", 8642)) == errno.ECONNREFUSED
-            await message_accepted.wait()
-            print(
-                "PASS workspace accepted the message before the gateway opened its listener",
-                flush=True,
-            )
-        finally:
-            os.kill(pid, signal.SIGCONT)
-
-    async with asyncio.timeout(300), asyncio.TaskGroup() as checks:
-        checks.create_task(check_control())
-        checks.create_task(exercise())
-        if "--hold-gateway" in sys.argv[3:]:
-            checks.create_task(hold_gateway_until_admission())
+    async with asyncio.timeout(300):
+        await exercise()
     print(
         "PASS AIDE request record and chat.events read again after the socket is replaced",
         flush=True,

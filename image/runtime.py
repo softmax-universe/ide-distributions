@@ -251,33 +251,9 @@ async def run(stack: AsyncExitStack) -> None:
                         (await seam_client.get("/health")).raise_for_status()
                     return application
 
-            gateway_ready = asyncio.Event()
-            lifecycle = Lifecycle(profile_env, gateway_ready)
-
-            async def serve_chat(application: asyncio.Task) -> None:
-                await application
-                # Admission is useful as soon as a model lease exists. When inference is
-                # unavailable, expose the same explicit refusal once gateway startup finishes.
-                await asyncio.wait(
-                    [
-                        group.create_task(inference_ready.wait()),
-                        group.create_task(gateway_ready.wait()),
-                    ],
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                await serve_aide(
-                    platform_url=bootstrap.platform_url,
-                    workspace_id=bootstrap.workspace_id,
-                    credential=bootstrap.credential.get_secret_value(),
-                    env=profile_env,
-                    inference=inference,
-                    lifecycle=lifecycle,
-                )
-
             release, waiting = socket.socketpair()
             with release, waiting:
                 application = group.create_task(start_application(waiting))
-                aide_backend = group.create_task(serve_chat(application))
                 with telemetry.span("workspace.gateway_ready", context=startup_context):
                     from hermes_cli.config import (
                         require_readable_config_before_write,
@@ -309,7 +285,6 @@ async def run(stack: AsyncExitStack) -> None:
                     # One contract check after the listener's notification, never a readiness poll.
                     (await client.get("/v1/capabilities")).raise_for_status()
                 release.sendall(b"1")
-                gateway_ready.set()
                 seam, seam_notices = await application
 
             async def reconcile_uncertain_execution() -> None:
@@ -332,6 +307,7 @@ async def run(stack: AsyncExitStack) -> None:
             startup.set_attribute("startup.complete", True)
             startup.end()
 
+            lifecycle = Lifecycle(profile_env)
             group.create_task(observe_ready("relay_connected", relay_connected))
             control = group.create_task(
                 serve(
@@ -340,6 +316,18 @@ async def run(stack: AsyncExitStack) -> None:
                     credential=bootstrap.credential.get_secret_value(),
                     lifecycle=lifecycle,
                     connected=relay_connected,
+                )
+            )
+            # The AIDE backend runs beside the control connection and gates no startup step; like
+            # the services below, its exit recycles the runtime.
+            aide_backend = group.create_task(
+                serve_aide(
+                    platform_url=bootstrap.platform_url,
+                    workspace_id=bootstrap.workspace_id,
+                    credential=bootstrap.credential.get_secret_value(),
+                    env=profile_env,
+                    inference=inference,
+                    lifecycle=lifecycle,
                 )
             )
             await asyncio.wait(
