@@ -303,7 +303,14 @@ def _is_rfc3339_datetime(value: object) -> bool:
 
 class _AideContract:
     def __init__(self, spec_path: Path):
-        document = json.loads(spec_path.read_bytes())
+        schema = spec_path.read_bytes()
+        actual = hashlib.sha256(schema).hexdigest()
+        if actual != _AIDE_ASYNCAPI_SHA256:
+            pytest.fail(
+                f"AIDE schema checksum mismatch for {spec_path}: "
+                f"expected {_AIDE_ASYNCAPI_SHA256}, got {actual}"
+            )
+        document = json.loads(schema)
         self._uri = spec_path.as_uri()
         self._registry = Registry().with_resource(self._uri, DRAFT202012.create_resource(document))
         self._validators: dict[str, Draft202012Validator] = {}
@@ -379,9 +386,20 @@ class _AideContract:
         self._validate(self.param_schemas[method], frame["params"])
 
 
+# Canonical Metta schema at c6650c9042bef56daae7c2e4b20af16580ba9601.
+_AIDE_ASYNCAPI_SHA256 = "5838c9a9ab420fd0ff65cf850cc295dee23d2e16f0e05cd9abfe09fce4a30c82"
+
+
 @lru_cache(maxsize=1)
 def _aide_contract() -> _AideContract:
-    return _AideContract(IMAGE / "contract/aide-1.0.0/asyncapi.json")
+    default_path = IMAGE.parent / ".pytest_cache/aide-asyncapi.json"
+    path = Path(os.environ.get("AIDE_ASYNCAPI_PATH", default_path)).resolve()
+    if not path.is_file():
+        pytest.fail(
+            f"AIDE schema missing at {path}. "
+            "See 'Develop and test' in README.md to fetch the canonical schema."
+        )
+    return _AideContract(path)
 
 
 @pytest.fixture(autouse=True)
@@ -2050,18 +2068,22 @@ def test_tasks_goals_cancellation_and_pending_input(system):
 def test_scoped_board_changes_reach_only_subscribed_frontends(system):
     async def scenario(backend, gateway, ctx, hermes):
         goal = goals.create(ctx.store, HARNESS, title="Win", end_state="Top", reason="asked")
-        task = tasks.create(ctx.store, HARNESS, type="maintenance", title="Fix", description="Do")
+        task = tasks.create(
+            ctx.store, HARNESS, type="maintenance", title="Fix", description="Do", priority="high"
+        )
         task_params = {"resource": "tasks", "scope_id": COWORLD_ID}
         goal_params = {"resource": "goals", "scope_id": COWORLD_ID}
         task_snapshot = (await call(backend, "state.list", task_params))["result"]
         goal_snapshot = (await call(backend, "state.list", goal_params))["result"]
+        assert task_snapshot["items"][0]["priority"] == "high"
         await call(backend, "state.list", task_params, frontend=OTHER)
 
-        tasks.update(ctx.store, HARNESS, task["id"], title="Fix the new failure")
+        tasks.update(ctx.store, HARNESS, task["id"], title="Fix the new failure", priority="normal")
         goals.update(ctx.store, HARNESS, int(goal["id"][2:]), title="Win the next round")
         await until(lambda: len(backend.socket.notes("state.changed")) == 2)
         changed_task, changed_goal = backend.socket.notes("state.changed")
         assert changed_task["item"]["title"] == "Fix the new failure"
+        assert changed_task["item"]["priority"] == "normal"
         assert changed_task["previous_revision"] == task_snapshot["revision"]
         assert changed_goal["item"]["title"] == "Win the next round"
         assert changed_goal["previous_revision"] == goal_snapshot["revision"]
