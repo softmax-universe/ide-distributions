@@ -78,12 +78,13 @@ class Dispatch:
     def starts(self) -> list[dict]:
         return [call for method, call in self.hermes.calls if method == "start"]
 
-    def api_error(self, reason: str, status_code: int | None = None) -> None:
+    def api_error(self, reason: str, status_code: int | None = None, *, message: str = "") -> None:
         record_api_error(
             self.lease,
             session_id=self.session_id,
             reason=reason,
             status_code=status_code,
+            message=message,
             now=self.clock(),
         )
 
@@ -93,7 +94,7 @@ class Dispatch:
         run_id = self.admission(op_id)["run_id"]
         assert run_id is not None
         if reason is not None:
-            self.api_error(reason, fields.pop("status_code", None))
+            self.api_error(reason, fields.pop("status_code", None), message=error)
         self.hermes.fail(run_id, error, **fields)
         self.tick()
         return run_id
@@ -142,6 +143,23 @@ def test_a_misconfigured_workspace_is_logged_for_the_operator(dispatch, caplog):
     op_id = dispatch.say("hello")
     dispatch.start_and_fail(op_id, "HTTP 401: no auth", "auth_permanent", status_code=401)
     assert "misconfigured" in caplog.text
+
+
+def test_a_prompt_affordability_refusal_fails_only_the_oversized_turn(dispatch):
+    first = dispatch.say("analyse the replays")
+    dispatch.start_and_fail(
+        first, "HTTP 402: Prompt tokens limit exceeded: 35795 > 10811.", "billing", status_code=402
+    )
+    admission = dispatch.admission(first)
+    assert (admission["status"], admission["error_class"]) == ("failed", "too_large")
+
+    second = dispatch.say("summarize the result")
+    dispatch.tick()
+    second_run = dispatch.admission(second)["run_id"]
+    assert second_run is not None
+    dispatch.hermes.complete(second_run, "Summary")
+    dispatch.tick()
+    assert dispatch.admission(second)["status"] == "completed"
 
 
 def test_a_provider_block_holds_the_message_until_the_block_lapses(dispatch):

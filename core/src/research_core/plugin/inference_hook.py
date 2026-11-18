@@ -8,7 +8,8 @@ Hermes calls the hook after it classifies each failed model call, with the class
 is the session id the run started with, so it is what ties an error to a run.
 The hook always records the call as ``last_error``, then:
 
-* a 402 that can still afford output is recorded as ``output_limit`` without closing the gate;
+* a 402 that can still afford a smaller prompt or reply is recorded as
+  ``context_overflow`` or ``output_limit`` without closing the gate;
 * on ``billing`` (402 credits, or a 403 "Key limit exceeded") it blocks model work as
   ``budget_exhausted`` for the installed key (the lease file's ``key_id``), showing the next
   refill as ``until``. The block ends when the lease loop installs a different key; nobody
@@ -44,14 +45,20 @@ OUTAGE_BLOCK = timedelta(minutes=5)
 KEY_CHANGE_GRACE = timedelta(minutes=2)
 
 
-def is_billing(reason: str, status_code: int | None, message: str) -> bool:
-    """Hermes's ``billing`` class, or OpenRouter's 403 "Key limit exceeded" in case Hermes's
-    classifier ever words it differently."""
-    # An affordability reservation failure can leave credit for a smaller response.
-    affordable = re.search(r"can only afford ([\d,]+)", message, re.IGNORECASE)
-    if status_code == 402 and affordable is not None and int(affordable[1].replace(",", "")) > 0:
-        return False
-    return reason == "billing" or (status_code == 403 and "key limit exceeded" in message.lower())
+def _classify_reason(reason: str, status_code: int | None, message: str) -> str:
+    """Refine Hermes's error class when OpenRouter reports an affordability limit."""
+    if status_code == 402:
+        prompt_limit = re.search(
+            r"prompt tokens limit exceeded:\s*[\d,]+\s*>\s*([\d,]+)", message, re.IGNORECASE
+        )
+        if prompt_limit is not None and int(prompt_limit[1].replace(",", "")) > 0:
+            return "context_overflow"
+        output_limit = re.search(r"can only afford ([\d,]+)", message, re.IGNORECASE)
+        if output_limit is not None and int(output_limit[1].replace(",", "")) > 0:
+            return "output_limit"
+    if status_code == 403 and "key limit exceeded" in message.lower():
+        return "billing"
+    return reason
 
 
 def record_api_error(
@@ -66,7 +73,7 @@ def record_api_error(
 ) -> inference.InferenceState:
     """Record one failed model call in the inference state and set the block it implies."""
     now = now or datetime.now(UTC)
-    billing = is_billing(reason, status_code, message)
+    reason = _classify_reason(reason, status_code, message)
     lease = inference.read_lease(lease_file)
     installed_key_id = None if lease is None else lease.key_id
 
@@ -75,13 +82,13 @@ def record_api_error(
             state,
             last_error=inference.ApiError(
                 session_id=session_id,
-                reason="billing" if billing else "output_limit" if reason == "billing" else reason,
+                reason=reason,
                 status_code=status_code,
                 at=now,
                 task_id=task_id,
             ),
         )
-        if billing:
+        if reason == "billing":
             changed_at = None if lease is None else lease.key_changed_at
             if changed_at is not None and now - changed_at < KEY_CHANGE_GRACE:
                 return state
