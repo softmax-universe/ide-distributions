@@ -16,6 +16,8 @@ import contextvars
 import hashlib
 import json
 import logging
+import socket as net_socket
+import ssl
 import time
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
@@ -38,13 +40,19 @@ from pydantic import (
     model_serializer,
 )
 from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosed, InvalidHandshake
+from websockets.exceptions import (
+    ConnectionClosed,
+    InvalidHandshake,
+    InvalidProxyStatus,
+    InvalidStatus,
+    ProxyError,
+)
 
 from research_core import layout
 from research_core.run_failures import CONTINUATION_PREFIX
 from research_core.store.db import DEFAULT_MAX_HOLD_S
 from research_core.store.migrate import BUSY_TIMEOUT_MS
-from research_core.telemetry import propagator, span, tracer
+from research_core.telemetry import correlation, propagator, span, tracer
 from research_core.tools.display_view import current_view, view_path
 
 log = logging.getLogger(__name__)
@@ -2207,24 +2215,67 @@ class Backend:
                     feed.watcher.cancel()
                 del self.boards[coworld]
 
-    async def connect(self, url: str, credential: str) -> None:
+    async def connect(self, url: str, credential: str, *, workspace_id: str) -> None:
+        stage = "transport_setup"
+
+        class ObservedConnection(ClientConnection):
+            def connection_made(self, transport: asyncio.BaseTransport) -> None:
+                nonlocal stage
+                super().connection_made(transport)
+                stage = "http_upgrade"
+                attempt.add_event("transport.connected")
+
         async with AsyncExitStack() as connection:
-            with span("workspace.aide.connect") as attempt:
+            started = time.monotonic()
+            with span("workspace.aide.connect", **{"workspace.id": workspace_id}) as attempt:
+                fields = {
+                    "workspace.id": workspace_id,
+                    "peer.service": "observatory",
+                    **correlation(attempt),
+                }
                 headers = {"Authorization": f"Bearer {credential}"}
                 propagator.inject(headers)
-                socket = await connection.enter_async_context(
-                    connect(
-                        url,
-                        additional_headers=headers,
-                        subprotocols=["aide.1.0.0"],
-                        max_size=2 * MAX_BYTES,
-                        open_timeout=CONNECT_TIMEOUT_S,
+                try:
+                    socket = await connection.enter_async_context(
+                        connect(
+                            url,
+                            additional_headers=headers,
+                            subprotocols=["aide.1.0.0"],
+                            max_size=2 * MAX_BYTES,
+                            open_timeout=CONNECT_TIMEOUT_S,
+                            create_connection=ObservedConnection,
+                        )
                     )
-                )
-                attempt.add_event("websocket.upgraded")
-                async with asyncio.timeout(CONNECT_TIMEOUT_S):
-                    Bound.model_validate_json(await socket.recv())
-                attempt.add_event("websocket.bound")
+                    stage = "aide_binding"
+                    attempt.add_event("websocket.upgraded")
+                    async with asyncio.timeout(CONNECT_TIMEOUT_S):
+                        Bound.model_validate_json(await socket.recv())
+                    attempt.add_event("websocket.bound")
+                except (ConnectionClosed, InvalidHandshake, OSError, ValidationError) as error:
+                    if isinstance(error, ProxyError):
+                        stage = "proxy_connect"
+                    elif isinstance(error, net_socket.gaierror):
+                        stage = "dns"
+                    elif isinstance(error, ssl.SSLError) and stage == "transport_setup":
+                        stage = "tls"
+                    failure = {
+                        "connection.stage": stage,
+                        "error.type": type(error).__name__,
+                        "duration_s": round(time.monotonic() - started, 3),
+                    }
+                    if isinstance(error, (InvalidStatus, InvalidProxyStatus)):
+                        failure["http.response.status_code"] = error.response.status_code
+                    if isinstance(error, ConnectionClosed):
+                        failure["websocket.close.code"] = error.rcvd.code if error.rcvd else 1006
+                    if isinstance(error, OSError) and error.errno is not None:
+                        failure["error.errno"] = error.errno
+                    if isinstance(error, ssl.SSLCertVerificationError):
+                        failure["tls.verification.code"] = error.verify_code
+                    attempt.set_attributes(failure)
+                    log.warning(
+                        "AIDE relay connection failed", extra={"attributes": {**fields, **failure}}
+                    )
+                    raise
             # Frontends subscribe through one binding; after a rebind they subscribe again by
             # reading their sessions, so the last binding's frontends are stale.
             self.page_origins.clear()
@@ -2242,7 +2293,18 @@ class Backend:
                             elif "method" in frame.message and "id" in frame.message:
                                 replies.create_task(self.answer(socket, frame))
                     except ConnectionClosed:  # in-flight commands finish
-                        log.info("AIDE relay closed the connection (code %s)", socket.close_code)
+                        pass
+                    log.log(
+                        logging.INFO if socket.close_code in (1000, 1001) else logging.WARNING,
+                        "AIDE relay connection closed",
+                        extra={
+                            "attributes": {
+                                **fields,
+                                "connection.stage": "connected",
+                                "websocket.close.code": socket.close_code,
+                            }
+                        },
+                    )
             finally:
                 self.socket = None
                 for catalog in self.catalogs.values():
@@ -2286,9 +2348,9 @@ async def serve(
         delay = 1
         while True:
             try:
-                await backend.connect(url, credential)
-            except (ConnectionClosed, InvalidHandshake, OSError) as error:  # retry forever
-                log.info("AIDE relay connection ended: %s", type(error).__name__)
+                await backend.connect(url, credential, workspace_id=workspace_id)
+            except (ConnectionClosed, InvalidHandshake, OSError):
+                pass  # connect logged the failed attempt; retry with backoff
             else:
                 delay = 1  # a completed binding resets the failed-dial backoff
             await asyncio.sleep(delay)
