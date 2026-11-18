@@ -1901,6 +1901,30 @@ def test_a_send_that_fails_after_its_commit_still_runs_once_and_finishes(system,
     run(system, scenario)
 
 
+def test_first_history_read_validates_scope_without_loading_all_admissions(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        await until(lambda: session_id in hermes.sessions)
+        gateway.say(session_id, role="assistant", content="retained reply")
+        backend = await backend.restart()
+        reads = []
+
+        async def record_read(request):
+            reads.append(request.url.path)
+
+        backend.seam.event_hooks["request"].append(record_read)
+        response = await call(
+            backend, "chat.history", {"scope": WORKSPACE, "session_id": session_id}
+        )
+        assert [item["message"]["content"] for item in response["result"]["items"]] == [
+            "retained reply"
+        ]
+        assert reads == ["/session-pending", "/messages/context"]
+        assert FRONTEND in backend.subscribers[session_id].frontends
+
+    run(system, scenario, watch=False)
+
+
 def test_history_pages_by_a_stable_boundary_reads_forward_and_bounds_each_reply(system):
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)

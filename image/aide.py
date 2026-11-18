@@ -427,6 +427,11 @@ class Opening(BaseModel):
     pending: bool
 
 
+class SessionOpening(Opening):
+    session: SessionRow
+    seq: int
+
+
 class Resolution(BaseModel):
     status: str
 
@@ -1037,6 +1042,11 @@ class Backend:
         )
         if Opening.model_validate_json(opening).pending:
             return []
+        return await self.native_messages(session_id, limit, offset)
+
+    async def native_messages(
+        self, session_id: str, limit: int, offset: int
+    ) -> list[NativeMessage]:
         headers: dict[str, str] = {}
         propagator.inject(headers)
         response = await self.gateway.get(
@@ -1937,8 +1947,21 @@ class Backend:
         newest sat at native ``offset`` when it was issued. Newer messages only push it further
         down, so the offset is a starting hint and the sequence the boundary.
         """
-        await self.touch(params.session_id, params.scope, frontend_id)
-        await self.scoped(params.scope, session_id=params.session_id)
+        opening = SessionOpening.model_validate_json(
+            await self.call(
+                self.seam,
+                "GET",
+                "/session-pending",
+                params={"session_id": params.session_id, "include_session": "1"},
+            )
+        )
+        if opening.session.scope() != params.scope:
+            raise Refusal("forbidden", "This session does not have that scope")
+        if not self.start.done():
+            self.start.set_result(opening.seq)
+        self.subscribers.setdefault(params.session_id, Subscription(params.scope)).frontends.add(
+            frontend_id
+        )
         if params.cursor is not None and params.after_sequence is not None:
             raise Refusal("invalid", "cursor and after_sequence exclude each other")
         offset, boundary = 0, None
@@ -1950,9 +1973,12 @@ class Backend:
         floor = params.after_sequence
         # (record, native offset after it), newest first.
         items: list[tuple[Record, int]] = []
+        # Opening may have completed between the seam read and registration above.
+        # Recheck pending sessions after subscribing so their first rows cannot be missed.
+        read_page = self.messages if opening.pending else self.native_messages
         exhausted = False
         while not exhausted and (floor is not None or len(items) < params.limit):
-            page = await self.messages(params.session_id, 100, offset)
+            page = await read_page(params.session_id, 100, offset)
             exhausted = len(page) < 100
             for message in page:
                 offset += 1

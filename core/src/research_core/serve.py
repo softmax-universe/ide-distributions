@@ -995,10 +995,10 @@ class SeamServer:
                 if row["cancel_requested"]:
                     self.hermes.stop(run_id, profile=row["profile"])
 
-    def session_pending(self, session_id: str) -> dict:
+    def session_pending(self, session_id: str, *, include_session: bool = False) -> dict:
         """A locally accepted chat is empty until its serial native opening completes."""
-        with self.stores() as stores:
-            return {
+        with self.stores() as stores, stores.wstore.read_tx():
+            result: dict = {
                 "pending": bool(
                     stores.wstore.one(
                         "SELECT EXISTS(SELECT 1 FROM client_admissions"
@@ -1007,8 +1007,12 @@ class SeamServer:
                         " WHERE kind='open' AND session_id=? AND status='completed')",
                         (session_id, session_id),
                     )[0]
-                )
+                ),
             }
+            if include_session:
+                result["session"] = self._require_session(stores, session_id)
+                result["seq"] = stores.wstore.last_seq()
+            return result
 
     def message_context(self, body: dict) -> dict:
         """Join application metadata by native row identity, never by parsing message text."""
@@ -1598,7 +1602,12 @@ class _Handler(BaseHTTPRequestHandler):
                         ),
                     )
                 elif url.path == "/session-pending":
-                    self._json(HTTPStatus.OK, seam.session_pending(query["session_id"]))
+                    self._json(
+                        HTTPStatus.OK,
+                        seam.session_pending(
+                            query["session_id"], include_session=query.get("include_session") == "1"
+                        ),
+                    )
                 elif url.path == "/input-response":
                     self._json(HTTPStatus.OK, seam.input_response(query["op_id"]))
                 elif url.path == "/message-events":
