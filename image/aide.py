@@ -287,6 +287,7 @@ class Waiting(BaseModel):
 
 class TaskRow(BaseModel):
     id: str
+    priority: Literal["normal", "high"]
     goal_id: int | None
     title: str
     description: str
@@ -506,6 +507,7 @@ class Goal(Wire):
 
 class Task(Wire):
     id: str
+    priority: Literal["normal", "high"]
     scope_id: str
     goal_id: str | None
     session_ids: list[str]
@@ -1141,6 +1143,7 @@ class Backend:
                     id=f"{coworld}:{row.id}",
                     scope_id=coworld,
                     goal_id=None if row.goal_id is None else f"{coworld}:G-{row.goal_id}",
+                    priority=row.priority,
                     session_ids=[row.held_by] if row.held_by else [],
                     title=row.title,
                     description=row.description,
