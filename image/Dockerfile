@@ -43,6 +43,10 @@ RUN mkdir /opt/workspace-plugins \
            ln -s "$plugin" /opt/workspace-plugins/; \
          fi; \
        done
+# Python keys its bytecode cache by import path. The hosted plugin symlinks above
+# have different cache entries from the base image paths for the same sources.
+RUN /opt/hermes/.venv/bin/python -m compileall -q -x '/(tests|node_modules)/' \
+       /opt/workspace-plugins/*/ /opt/hermes/hermes_platform /opt/hermes/providers /opt/hermes/tui_gateway
 # What names this image on every telemetry record: a hash of the sources it was built from, because
 # the build has no git history. image/runtime.py passes it on as IDE_IMAGE.
 RUN cd /opt/distribution \
