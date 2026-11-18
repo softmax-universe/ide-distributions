@@ -2181,6 +2181,13 @@ class Backend:
                 return
             COMMITTING.set(False)
             try:
+                # Opening a session and accepting a message commit to the workspace store.
+                # Other commands can act on native runs through the application.
+                if (
+                    method in COMMANDS - {"session.open", "chat.send"}
+                    and self.lifecycle.gateway_ready
+                ):
+                    await self.lifecycle.gateway_ready.wait()
                 reply["result"] = await handler(frame.frontend_id, request_id, params)
             except Refusal as refusal:  # the contract's typed application errors
                 reply["error"] = refusal.error()
@@ -2335,7 +2342,7 @@ async def serve(
         httpx.AsyncClient(
             base_url="http://127.0.0.1:8642/p/orchestrator/",
             headers={"Authorization": f"Bearer {env['API_SERVER_KEY']}"},
-            transport=Observed("gateway"),
+            transport=Observed("gateway", ready=lifecycle.gateway_ready),
         ) as gateway,
         asyncio.TaskGroup() as work,
     ):

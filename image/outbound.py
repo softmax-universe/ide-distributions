@@ -34,11 +34,14 @@ def path_template(path: str) -> str:
 class Observed(httpx.AsyncBaseTransport):
     """httpx's default transport, timed. ``target`` names the service: gateway, seam, platform."""
 
-    def __init__(self, target: str) -> None:
+    def __init__(self, target: str, *, ready: asyncio.Event | None = None) -> None:
+        self.ready = ready
         self.target = target
         self.inner = httpx.AsyncHTTPTransport()
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if self.ready is not None:
+            await self.ready.wait()
         route = path_template(request.url.path)
         status = 0
         started = time.monotonic()

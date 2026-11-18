@@ -330,12 +330,17 @@ class SeamServer:
         host, port = self._http.server_address[:2]
         return f"http://{host}:{port}"
 
-    def serve_forever(self) -> None:
+    def serve_forever(self, *, wait_for_gateway: bool = False) -> None:
+        def dispatch_work() -> None:
+            if wait_for_gateway and sys.stdin.buffer.read(1) != b"1":
+                raise RuntimeError("Gateway startup ended before dispatch was enabled")
+            asyncio.run(self.dispatch_forever())
+
         with ownership(self.ws):
             with Store.open(self.ws.store_path, kind="workspace") as store:
                 store.set_meta("coordinator_instance", self.coordinator.instance_id)
             with ThreadPoolExecutor(max_workers=1) as worker:
-                dispatch = worker.submit(asyncio.run, self.dispatch_forever())
+                dispatch = worker.submit(dispatch_work)
                 # A completed Future invokes callbacks inline, before the HTTP loop starts.
                 dispatch.add_done_callback(
                     lambda _: threading.Thread(target=self._http.shutdown, daemon=True).start()
@@ -1816,8 +1821,6 @@ def run(args: argparse.Namespace) -> int:
         hermes = HermesRuns.from_profile(
             profile_home, researcher_profiles=[name for name in researcher_profiles if name]
         )
-        if args.wait_for_gateway and sys.stdin.buffer.read(1) != b"1":
-            raise RuntimeError("Gateway startup ended before dispatch was enabled")
         server = SeamServer(
             ws=layout.from_env(env),
             hermes=hermes,
@@ -1835,7 +1838,7 @@ def run(args: argparse.Namespace) -> int:
         )
     print(f"research serve: {server.url} (profile {args.profile}, Hermes {hermes.base_url})")
     try:
-        server.serve_forever()
+        server.serve_forever(wait_for_gateway=args.wait_for_gateway)
     except KeyboardInterrupt:
         pass
     finally:
