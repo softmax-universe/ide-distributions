@@ -699,6 +699,33 @@ class Coordinator:
     def _is_experiment_completion(event: Event) -> bool:
         return event.payload.get("kind") == "xp" and "experiment" in event.payload
 
+    def task_user_action_needed(self, ctx: TickContext, event: Event, store: Store) -> None:
+        """A manual user wait stops the holder and asks the user for the action once."""
+        task = tasks.read(store, event.subject)
+        waiting = task["waiting_on"]
+        if (
+            task["status"] != "in-progress"
+            or not waiting
+            or waiting["kind"] != "user"
+            or waiting["ref"] is not None
+            or waiting["since"] != event.at
+        ):
+            return
+        if (holder := holder_session(ctx, task)) is not None:
+            self._stop_session_input(ctx.wstore, holder["id"])
+        heading = f"{event.subject} is waiting for you. "
+        confirmation = " Confirm here when done."
+        detail = waiting["detail"][: chat_updates.MAX_TEXT - len(heading) - len(confirmation)]
+        chat_updates.add(
+            ctx.wstore,
+            ctx.actor,
+            coworld_id=ctx.coworld.coworld_id,
+            category="decision",
+            text=heading + detail + confirmation,
+            refs=[event.subject],
+            task_wait_event=event.seq,
+        )
+
     def wait_resolved(self, ctx: TickContext, event: Event, store: Store) -> dict[str, Any]:
         """Resume the holder of a Task whose wait the watcher (or the Orchestrator) resolved."""
         task = tasks.read(store, event.subject)
@@ -769,8 +796,12 @@ class Coordinator:
             if session is None:
                 report["held"].append({"task": task["id"], "reason": "no holder Session"})
                 continue
-            if task["waiting_on"] and (not is_live(run_status(ctx, session))):
-                kind = task["waiting_on"]["kind"]
+            waiting = task["waiting_on"]
+            if waiting and (
+                (waiting["kind"] == "user" and waiting["ref"] is None)
+                or not is_live(run_status(ctx, session))
+            ):
+                kind = waiting["kind"]
                 report["held"].append(
                     {"task": task["id"], "reason": f"delivered when the {kind} wait resolves"}
                 )
@@ -990,7 +1021,7 @@ class Coordinator:
                 continue
             if (
                 task["id"] in ready_xp
-                or (task["waiting_on"] or {}).get("kind") == "xp"
+                or task["waiting_on"]
                 or self._pending_task_xp(ctx.store, task["id"])
             ):
                 sessions.mark_drained(ctx.wstore, ctx.actor, [session["id"]], False)
@@ -1945,6 +1976,9 @@ class Coordinator:
                 match event.kind:
                     case "task.reviewed":
                         result = self.review_worker(ctx, event, store)
+                    case "task.user_action_needed":
+                        self.task_user_action_needed(ctx, event, store)
+                        result = {}
                     case "task.wait_resolved":
                         result = self.wait_resolved(ctx, event, store)
                     case "workspace.resumed":

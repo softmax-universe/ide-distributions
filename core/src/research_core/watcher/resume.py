@@ -70,4 +70,11 @@ def _pending_message_block(ctx: TickContext, session: dict[str, Any]) -> tuple[s
     lines = ["Messages from the Orchestrator while you were away:"]
     for message in pending:
         lines.append(f"- [{message['kind']}] {message['text'][:MESSAGE_LIMIT]}")
+    if any(message["kind"] == "answer" for message in pending):
+        lines.append(
+            "Act on the answer. If it identifies a remaining blocker, register it with task_wait "
+            "and end. Use the specific wait kind, such as credits for a depleted balance. Use "
+            "kind=user with no ref only when the user must do something, and say what in detail. "
+            "Do not ask the same question again."
+        )
     return "\n".join(lines), [message["id"] for message in pending]

@@ -274,11 +274,7 @@ def handle(call: ToolCall) -> dict:
         deps = a.record_numbers(call.get("depends_on"), "task", "depends_on")
         return {"record": tasks.link(store, actor, n, deps)}
     if call.action == "answer":
-        wait_on = call.get("wait_on")
         question_id = call.get("question_id")
-        resume = call.get("resume")
-        if resume is not None and (resume is not True or wait_on is not None):
-            raise ToolError("To answer, choose either resume: true or a replacement wait_on.")
         session = sessions.read(ctx.wstore, ctx.hermes_session_id())
         if session is not None and session["event"] == "task.asked":
             event = wakes.question_for_session(store, session["id"])
@@ -286,11 +282,6 @@ def handle(call: ToolCall) -> dict:
                 raise ToolError("This wake has no bound question.")
             if event.subject != f"T-{n}" or question_id not in (None, bound_question):
                 raise ToolError("This wake can only answer its bound question.")
-            if resume is not True and wait_on is None:
-                raise ToolError(
-                    "Choose resume: true only if the Task is runnable. Otherwise provide wait_on, "
-                    "or use chat_update decision if the user must act."
-                )
             question_id = bound_question
             if wakes.question_settled(store, ctx.wstore, event, session["id"]):
                 raise ToolError("This question is already handled. End the wake.")
@@ -300,8 +291,21 @@ def handle(call: ToolCall) -> dict:
             n,
             text=call.get("text"),
             question_id=question_id,
-            wait_on=tasks.WaitRequest.model_validate(wait_on) if wait_on is not None else None,
         )
+        return {"record": record}
+    if call.action == "unblock":
+        session = sessions.read(ctx.wstore, ctx.hermes_session_id())
+        if session is None or session["kind"] != "chat":
+            raise ToolError("Only the user's chat can confirm a user-action wait is resolved.")
+        waiting = tasks.read(store, n)["waiting_on"]
+        if (
+            not waiting
+            or waiting["kind"] != "user"
+            or waiting["ref"] is not None
+            or waiting["since"] != call.get("wait_since")
+        ):
+            raise ToolError("That user-action wait is no longer current. Read the Task again.")
+        record = tasks.resolve_wait(store, actor, n, note=call.get("reason"), expected=waiting)
         return {"record": record}
     if call.action == "message":
         record = tasks.message(store, actor, n, text=call.get("text"), direction="to_researcher")
@@ -322,13 +326,15 @@ def handle(call: ToolCall) -> dict:
         return {"record": tasks.reject(store, actor, n, next_step=call.get("next_step"))}
     if call.action == "wait":
         ref = call.get("ref")
-        if call.get("kind") == "user" and not (
-            ref in settings.SETTINGS or refs.parse(str(ref)).record_kind == "task"
-        ):
-            raise ToolError(
-                "a user wait needs ref: the setting or Task (T-n) the user's answer changes; "
-                "nothing else ends it. For a decision, use task_ask"
+        if (
+            call.get("kind") == "user"
+            and ref is not None
+            and not (
+                isinstance(ref, str)
+                and (ref in settings.SETTINGS or refs.parse(ref).record_kind == "task")
             )
+        ):
+            raise ToolError("A user wait ref must name a setting or Task (T-n), or be omitted.")
         if call.get("kind") == "xp":
             ref = xp_wait_refs(store, n, ref)
             tracked = {
@@ -547,29 +553,24 @@ SPEC = durable_tool(
             ),
             ActionSpec(
                 "answer",
-                "Answer a Researcher's question and optionally record the next blocker.",
+                "Answer a Researcher's question so they can act on the answer.",
                 {
                     "task": TASK,
                     "text": a.string("The answer."),
                     "question_id": a.integer("Which question, when more than one is open."),
-                    "resume": a.boolean(
-                        "Explicitly resume the Task if runnable. In a question wake, supply "
-                        "this as true or supply wait_on."
-                    ),
-                    "wait_on": a.obj(
-                        "The next blocker if the answer does not make the Task runnable.",
-                        {
-                            "kind": a.string("What the Task must wait for.", enum=TASK_WAIT_KINDS),
-                            "detail": a.string("What must happen before the Task can resume."),
-                            "ref": a.any_of(
-                                "The watcher reference.", a.STRING, a.INTEGER, a.STRINGS
-                            ),
-                        },
-                        required=("kind", "detail"),
-                        closed=True,
-                    ),
                 },
                 ("task", "text"),
+                ORCHESTRATOR,
+            ),
+            ActionSpec(
+                "unblock",
+                "In a user chat, resume a Task after the user confirms the action it waits for.",
+                {
+                    "task": TASK,
+                    "wait_since": a.string("The current waiting_on.since returned by task.read."),
+                    "reason": a.string("What the user confirmed was done."),
+                },
+                ("task", "wait_since", "reason"),
                 ORCHESTRATOR,
             ),
             ActionSpec(
@@ -630,8 +631,8 @@ SPEC = durable_tool(
                     "ref": a.any_of(
                         "What to watch: a pid (process), request ids (xp; omit for the Task's "
                         "open requests), a policy version id "
-                        "(submission), a route (permit), a setting key or Task (user; required: "
-                        "nothing else ends a user wait).",
+                        "(submission), a route (permit), or a setting key or Task (user). "
+                        "Omit ref for user only when the user must confirm doing something.",
                         a.STRING,
                         a.INTEGER,
                         a.STRINGS,

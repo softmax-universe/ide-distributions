@@ -23,6 +23,7 @@ EXPECTED_WAKES = {
     "task.proposed_submission": "management",
     "merge.failed": "management",
     "submission.candidate": "management",
+    "task.user_action_needed": None,
     "task.wait_resolved": None,
     "capability.failed": None,
     "repair.failed_twice": None,

@@ -40,17 +40,18 @@ a proposal (see `proposing`).
 
 `task_ask {task, question}` when the decision is not yours: the Goal is ambiguous, two readings
 of a directive conflict, the Experiment would cost far more credits than the Task implied, or
-the result changes what the Goal should be. The question sets a wait: end your run, and the
-answer resumes you. Decide yourself everything inside the Task: the method, the seeds, which
-claim to write, how to fix a broken build. A question you can answer with a tool is not a
-`task_ask`.
+the result changes the Goal. End your run and resume on the answer. Decide methods, seeds,
+claims, and build fixes yourself. Use tools to answer what you can.
 
 ## 5. Wait, then END YOUR RUN
 
 `xp.request` tracks each experiment. Finish every pending experiment before closing the Task. After other async work, use `task_wait {task, kind, detail, ref}`:
 `credits` after a 402, `process` with the PID, `permit` with the route, `submission` with the
-policy version, `user` with the setting or Task, or `dependency` with its Task. Platform failures
-record their own wait. End your run. On resume, read `directive.list`, evaluate XP with
+policy version, `user` with the setting or Task, or `dependency` with its Task. For an external
+user action such as reconnecting a live session, use `user` without `ref` and describe the action
+in `detail`. The user gets a notice and confirms in chat. If an answer exposes a new blocker,
+record its specific wait. Platform failures record their own wait. End your run. On resume, read
+`directive.list`, evaluate XP with
 `xp.status {experiment}` and report through the Task. Never poll or sleep.
 
 ## 6. Complete

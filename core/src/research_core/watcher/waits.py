@@ -21,7 +21,8 @@ Kinds and what resolves them:
   method ``whoami`` stands in, since the probe must not repeat a write);
 - ``process``: the pid in ``ref`` is gone;
 - ``question``: the exact question has an answer; normally the answer commits the next state;
-- ``user``: the setting named in ``ref`` has been set, or the Task named in ``ref`` is approved;
+- ``user``: the setting in ``ref`` is set or the Task in ``ref`` is approved. With no ``ref``,
+  the user must confirm the action in chat; the watcher leaves it blocked.
 - ``dependency``: every Task this one depends on is complete and did not fail.
 """
 

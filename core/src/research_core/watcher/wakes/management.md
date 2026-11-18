@@ -17,7 +17,7 @@ Read the records the event names first (`task.read`, `goal.read`, `experiment.re
 `workspace.doctor`), then act by event kind and end the run:
 
 - `task.asked`: finish by answering the named question with `task.answer`, or by asking the
-  user with one `decision` update. Set `resume: true` if runnable, or supply the next `wait_on`.
+  user with a `decision` update. Name any remaining blocker in the answer, then end.
 - `task.proposed`: nobody asked for this Task yet, so approve it only when it serves what
   the user asked for. Read the active directives and the Goal's open Tasks first. Reject it,
   with what to do instead, when it repeats an open Task's lever, or when it would spend credits

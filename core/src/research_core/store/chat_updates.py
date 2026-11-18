@@ -66,6 +66,7 @@ def add(
     refs: Sequence[str] = (),
     coworld_id: str | None = None,
     question_id: int | None = None,
+    task_wait_event: int | None = None,
 ) -> dict[str, Any]:
     """Record one update and its ``chat_update.recorded`` event: ``{"update": row}``.
 
@@ -98,7 +99,7 @@ def add(
     notice_only = category == CHAT_UPDATE_PROGRESS or category not in settings.get(
         store, "chat_updates.categories"
     )
-    if notice_only and question_id is None:
+    if notice_only and question_id is None and task_wait_event is None:
         return {"notice": notices.add(store, actor, text=text, refs=refs, coworld_id=coworld_id)}
     with store.atomic(actor) as tx:
         payload = {"coworld_id": coworld_id, "category": category, "refs": refs}
@@ -110,6 +111,15 @@ def add(
             ):
                 return {"already_recorded": True}
             payload["question_id"] = question_id
+        if task_wait_event is not None:
+            if tx.one(
+                "SELECT 1 FROM events WHERE kind='chat_update.recorded'"
+                " AND json_extract(payload,'$.coworld_id') IS ?"
+                " AND json_extract(payload,'$.task_wait_event')=?",
+                (coworld_id, task_wait_event),
+            ):
+                return {"already_recorded": True}
+            payload["task_wait_event"] = task_wait_event
         if notice_only:
             notice = notices.add(store, actor, text=text, refs=refs, coworld_id=coworld_id)
             tx.event("chat_update.recorded", notice["id"], payload)

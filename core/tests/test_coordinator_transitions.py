@@ -19,6 +19,7 @@ from research_core.watcher.hermes_api import (
 )
 from tests.watcher._support import (
     HARNESS,
+    advance,
     coordinator,
     dispatch_inputs,
     make_ctx,
@@ -285,34 +286,23 @@ def test_question_wake_finishes_from_its_durable_disposition(tmp_path, monkeypat
     assert not forbidden["ok"] and "bound question" in forbidden["error"]
 
     if disposition == "answer":
-        # The production call sent an answer saying to wait, with no structured next step.
-        historical = json.loads(
-            run_tool(
-                "task",
-                {"action": "answer", "task": "T-1", "text": "Stop attempts. Wait for live access."},
-                tool_ctx,
-            )
-        )
-        transitions.apply(ctx, owner.instance_id)
-        refused = transitions.receipt(ctx.store, historical["command_id"])
-        assert "Choose resume: true" in json.dumps(refused)
-        assert tasks.read(ctx.store, 1)["waiting_on"] == task["waiting_on"]
-        assert not events.unhandled(ctx.store, {"task.answered"})
-        json.loads(
+        ctx.hermes.complete(worker["run_id"])
+        owner.reconcile()
+        owner.advance_attempts(ctx)
+        answer = json.loads(
             run_tool(
                 "task",
                 {
                     "action": "answer",
                     "task": "T-1",
-                    "question_id": question,
-                    "text": "Use seed 7 when credits refill.",
-                    "wait_on": {"kind": "credits", "detail": "Need 10 credits"},
+                    "text": "I also lack live access. Wait for reconnection.",
                 },
                 tool_ctx,
             )
         )
+        assert answer["ok"]
         transitions.apply(ctx, owner.instance_id)
-        assert tasks.read(ctx.store, 1)["waiting_on"]["kind"] == "credits"
+        assert tasks.read(ctx.store, 1)["waiting_on"] is None
     elif disposition == "escalation":
         set_setting(ctx, "chat_updates.categories", [])
         result = json.loads(
@@ -345,6 +335,85 @@ def test_question_wake_finishes_from_its_durable_disposition(tmp_path, monkeypat
     owner.advance_events(ctx)
     assert not events.unhandled(ctx.store, {"task.asked"})
     assert len(ctx.wstore.q("SELECT * FROM client_admissions WHERE origin='wake'")) == 1
+
+    if disposition == "answer":
+        owner.deliver_worker_messages(ctx)
+        owner.deliver_worker_messages(ctx)
+        dispatch_inputs(ctx)
+        [resumed] = ctx.wstore.q("SELECT * FROM client_admissions WHERE origin='continuation'")
+        assert "I also lack live access" in resumed["message"]
+        assert "register it with task_wait" in resumed["message"]
+        research = ToolContext(
+            "researcher",
+            Actor.session(resumed["session_id"]),
+            ctx.ws,
+            {**ctx.env, "IDE_SESSION_ID": resumed["session_id"]},
+        )
+        research.store, research.wstore = ctx.store, ctx.wstore
+        result = json.loads(
+            run_tool(
+                "task_wait",
+                {
+                    "task": "T-1",
+                    "kind": "user",
+                    "detail": "Reconnect the live session.",
+                },
+                research,
+            )
+        )
+        assert result["ok"]
+        transitions.apply(ctx, owner.instance_id)
+        waiting = tasks.read(ctx.store, 1)["waiting_on"]
+        assert waiting["kind"] == "user" and waiting["ref"] is None
+
+        owner.advance_events(ctx)
+        dispatch_inputs(ctx)
+        assert ctx.hermes.runs[resumed["run_id"]].status == "stopping"
+        ctx.hermes.runs[resumed["run_id"]].status = "cancelled"
+        owner.reconcile()
+        owner.advance_attempts(ctx)
+        advance(ctx, 600)
+        owner.advance(ctx)
+        dispatch_inputs(ctx)
+        assert tasks.read(ctx.store, 1)["waiting_on"] == waiting
+        assert len(ctx.wstore.q("SELECT * FROM client_admissions WHERE origin='continuation'")) == 1
+        assert len(ctx.wstore.q("SELECT * FROM client_admissions WHERE origin='wake'")) == 1
+        [update] = ctx.wstore.q("SELECT * FROM chat_updates")
+        assert "Reconnect the live session" in update["text"]
+
+        sessions.register(
+            ctx.wstore,
+            HARNESS,
+            session_id="chat",
+            profile="orchestrator",
+            kind="chat",
+            coworld_id=ctx.coworld.coworld_id,
+        )
+        chat = ToolContext(
+            "orchestrator", Actor.session("chat"), ctx.ws, {**ctx.env, "IDE_SESSION_ID": "chat"}
+        )
+        chat.store, chat.wstore = ctx.store, ctx.wstore
+        confirmed = json.loads(
+            run_tool(
+                "task",
+                {
+                    "action": "unblock",
+                    "task": "T-1",
+                    "wait_since": waiting["since"],
+                    "reason": "The user confirmed the live session was reconnected.",
+                },
+                chat,
+            )
+        )
+        assert confirmed["ok"]
+        transitions.apply(ctx, owner.instance_id)
+        owner.advance_events(ctx)
+        owner.advance_events(ctx)
+        dispatch_inputs(ctx)
+        assert tasks.read(ctx.store, 1)["waiting_on"] is None
+        continuations = ctx.wstore.q("SELECT * FROM client_admissions WHERE origin='continuation'")
+        assert len(continuations) == 2
+        assert any("live session was reconnected" in row["message"] for row in continuations)
 
 
 def test_model_planning_is_durable_and_observer_cannot_schedule(tmp_path):

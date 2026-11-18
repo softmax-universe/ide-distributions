@@ -253,14 +253,14 @@ def test_a_task_actions_own_tool_goes_through_the_same_transition(call, goal, co
     assert waiting["record"]["waiting_on"]["kind"] == "process"
 
 
-def test_a_user_wait_needs_a_ref_that_can_resolve_it(call, goal, code_repo):
+def test_a_user_wait_checks_references_when_present(call, goal, code_repo):
     call("task", task_args())
     claim(call)
     wait = {"action": "wait", "task": "T-1", "kind": "user", "detail": "the user's call"}
-    for bad in ({}, {"ref": "the user"}, {"ref": "G-1"}):
+    for bad in ({"ref": "the user"}, {"ref": "G-1"}):
         refused = as_researcher(call, wait | bad)
-        assert refused["ok"] is False and "a user wait needs ref" in refused["error"]
-    for good in ("max_researchers", "T-1"):
+        assert refused["ok"] is False and "A user wait ref must name" in refused["error"]
+    for good in (None, "max_researchers", "T-1"):
         assert as_researcher(call, wait | {"ref": good})["ok"] is True
 
 
