@@ -24,8 +24,9 @@ class ControlRequest(BaseModel):
 
 
 class Lifecycle:
-    def __init__(self, env: dict[str, str]):
+    def __init__(self, env: dict[str, str], gateway_ready: asyncio.Event | None = None):
         self.env = env
+        self.gateway_ready = gateway_ready
         self.sleep_task: asyncio.Task[int] | None = None
         self.last_activity = time.monotonic()
 
