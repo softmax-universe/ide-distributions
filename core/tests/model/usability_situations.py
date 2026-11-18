@@ -139,6 +139,21 @@ COPLAY_CAPS = {"views": ["desktop", "library", "notebook"]}
 
 ORCHESTRATOR_CHATS = [
     chat(
+        "show-score",
+        "Put our score of 8 and their score of 6 side by side in the Views tab."
+        + " This renderer advertises catalog digest "
+        + "f" * 64
+        + ".",
+        ("display_view",),
+        args={"brief": r"8", "digest": r"f{64}"},
+    ),
+    chat(
+        "point-standings",
+        "The page outline lists e3 as Standings. Point it out to me on the page.",
+        ("page_interaction",),
+        args={"action": "point", "ref": "e3"},
+    ),
+    chat(
         "minecraft-evidence",
         "Our Minecraft bot says it is walking and its Practice Yard evaluation passed. "
         "Can I report that movement is fixed on the live Paper server? I only need "
