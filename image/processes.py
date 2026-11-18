@@ -9,9 +9,9 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def managed_process(
-    *args: str, env: dict[str, str]
+    *args: str, env: dict[str, str], stdin: socket.socket | None = None
 ) -> AsyncIterator[asyncio.subprocess.Process]:
-    child = await asyncio.create_subprocess_exec(*args, env=env)
+    child = await asyncio.create_subprocess_exec(*args, env=env, stdin=stdin)
     try:
         yield child
     finally:
@@ -26,7 +26,7 @@ async def managed_process(
 
 @asynccontextmanager
 async def ready_process(
-    *args: str, env: dict[str, str], timeout: float
+    *args: str, env: dict[str, str], timeout: float, stdin: socket.socket | None = None
 ) -> AsyncIterator[tuple[asyncio.subprocess.Process, socket.socket]]:
     """Wait for this boot's owned listener to announce readiness, or fail on exit/timeout.
 
@@ -39,7 +39,9 @@ async def ready_process(
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as receiver:
             receiver.bind(address)
             receiver.setblocking(False)
-            async with managed_process(*args, env={**env, "NOTIFY_SOCKET": address}) as child:
+            async with managed_process(
+                *args, env={**env, "NOTIFY_SOCKET": address}, stdin=stdin
+            ) as child:
                 received = asyncio.create_task(asyncio.get_running_loop().sock_recv(receiver, 4096))
                 exited = asyncio.create_task(child.wait())
                 try:

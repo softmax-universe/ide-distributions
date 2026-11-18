@@ -50,6 +50,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
@@ -1779,6 +1780,11 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
         "--profile", default="orchestrator", help="The Hermes profile that runs the chat Sessions"
     )
     parser.add_argument(
+        "--wait-for-gateway",
+        action="store_true",
+        help="Wait for a readiness byte on stdin before dispatching retained work",
+    )
+    parser.add_argument(
         "--wake", action="store_true", help="End a workspace sleep cycle before starting dispatch"
     )
     parser.add_argument(
@@ -1810,6 +1816,8 @@ def run(args: argparse.Namespace) -> int:
         hermes = HermesRuns.from_profile(
             profile_home, researcher_profiles=[name for name in researcher_profiles if name]
         )
+        if args.wait_for_gateway and sys.stdin.buffer.read(1) != b"1":
+            raise RuntimeError("Gateway startup ended before dispatch was enabled")
         server = SeamServer(
             ws=layout.from_env(env),
             hermes=hermes,

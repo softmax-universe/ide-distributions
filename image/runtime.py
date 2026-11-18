@@ -7,6 +7,7 @@ import os
 import secrets
 import shutil
 import signal
+import socket
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 from pathlib import Path
@@ -222,48 +223,69 @@ async def run(stack: AsyncExitStack) -> None:
             headers={"Authorization": f"Bearer {key}"},
             transport=Observed("gateway"),
         ) as client:
-            with telemetry.span("workspace.gateway_ready", context=startup_context):
-                from hermes_cli.config import require_readable_config_before_write, set_config_value
+            # Prepare the application while Hermes imports plugins and restores sessions.
+            # Release its dispatcher only after this gateway passes its capability check.
+            async def start_application(waiting: socket.socket):
+                with telemetry.span("workspace.application_startup", context=startup_context):
+                    application = await stack.enter_async_context(
+                        ready_process(
+                            RESEARCH,
+                            "serve",
+                            "--host",
+                            "0.0.0.0",
+                            "--wake",
+                            "--wait-for-gateway",
+                            env=telemetry.process_env(profile_env),
+                            stdin=waiting,
+                            timeout=210,
+                        )
+                    )
+                    # One contract check after the listener's notification, never a readiness poll.
+                    # It takes no write lock, so it waits out a busy seam (SEAM_TIMEOUT_S, as the
+                    # AIDE backend does) and an error answer is a broken seam, not contention.
+                    async with httpx.AsyncClient(
+                        base_url="http://127.0.0.1:8650",
+                        timeout=SEAM_TIMEOUT_S,
+                        transport=Observed("seam"),
+                    ) as seam_client:
+                        (await seam_client.get("/health")).raise_for_status()
+                    return application
 
-                # Hermes needs both the host config value and WATCHDOG_USEC to send READY=1.
-                gateway_config = require_readable_config_before_write().get("gateway")
-                if (
-                    not isinstance(gateway_config, dict)
-                    or gateway_config.get("systemd_watchdog_seconds") != WATCHDOG_SECONDS
-                ):
-                    set_config_value("gateway.systemd_watchdog_seconds", str(WATCHDOG_SECONDS))
-                gateway, _ = await stack.enter_async_context(
-                    ready_process(
-                        PYTHON,
-                        "-m",
-                        "gateway.run",
-                        env={**common, "WATCHDOG_USEC": str(WATCHDOG_SECONDS * 1_000_000)},
-                        timeout=180,
+            release, waiting = socket.socketpair()
+            with release, waiting:
+                application = group.create_task(start_application(waiting))
+                with telemetry.span("workspace.gateway_ready", context=startup_context):
+                    from hermes_cli.config import (
+                        require_readable_config_before_write,
+                        set_config_value,
                     )
-                )
-                # One contract check after the listener's notification, never a readiness poll.
-                (await client.get("/v1/capabilities")).raise_for_status()
-            with telemetry.span("workspace.application_startup", context=startup_context):
-                seam, seam_notices = await stack.enter_async_context(
-                    ready_process(
-                        RESEARCH,
-                        "serve",
-                        "--host",
-                        "0.0.0.0",
-                        "--wake",
-                        env=telemetry.process_env(profile_env),
-                        timeout=30,
+
+                    # Hermes needs both the host config value and WATCHDOG_USEC to send READY=1.
+                    gateway_config = require_readable_config_before_write().get("gateway")
+                    if (
+                        not isinstance(gateway_config, dict)
+                        or gateway_config.get("systemd_watchdog_seconds") != WATCHDOG_SECONDS
+                    ):
+                        set_config_value("gateway.systemd_watchdog_seconds", str(WATCHDOG_SECONDS))
+                    gateway, _ = await stack.enter_async_context(
+                        ready_process(
+                            PYTHON,
+                            "-m",
+                            "gateway.run",
+                            env={
+                                **common,
+                                "WATCHDOG_USEC": str(WATCHDOG_SECONDS * 1_000_000),
+                                # Keep first-turn warmup running while the application starts.
+                                # Hermes disables warmup entirely for a zero timeout.
+                                "HERMES_STARTUP_WARMUP_TIMEOUT": "0.1",
+                            },
+                            timeout=180,
+                        )
                     )
-                )
-                # One contract check after the listener's notification, never a readiness poll.
-                # It takes no write lock, so it waits out a busy seam (SEAM_TIMEOUT_S, as the
-                # AIDE backend does) and an error answer is a broken seam, not contention.
-                async with httpx.AsyncClient(
-                    base_url="http://127.0.0.1:8650",
-                    timeout=SEAM_TIMEOUT_S,
-                    transport=Observed("seam"),
-                ) as seam_client:
-                    (await seam_client.get("/health")).raise_for_status()
+                    # One contract check after the listener's notification, never a readiness poll.
+                    (await client.get("/v1/capabilities")).raise_for_status()
+                release.sendall(b"1")
+                seam, seam_notices = await application
 
             async def reconcile_uncertain_execution() -> None:
                 # research serve sends this once it has committed an execution whose outcome is
