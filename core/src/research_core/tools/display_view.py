@@ -99,7 +99,7 @@ SPEC = tool(
     ToolSpec(
         name="display_view",
         description=(
-            "Display a component in the current conversation’s Views tab when it would help explain "
+            "Display a component in the conversation's Views tab when it would help explain "
             "your answer, even if the user did not ask for a visual. You can also reply in chat."
         ),
         handler=handle,
