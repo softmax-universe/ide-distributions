@@ -276,6 +276,9 @@ def handle(call: ToolCall) -> dict:
     if call.action == "answer":
         wait_on = call.get("wait_on")
         question_id = call.get("question_id")
+        resume = call.get("resume")
+        if resume is not None and (resume is not True or wait_on is not None):
+            raise ToolError("To answer, choose either resume: true or a replacement wait_on.")
         session = sessions.read(ctx.wstore, ctx.hermes_session_id())
         if session is not None and session["event"] == "task.asked":
             event = wakes.question_for_session(store, session["id"])
@@ -283,6 +286,11 @@ def handle(call: ToolCall) -> dict:
                 raise ToolError("This wake has no bound question.")
             if event.subject != f"T-{n}" or question_id not in (None, bound_question):
                 raise ToolError("This wake can only answer its bound question.")
+            if resume is not True and wait_on is None:
+                raise ToolError(
+                    "Choose resume: true only if the Task is runnable. Otherwise provide wait_on, "
+                    "or use chat_update decision if the user must act."
+                )
             question_id = bound_question
             if wakes.question_settled(store, ctx.wstore, event, session["id"]):
                 raise ToolError("This question is already handled. End the wake.")
@@ -544,6 +552,10 @@ SPEC = durable_tool(
                     "task": TASK,
                     "text": a.string("The answer."),
                     "question_id": a.integer("Which question, when more than one is open."),
+                    "resume": a.boolean(
+                        "Explicitly resume the Task if runnable. In a question wake, supply "
+                        "this as true or supply wait_on."
+                    ),
                     "wait_on": a.obj(
                         "The next blocker if the answer does not make the Task runnable.",
                         {

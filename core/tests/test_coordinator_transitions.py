@@ -285,6 +285,19 @@ def test_question_wake_finishes_from_its_durable_disposition(tmp_path, monkeypat
     assert not forbidden["ok"] and "bound question" in forbidden["error"]
 
     if disposition == "answer":
+        # The production call sent an answer saying to wait, with no structured next step.
+        historical = json.loads(
+            run_tool(
+                "task",
+                {"action": "answer", "task": "T-1", "text": "Stop attempts. Wait for live access."},
+                tool_ctx,
+            )
+        )
+        transitions.apply(ctx, owner.instance_id)
+        refused = transitions.receipt(ctx.store, historical["command_id"])
+        assert "Choose resume: true" in json.dumps(refused)
+        assert tasks.read(ctx.store, 1)["waiting_on"] == task["waiting_on"]
+        assert not events.unhandled(ctx.store, {"task.answered"})
         json.loads(
             run_tool(
                 "task",
