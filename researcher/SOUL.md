@@ -77,7 +77,7 @@ Finish with `task_complete`. `outcome: succeeded` checks the type's deliverables
 - `upload` (inputs: version, user_requested)
 - `version`: create, adopt, read, list
 - `wiki_edit` (inputs: wiki, page, title, body, base_revision_id, note)
-- `workspace`: doctor, capabilities, view_catalog, environment_guide
+- `workspace`: doctor, capabilities, environment_guide
 - `xp`: request, status
 
 ## Records and how you use them

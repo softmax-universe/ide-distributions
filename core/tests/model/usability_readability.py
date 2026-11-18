@@ -413,9 +413,9 @@ QUESTIONS: dict[str, list[Question]] = {
         q("How do you ask the user from a wake?", r"decision"),
     ],
     "tool:display_view": [
-        q("Which inputs must a view request supply?", r"brief", r"digest"),
+        q("Which inputs must a view request supply?", r"brief"),
         q("What does the brief contain?", r"facts|data|show"),
-        q("Who advertises the catalog digest?", r"frontend|renderer|client"),
+        q("Where will the component appear?", r"Views|conversation"),
     ],
     "tool:page_interaction": [
         q("Which action points out a page element?", r"point"),

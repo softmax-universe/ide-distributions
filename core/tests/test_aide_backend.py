@@ -2888,8 +2888,6 @@ def test_cached_hermes_title_skips_repeat_gateway_gets(system, monkeypatch):
 
 
 def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch):
-    import io
-
     import openai
 
     from research_core.tools.base import ToolContext, run_tool
@@ -2897,21 +2895,13 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
     ctx, _, _ = system
     monkeypatch.setenv("IDE_WORKSPACE", str(ctx.workspace.root))
     model = "fixture/view-author"
-    guide = b"Render a version 1 view with a body of nodes."
-    digest = hashlib.sha256(guide).hexdigest()
-    fetches = []
-
-    def fetch(url, timeout):
-        fetches.append(url)
-        return io.BytesIO(guide)
-
-    monkeypatch.setattr("research_core.tools.workspace.urlopen", fetch)
+    guide = "Render a version 1 view with a body of nodes."
     view = {"version": 1, "body": [{"type": "metric", "label": "Score", "value": 8}]}
 
     def generate(request):
         payload = json.loads(request.content)
         assert payload["model"] == model
-        assert guide.decode() in payload["messages"][0]["content"]
+        assert guide in payload["messages"][0]["content"]
         assert payload["messages"][1]["content"] == "Score is 8"
         return httpx.Response(
             200,
@@ -2948,10 +2938,10 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
         )
 
         def script(run_id):
-            receipt = run_tool("display_view", {"brief": "Score is 8", "digest": digest}, context)
-            assert "prepared" in receipt and "metric" not in receipt, receipt
             return [
                 {"event": "message.delta", "delta": "Score is 8."},
+                {"event": "tool.started", "tool": "display_view", "tool_call_id": "call_view"},
+                {"gate": True},
                 {"event": "tool.completed", "tool": "display_view", "tool_call_id": "call_view"},
                 {
                     "event": "run.completed",
@@ -2965,13 +2955,71 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
             "chat.send",
             {"session_id": session_id, "messages": say("Score?"), "scope": WORKSPACE},
         )
-        await until(lambda: backend.socket.notes("chat.finished"))
+        async with await asyncio.start_server(backend.relay, "127.0.0.1", 0) as server:
+            context.env["IDE_REASONING_RELAY"] = f"127.0.0.1:{server.sockets[0].getsockname()[1]}"
+
+            async def invoke():
+                response = await asyncio.to_thread(
+                    run_tool, "display_view", {"brief": "Score is 8"}, context
+                )
+                assert "prepared" in response and "metric" not in response, response
+
+            tool = asyncio.create_task(invoke())
+            await until(lambda: backend.socket.notes("surface.listComponents"))
+            frame = next(
+                f["message"]
+                for f in backend.socket.frames
+                if f["message"].get("method") == "surface.listComponents"
+            )
+            assert "known_version" not in frame["params"]
+            result = {
+                "version": "v1",
+                "guidance": guide,
+                "components": [{"name": "metric", "definition": "metric accepts label and value"}],
+            }
+            backend.catalog_reply(
+                aide.Frame(frontend_id=OTHER, message={"id": frame["id"], "result": result})
+            )
+            assert not tool.done()
+            backend.catalog_reply(
+                aide.Frame(frontend_id=FRONTEND, message={"id": frame["id"], "result": result})
+            )
+            await tool
+            await invoke()
+            assert len(backend.socket.notes("surface.listComponents")) == 1
+            gateway.gate.set()
+            await until(lambda: backend.socket.notes("chat.finished"))
+            backend.closed(FRONTEND)
+            gateway.gate.clear()
+            await call(
+                backend,
+                "chat.send",
+                {"session_id": session_id, "messages": say("Again"), "scope": WORKSPACE},
+                frontend=OTHER,
+            )
+            reconnect = asyncio.create_task(invoke())
+            await until(lambda: backend.socket.notes("surface.listComponents", OTHER))
+            frame = next(
+                f["message"]
+                for f in reversed(backend.socket.frames)
+                if f["message"].get("method") == "surface.listComponents"
+            )
+            assert frame["params"]["known_version"] == "v1"
+            backend.catalog_reply(
+                aide.Frame(
+                    frontend_id=OTHER,
+                    message={"id": frame["id"], "result": {"version": "v1", "unchanged": True}},
+                )
+            )
+            await reconnect
+            gateway.gate.set()
+        await until(lambda: backend.socket.notes("chat.finished", OTHER))
         actions = [
             f["message"]["params"]["data"]
             for f in backend.socket.frames
             if f["message"].get("method") == "surface.act"
         ]
-        assert len(actions) == 1 and actions[0]["view"] == view
+        assert len(actions) == 2 and actions[-1]["view"] == view
         assert any(
             n["event"].get("delta") == "Score is 8." for n in backend.socket.notes("chat.event")
         )
@@ -2979,8 +3027,7 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
         params = {"scope": WORKSPACE, "data": {"kind": "current_view", "session_id": session_id}}
         assert (await call(backend, "surface.event", params))["result"]["data"][
             "current"
-        ] == actions[0]
+        ] == actions[-1]
         assert "error" in await call(backend, "surface.event", params | {"scope": LEAGUE})
-        assert len(fetches) == 1
 
     run(system, scenario)

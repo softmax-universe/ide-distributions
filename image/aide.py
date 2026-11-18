@@ -874,6 +874,10 @@ class Backend:
         self.subscribers: dict[str, Subscription] = {}
         self.session_locks: dict[str, asyncio.Lock] = {}
         self.publish_locks: dict[str, asyncio.Lock] = {}
+        self.view_calls: dict[tuple[str, str], tuple[str, Scope]] = {}
+        self.view_started = asyncio.Condition()
+        self.catalog_replies: dict[tuple[UUID, str], asyncio.Future] = {}
+        self.catalogs: dict[tuple[UUID, str], str] = {}
         self.page_origins: dict[str, UUID] = {}
         self.published_after: dict[str, int] = {}
         self.titles: dict[str, str] = {}  # session id -> non-empty title read from Hermes
@@ -1473,6 +1477,65 @@ class Backend:
                 }
                 await self.notify(request.session_id, "chat.chunk", params)
 
+    def catalog_reply(self, frame: Frame) -> None:
+        future = self.catalog_replies.get((frame.frontend_id, frame.message.get("id")))
+        if future is not None and not future.done():
+            future.set_result(frame.message.get("result"))
+
+    async def component_catalog(self, session: str, call: str) -> str:
+        # The tool process and the gateway's tool.started event can arrive in either order.
+        async with asyncio.timeout(12):
+            async with self.view_started:
+                await self.view_started.wait_for(lambda: (session, call) in self.view_calls)
+            request, scope = self.view_calls[session, call]
+            owner = self.page_origins.get(request)
+            if owner is None or self.socket is None:
+                raise ValueError("The frontend that sent this turn is disconnected")
+            key = (owner, session)
+            async with self.session_locks.setdefault("catalog/" + session, asyncio.Lock()):
+                if key in self.catalogs:
+                    return self.catalogs[key]
+                path = view_path(layout.from_env().state, session).with_suffix(".catalog")
+                cached = current_view(path)
+                params = {"session_id": session, "scope": scope.model_dump()}
+                if cached:
+                    params["known_version"] = cached["version"]
+                rid = str(uuid4())
+                pending = asyncio.get_running_loop().create_future()
+                self.catalog_replies[owner, rid] = pending
+                try:
+                    await self.send(
+                        self.socket,
+                        owner,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": rid,
+                            "method": "surface.listComponents",
+                            "params": params,
+                        },
+                    )
+                    result = await pending
+                finally:
+                    self.catalog_replies.pop((owner, rid), None)
+                if not isinstance(result, dict):
+                    raise ValueError("The frontend could not provide its component catalog")
+                if result.get("unchanged") is True:
+                    if not cached or cached["version"] != result.get("version"):
+                        raise ValueError("The frontend returned an unknown catalog version")
+                    guide = cached["guide"]
+                else:
+                    guide = "\n\n".join(
+                        [result["guidance"], *(c["definition"] for c in result["components"])]
+                    )
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    pending_path = path.with_suffix(".catalog.part")
+                    pending_path.write_text(
+                        json.dumps({"version": result["version"], "guide": guide})
+                    )
+                    pending_path.replace(path)
+                self.catalogs[key] = guide
+                return guide
+
     async def relay(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """The gateway plugin's reasoning lines, each to the follower of the run that serves its
         Session. A Session runs one request at a time, so this is that request's. A line for no
@@ -1480,7 +1543,17 @@ class Backend:
         """
         try:
             async for line in reader:
-                thought = Thought.model_validate_json(line)
+                message = json.loads(line)
+                if message.get("kind") == "component_catalog":
+                    try:
+                        guide = await self.component_catalog(message["session"], message["call"])
+                        result = {"guide": guide}
+                    except (TimeoutError, ValueError, KeyError, TypeError, ConnectionClosed) as exc:
+                        result = {"error": str(exc) or "Component discovery timed out"}
+                    writer.write(json.dumps(result).encode() + b"\n")
+                    await writer.drain()
+                    return
+                thought = Thought.model_validate(message)
                 # ``n`` starts again from one with a new gateway, which loses nothing here.
                 lost = max(0, thought.n - self.relayed - 1)
                 self.relayed = thought.n
@@ -1574,7 +1647,19 @@ class Backend:
                                 last_seq, progressed = event.seq, True
                                 progress.consumed[run.run_id] = last_seq
                                 await record(progress.place(run.run_id, event))
+                                if (
+                                    event.event == "tool.started"
+                                    and event.tool == "display_view"
+                                    and event.tool_call_id
+                                ):
+                                    async with self.view_started:
+                                        self.view_calls[session_id, event.tool_call_id] = (
+                                            request_id,
+                                            scope,
+                                        )
+                                        self.view_started.notify_all()
                                 if event.event == "tool.completed":
+                                    self.view_calls.pop((session_id, event.tool_call_id), None)
                                     if event.tool == "display_view":
                                         await self.display_view(
                                             session_id, scope, event.tool_call_id
@@ -1676,6 +1761,7 @@ class Backend:
                     return
                 await wake.wait()
         finally:
+            self.view_calls = {k: v for k, v in self.view_calls.items() if v[0] != request_id}
             self.page_origins.pop(request_id, None)
             del self.wakes[request_id]
 
@@ -2123,6 +2209,10 @@ class Backend:
 
     def closed(self, frontend_id: UUID) -> None:
         """The relay reports a frontend connection ended: its subscriptions end with it."""
+        self.catalogs = {k: v for k, v in self.catalogs.items() if k[0] != frontend_id}
+        for (owner, _), future in self.catalog_replies.items():
+            if owner == frontend_id and not future.done():
+                future.set_result(None)
         self.page_origins = {
             key: owner for key, owner in self.page_origins.items() if owner != frontend_id
         }
@@ -2161,10 +2251,16 @@ class Backend:
                                 self.closed(frame.frontend_id)
                             elif "method" in frame.message and "id" in frame.message:
                                 replies.create_task(self.answer(socket, frame))
+                            elif "id" in frame.message:
+                                self.catalog_reply(frame)
                     except ConnectionClosed:  # superseded or expired; in-flight commands finish
                         log.info("AIDE relay closed the connection")
             finally:
                 self.socket = None
+                self.catalogs.clear()
+                for future in self.catalog_replies.values():
+                    if not future.done():
+                        future.set_result(None)
                 for feed in self.boards.values():
                     if feed.watcher is not None:
                         feed.watcher.cancel()

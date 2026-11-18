@@ -140,12 +140,9 @@ COPLAY_CAPS = {"views": ["desktop", "library", "notebook"]}
 ORCHESTRATOR_CHATS = [
     chat(
         "show-score",
-        "Put our score of 8 and their score of 6 side by side in the Views tab."
-        + " This renderer advertises catalog digest "
-        + "f" * 64
-        + ".",
+        "Put our score of 8 and their score of 6 side by side in the Views tab.",
         ("display_view",),
-        args={"brief": r"8", "digest": r"f{64}"},
+        args={"brief": r"8"},
     ),
     chat(
         "point-standings",

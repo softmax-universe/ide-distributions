@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket
 from pathlib import Path
 
 from research_core.locks import file_lock
 from research_core.store import sessions
 from research_core.tools import _args as a
 from research_core.tools.base import ToolCall, ToolError, ToolSpec, tool
-from research_core.tools.workspace import view_catalog
 
 DEFAULT_VIEW_MODEL = "deepseek/deepseek-v4.1-flash-1017"
 
@@ -24,6 +24,23 @@ def current_view(path: Path) -> dict | None:
     return json.loads(path.read_bytes()) if path.exists() else None
 
 
+def request_catalog(call: ToolCall, session_id: str) -> str:
+    """Ask the workspace backend for the renderer attached to this tool call."""
+    call_id = call.ctx.env.get("IDE_TOOL_CALL_ID")
+    address = call.ctx.env.get("IDE_REASONING_RELAY")
+    if not call_id or not address:
+        raise ToolError("component discovery needs an attached Play turn")
+    host, port = address.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=15) as connection:
+        message = {"kind": "component_catalog", "session": session_id, "call": call_id}
+        connection.sendall(json.dumps(message).encode() + b"\n")
+        with connection.makefile("rb") as stream:
+            result = json.loads(stream.readline(1024 * 1024))
+    if "error" in result:
+        raise ToolError(result["error"])
+    return result["guide"]
+
+
 def handle(call: ToolCall) -> dict:
     from openai import OpenAI
 
@@ -32,7 +49,7 @@ def handle(call: ToolCall) -> dict:
     session = sessions.read(ctx.wstore, session_id)
     if not session or session["kind"] != "chat":
         raise ToolError("display_view requires an active chat session")
-    catalog = view_catalog(ctx.workspace.state, call.get("digest"))
+    catalog = request_catalog(call, session_id)
     with OpenAI(
         api_key=ctx.env["OPENROUTER_API_KEY"],
         base_url="https://openrouter.ai/api/v1",
@@ -87,9 +104,8 @@ SPEC = tool(
         executor="workspace",
         params={
             "brief": a.string("What the view should show, with the verified facts to display."),
-            "digest": a.string("The component catalog digest advertised by the frontend."),
         },
-        required=("brief", "digest"),
+        required=("brief",),
     )
 )
 
