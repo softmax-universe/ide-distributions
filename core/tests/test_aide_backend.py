@@ -557,7 +557,7 @@ def cursor(event):
     return (event["attempt"], event["seq"])
 
 
-def test_chat_round_trip_pushes_only_to_the_session_connection(system):
+def test_chat_round_trip_pushes_what_the_reads_return_to_every_subscriber(system):
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)
         watching = await call(
@@ -577,9 +577,7 @@ def test_chat_round_trip_pushes_only_to_the_session_connection(system):
             "request_id": request_id,
         }
         socket = backend.socket
-        await until(lambda: socket.notes("chat.finished"))
-        assert not socket.notes("chat.event", OTHER)
-        assert not socket.notes("chat.finished", OTHER)
+        await until(lambda: socket.notes("chat.finished") and socket.notes("chat.finished", OTHER))
         (run_id,) = hermes.runs
         pushed = [n["event"] for n in socket.notes("chat.event")]
         assert [e["kind"] for e in pushed] == [
@@ -603,28 +601,29 @@ def test_chat_round_trip_pushes_only_to_the_session_connection(system):
             "arguments": "ls",
             "truncated": True,
         }
-        chunks = socket.notes("chat.chunk")
-        assert [(c["completion_id"], c["seq"]) for c in chunks] == [
-            (f"{run_id}:2", 1),
-            (f"{run_id}:5", 1),
-        ]
-        # A chunk mirrors the text.delta at its cursor.
-        assert [
-            (c["cursor"]["seq"], c["chunk"]["choices"][0]["delta"]["content"]) for c in chunks
-        ] == [(e["seq"], e["delta"]) for e in pushed if e["kind"] == "text.delta"]
-        messages = socket.notes("chat.message")
-        assert [m["message"]["role"] for m in messages] == ["assistant", "tool", "assistant"]
-        assert all(m["request_id"] == request_id and m["kind"] == "message" for m in messages)
-        assert messages[-1]["reasoning"] == "Listing first." and messages[-1]["created_at"]
-        (finished,) = socket.notes("chat.finished")
-        assert finished["status"] == "completed"
-        assert finished["cursor"] == {"attempt": 0, "seq": 6}
-        changes = socket.notes("state.changed")
-        assert any(request_id in c["item"]["active_request_ids"] for c in changes)
-        assert all(c["previous_revision"] < c["revision"] for c in changes)
-        assert [c["previous_revision"] for c in changes[1:]] == [
-            c["revision"] for c in changes[:-1]
-        ]
+        for frontend in (FRONTEND, OTHER):
+            chunks = socket.notes("chat.chunk", frontend)
+            assert [(c["completion_id"], c["seq"]) for c in chunks] == [
+                (f"{run_id}:2", 1),
+                (f"{run_id}:5", 1),
+            ]
+            # A chunk mirrors the text.delta at its cursor.
+            assert [
+                (c["cursor"]["seq"], c["chunk"]["choices"][0]["delta"]["content"]) for c in chunks
+            ] == [(e["seq"], e["delta"]) for e in pushed if e["kind"] == "text.delta"]
+            messages = socket.notes("chat.message", frontend)
+            assert [m["message"]["role"] for m in messages] == ["assistant", "tool", "assistant"]
+            assert all(m["request_id"] == request_id and m["kind"] == "message" for m in messages)
+            assert messages[-1]["reasoning"] == "Listing first." and messages[-1]["created_at"]
+            (finished,) = socket.notes("chat.finished", frontend)
+            assert finished["status"] == "completed"
+            assert finished["cursor"] == {"attempt": 0, "seq": 6}
+            changes = socket.notes("state.changed", frontend)
+            assert any(request_id in c["item"]["active_request_ids"] for c in changes)
+            assert all(c["previous_revision"] < c["revision"] for c in changes)
+            assert [c["previous_revision"] for c in changes[1:]] == [
+                c["revision"] for c in changes[:-1]
+            ]
         read = (await events_read(backend, session_id, request_id))["result"]
         assert read["events"] == pushed and read["done"] is True
         assert read["next"] == {"attempt": 0, "seq": 6}
@@ -833,7 +832,7 @@ def test_an_append_with_no_answer_ends_the_backend_and_the_next_one_resumes_the_
         # Model an already subscribed frontend before recovery can push. state.get awaits
         # a scope read before subscribing, so it can otherwise race the recovering consumer.
         subscription = aide.Subscription(aide.Scope.model_validate(WORKSPACE))
-        subscription.frontend_id = FRONTEND
+        subscription.watchers.add(FRONTEND)
         backend.subscribers[session_id] = subscription
         state = {"resource": "sessions", "id": session_id, "scope": WORKSPACE}
         await call(backend, "state.get", state)
@@ -1353,7 +1352,7 @@ def test_a_relay_rebind_ends_the_last_bindings_subscriptions(system):
 
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)
-        assert backend.subscribers[session_id].frontend_id == FRONTEND
+        assert backend.subscribers[session_id].watchers == {FRONTEND}
         binding = {"backend_id": str(uuid4()), "version": "1.0.0", "max_message_bytes": 1048576}
 
         async def relay(socket):
@@ -1367,7 +1366,7 @@ def test_a_relay_rebind_ends_the_last_bindings_subscriptions(system):
                 "proof",
                 workspace_id="proof",
             )
-        assert backend.subscribers[session_id].frontend_id is None
+        assert backend.subscribers == {}
 
     run(system, scenario)
 
@@ -2151,17 +2150,20 @@ def test_pending_clarification_has_no_choices_field(system):
     run(system, scenario)
 
 
-def test_frontend_closed_releases_only_its_session_connection(system):
+def test_frontend_closed_ends_its_subscriptions_and_its_page_actions(system):
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)
         state = {"resource": "sessions", "id": session_id, "scope": WORKSPACE}
         await call(backend, "state.get", state, frontend=OTHER)
-        assert backend.subscribers[session_id].frontend_id == FRONTEND
+        view = {"scope": WORKSPACE, "data": {"kind": "current_view", "session_id": session_id}}
+        await call(backend, "surface.event", view, frontend=OTHER)
+        assert backend.subscribers[session_id].watchers == {FRONTEND, OTHER}
+        assert backend.subscribers[session_id].actor == OTHER
+        backend.closed(OTHER)
+        assert backend.subscribers[session_id].watchers == {FRONTEND}
+        assert backend.subscribers[session_id].actor is None
         backend.closed(FRONTEND)
-        assert backend.subscribers[session_id].frontend_id is None
-        await call(backend, "state.get", state, frontend=OTHER)
-        backend.closed(FRONTEND)
-        assert backend.subscribers[session_id].frontend_id == OTHER
+        assert backend.subscribers == {}
 
     run(system, scenario)
 
@@ -3049,6 +3051,12 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
                 {"session_id": session_id, "messages": say("Again"), "scope": WORKSPACE},
             )
             backend.closed(FRONTEND)
+            await call(
+                backend,
+                "state.get",
+                {"resource": "sessions", "scope": WORKSPACE, "id": session_id},
+                frontend=OTHER,
+            )
             await invoke()
             assert used_guides == [guide, guide]
             reconnected = uuid4()
@@ -3060,13 +3068,6 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
             assert (await call(backend, "surface.event", params, frontend=reconnected))["result"][
                 "data"
             ]["current"]["revision"] == 2
-            backend.closed(FRONTEND)
-            await call(
-                backend,
-                "state.get",
-                {"resource": "sessions", "scope": WORKSPACE, "id": session_id},
-                frontend=OTHER,
-            )
             await invoke()
             assert used_guides == [guide, guide, updated_guide]
             gateway.gate.set()
@@ -3079,7 +3080,7 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
         assert len(actions) == 2 and actions[-1]["view"] == view
         assert backend.socket.notes("surface.act", reconnected)[0]["data"] == actions[-1]
         assert not backend.socket.notes("surface.act", OTHER)
-        assert not backend.socket.notes("chat.finished", OTHER)
+        assert backend.socket.notes("chat.finished", OTHER)
         assert any(
             n["event"].get("delta") == "Score is 8." for n in backend.socket.notes("chat.event")
         )
