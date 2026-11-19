@@ -50,6 +50,7 @@ from websockets.exceptions import (
 
 from research_core import layout
 from research_core.run_failures import CONTINUATION_PREFIX
+from research_core.session_preview import EMBEDDED_ACTIVE, RECENT_TERMINAL, fallback_title
 from research_core.store.db import DEFAULT_MAX_HOLD_S
 from research_core.store.migrate import BUSY_TIMEOUT_MS
 from research_core.telemetry import correlation, propagator, span, tracer
@@ -71,8 +72,6 @@ COMMANDS = frozenset(
 # Each answer() runs in its own task, so COMMITTING is per request; it marks the point after
 # which the outcome of a state-changing command is unknown.
 COMMITTING: ContextVar[bool] = ContextVar("committing", default=False)
-RECENT_TERMINAL = 10  # terminal requests a Session embeds beside its open ones
-EMBEDDED_ACTIVE = 1000  # open requests a Session embeds at most
 ERROR_CHARS = 4000  # RequestError.message
 TEXT_CHARS = 65536  # reasoning, interim text and tool arguments in one event
 MERGE_SECONDS = 0.25  # consecutive text deltas share one logged event for this long
@@ -195,6 +194,7 @@ class ChatCancel(Closed):
 
 
 class StateList(Closed):
+    latest: bool = False
     resource: Literal["sessions", "tasks", "goals", "requests"]
     scope_id: str | None = None
     session_id: str | None = None
@@ -1106,13 +1106,8 @@ class Backend:
                 or request.session_id in first_text
             ):
                 continue
-            content = request.input["content"]
-            if isinstance(content, str):
-                text = content
-            else:
-                text = " ".join(part["text"] for part in content if part["type"] == "text")
-            if text := " ".join(text.split()):
-                first_text[request.session_id] = text[:80]
+            if title := fallback_title(request.input["content"]):
+                first_text[request.session_id] = title
         if not read_hermes:
             for session in uncached:
                 session.title = first_text.get(session.id)
@@ -1983,6 +1978,14 @@ class Backend:
         return {"requested": target.status in ACTIVE}
 
     async def list_state(self, frontend_id: UUID, request_id: str, params: StateList) -> dict:
+        if params.latest and (
+            params.resource != "sessions"
+            or params.cursor
+            or params.scope
+            or params.scope_id
+            or params.session_id
+        ):
+            raise Refusal("invalid", "latest selects one chat across all scopes")
         if params.resource == "requests":
             if params.session_id is None or params.scope is None:
                 raise Refusal("invalid", "Requests are listed per session and scope")
@@ -1993,7 +1996,9 @@ class Backend:
         elif params.session_id is not None:
             raise Refusal("invalid", "session_id selects requests only")
         elif params.resource == "sessions":
-            snapshot = await self.snapshot()
+            snapshot = await self._read(
+                {"requests": "preview", **({"latest": "1"} if params.latest else {})}
+            )
             self.revision = max(self.revision, snapshot.seq)
             epoch, revision = snapshot.epoch, self.revision
             rows = [

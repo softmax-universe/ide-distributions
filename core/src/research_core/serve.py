@@ -76,6 +76,7 @@ from research_core import (
     intake,
     layout,
     profile_models,
+    session_preview,
     xp_followups,
 )
 from research_core.agent_telemetry import Producer, TelemetryWriter, observed, stream_path
@@ -1211,6 +1212,8 @@ class SeamServer:
         league: str | None = None,
         requests: bool = False,
         request_id: str | None = None,
+        preview: bool = False,
+        latest: bool = False,
     ) -> dict:
         """One store's snapshot. ``requests`` reads AIDE's view of the workspace: top-level chat
         Sessions (all of them unless a scope or Session selects) with every message admission as
@@ -1244,6 +1247,9 @@ class SeamServer:
                                 stored,
                             )
                         selected = [session]
+                    elif latest:
+                        latest_id = session_preview.latest_session_id(stores.wstore)
+                        selected = [sessions.read(stores.wstore, latest_id)] if latest_id else []
                     else:
                         selected = [
                             sessions.read(stores.wstore, row["id"])
@@ -1258,7 +1264,9 @@ class SeamServer:
                     records = {"sessions": selected}
                     if requests:
                         ids = [session["id"] for session in selected]
-                        records["requests"] = admissions.requests(stores.wstore, ids)
+                        records["requests"] = admissions.requests(
+                            stores.wstore, ids, preview=preview
+                        )
                     else:
                         records["admissions"] = (
                             admissions.snapshot(stores.wstore, session_id) if session_id else []
@@ -1593,8 +1601,10 @@ class _Handler(BaseHTTPRequestHandler):
                             query.get("coworld"),
                             session_id=query.get("session_id"),
                             league=query.get("league"),
-                            requests=query.get("requests") == "1",
+                            requests=query.get("requests") in {"1", "preview"},
                             request_id=query.get("request_id"),
+                            preview=query.get("requests") == "preview",
+                            latest=query.get("latest") == "1",
                         ),
                     )
                 elif url.path == "/session-pending":

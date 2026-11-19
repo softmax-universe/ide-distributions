@@ -390,8 +390,8 @@ class _AideContract:
         self._validate(self.param_schemas[method], frame["params"])
 
 
-# Canonical Metta schema at f28e0c0f23b805eb472aa649a473f5e9f5f81393.
-_AIDE_ASYNCAPI_SHA256 = "08182e9fd5d1663136049fa6e65e223786056cce955a6dd61d7ec5d381b4c408"
+# Matches the canonical Metta AIDE release.
+_AIDE_ASYNCAPI_SHA256 = "1b39520f7d5df6902804d3d0eaa69b356e69ff989ccf458bb5134baba33ab268"
 
 
 @lru_cache(maxsize=1)
@@ -3143,3 +3143,58 @@ def test_relay_failure_logs_the_observed_stage_and_code(
         assert event[code_field] == (errno.ECONNREFUSED if fault == "refused" else code)
     if trace_headers:
         assert event["otel_trace_id"] == trace_headers[0].split("-")[1]
+
+
+def test_latest_session_matches_play_selection(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        async def listed(**filters):
+            reply = await call(backend, "state.list", {"resource": "sessions", **filters})
+            return reply["result"]["items"]
+
+        assert await listed(latest=True) == []
+        first = await opened(backend)
+        second = await opened(backend, LEAGUE)
+        with sqlite3.connect(ctx.workspace.store_path) as db:
+            db.execute(
+                "UPDATE sessions SET started=? WHERE id=?", ("2026-01-02T00:00:00.000000Z", second)
+            )
+            db.execute(
+                "UPDATE sessions SET started=? WHERE id=?", ("2026-01-01T00:00:00.000000Z", first)
+            )
+
+        assert [s["id"] for s in await listed(latest=True)] == [second]
+        with sqlite3.connect(ctx.workspace.store_path) as db:
+            for i in range(12):
+                op = str(uuid4())
+                at = f"2026-01-03T00:00:{i:02}.000000Z"
+                origin = "client" if i == 0 else "runtime"
+                db.execute(
+                    "INSERT INTO client_admissions(op_id,session_id,kind,status,origin,request,"
+                    "payload,message,created_at) "
+                    "VALUES (?,?,'message','completed',?,?,'{}','hi',?)",
+                    (
+                        op,
+                        first,
+                        origin,
+                        json.dumps({"message": {"role": "user", "content": "hi"}}),
+                        at,
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO events(at,actor,kind,subject)"
+                    "VALUES (?,'test','client.completed',?)",
+                    (at, op),
+                )
+                if i == 0:
+                    user_request = op
+        # The first user request fell outside the ten embedded terminal records.
+        assert [s["id"] for s in await listed(latest=True)] == [second]
+        with sqlite3.connect(ctx.workspace.store_path) as db:
+            db.execute(
+                "INSERT INTO events(at,actor,kind,subject)VALUES (?,'test','client.completed',?)",
+                ("2026-01-04T00:00:00.000000Z", user_request),
+            )
+        expected = next(s for s in await listed() if s["id"] == first)
+        assert await listed(latest=True) == [expected]
+
+    run(system, scenario, watch=False)
