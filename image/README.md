@@ -383,13 +383,13 @@ span. Session restoration, isolated retry backoff, and frontend delivery are not
 
 ## Retained-wake fast path
 
-After a profile's install/update and preparation both succeed, the supervisor atomically records
-`/opt/distribution/image-id` in that profile's `.softmax-distribution-image`. On another boot of
-the same image it skips the Hermes profile-update process. Missing markers and different images
-run the normal update, so existing volumes migrate on their first boot of this release. Interrupted
-updates cannot record success. Preparation, protected configuration and per-boot credentials still
-run every time. Profile-install spans include `profile.updated` to distinguish reconciliation from
-reuse. The image ID includes the distribution, runtime and dependencies, not a mutable image tag.
+After installation and preparation succeed, the supervisor atomically records the role's packaged
+profile ID in its existing `.softmax-distribution-image` marker. The ID covers the role's source
+tree and the pinned base images. A runtime release with the same profile payload and installer
+can reuse the installed files. A missing marker, an older whole-image ID or a changed role runs
+the normal updater. Removing the marker before an update makes interrupted updates retry,
+including on rollback. Preparation, protected configuration and per-boot credentials run each
+time. The `profile.updated` span attribute records whether installation was required.
 
 Distribution-owned payload files are release content. The fast path no longer repairs arbitrary
 manual edits to those files on every wake; invalidate the marker to request reconciliation. Owner

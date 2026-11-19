@@ -151,7 +151,8 @@ async def run(stack: AsyncExitStack) -> None:
             home = HOME / "profiles" / role
             fresh = not home.exists()
             applied = home / ".softmax-distribution-image"
-            current = applied.is_file() and applied.read_text().strip() == image_id
+            profile_id = (SOURCE / f"{role}.profile-id").read_text().strip()
+            current = applied.is_file() and applied.read_text().strip() == profile_id
             trace.get_current_span().set_attribute("profile.updated", not current)
             if home.exists() and not current:
                 # An interrupted upgrade must not leave an old image's success marker behind.
@@ -204,7 +205,7 @@ async def run(stack: AsyncExitStack) -> None:
                 )
         # Publish only after installation and preparation both succeed. A failed upgrade retries.
         pending = applied.with_suffix(".tmp")
-        pending.write_text(image_id + "\n")
+        pending.write_text(profile_id + "\n")
         pending.replace(applied)
 
     async def observe_ready(phase: str, ready: asyncio.Event) -> None:
