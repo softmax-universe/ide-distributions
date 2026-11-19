@@ -390,8 +390,8 @@ class _AideContract:
         self._validate(self.param_schemas[method], frame["params"])
 
 
-# Canonical Metta schema at a35440aedc (policy.list).
-_AIDE_ASYNCAPI_SHA256 = "f31015e897946f25fbaa7814da62cc7c7b82e0c768a10da044a0c4f3b54554da"
+# Matches the canonical Metta AIDE release.
+_AIDE_ASYNCAPI_SHA256 = "1b39520f7d5df6902804d3d0eaa69b356e69ff989ccf458bb5134baba33ab268"
 
 
 @lru_cache(maxsize=1)
