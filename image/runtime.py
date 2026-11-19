@@ -47,15 +47,15 @@ class Bootstrap(BaseModel):
 
 HERMES = "/opt/hermes/.venv/bin/hermes"
 PYTHON = "/opt/hermes/.venv/bin/python"
-RESEARCH = "/opt/workspace-env/bin/research"
+WORKSPACE_PYTHON = "/opt/workspace-env/bin/python"
 SOURCE = Path("/opt/distribution")
 HOME = Path("/workspace/host")
 PROFILES = ("orchestrator", "researcher")
 WATCHDOG_SECONDS = 3600
 
 
-async def command(*args: str, env: dict[str, str]) -> None:
-    async with managed_process(*args, env=telemetry.process_env(env)) as process:
+async def command(*args: str, env: dict[str, str], cwd: Path | None = None) -> None:
+    async with managed_process(*args, env=telemetry.process_env(env), cwd=cwd) as process:
         code = await process.wait()
     if code:
         raise RuntimeError(f"{args[0]} exited {code}")
@@ -84,6 +84,14 @@ async def run(stack: AsyncExitStack) -> None:
 
     stack.callback(finish_startup)
     HOME.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Hermes atomically replaces stale discovery caches. A new home starts with
+    # the matching image cache so it can load tools without parsing each source.
+    cache = HOME / "cache"
+    cache.mkdir(exist_ok=True)
+    try:
+        (cache / "tool_discovery_cache.json").symlink_to(SOURCE / "tool_discovery_cache.json")
+    except FileExistsError:
+        pass
     lease_file = HOME / ".inference-lease"
     lease_file.unlink(missing_ok=True)
     # The inference state beside it survives restarts: a budget block names the spent key and
@@ -185,12 +193,14 @@ async def run(stack: AsyncExitStack) -> None:
             if not fresh or existing_workspace:
                 await command(
                     PYTHON,
-                    str(home / "scripts/prepare.py"),
+                    "-m",
+                    "prepare",
                     "--source",
                     str(SOURCE / role),
                     "--hermes",
                     HERMES,
                     env=profile_env,
+                    cwd=home / "scripts",
                 )
         # Publish only after installation and preparation both succeed. A failed upgrade retries.
         pending = applied.with_suffix(".tmp")
@@ -229,7 +239,10 @@ async def run(stack: AsyncExitStack) -> None:
                 with telemetry.span("workspace.application_startup", context=startup_context):
                     application = await stack.enter_async_context(
                         ready_process(
-                            RESEARCH,
+                            WORKSPACE_PYTHON,
+                            "-P",
+                            "-m",
+                            "research_core.cli",
                             "serve",
                             "--host",
                             "0.0.0.0",

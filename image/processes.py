@@ -5,13 +5,14 @@ import socket
 import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 
 @asynccontextmanager
 async def managed_process(
-    *args: str, env: dict[str, str], stdin: socket.socket | None = None
+    *args: str, env: dict[str, str], stdin: socket.socket | None = None, cwd: Path | None = None
 ) -> AsyncIterator[asyncio.subprocess.Process]:
-    child = await asyncio.create_subprocess_exec(*args, env=env, stdin=stdin)
+    child = await asyncio.create_subprocess_exec(*args, env=env, stdin=stdin, cwd=cwd)
     try:
         yield child
     finally:

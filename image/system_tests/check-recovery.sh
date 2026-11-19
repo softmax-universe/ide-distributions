@@ -44,7 +44,7 @@ from pathlib import Path
 (serve,) = [
     int(cmdline.parent.name)
     for cmdline in Path("/proc").glob("[0-9]*/cmdline")
-    if b"/research\0serve\0" in cmdline.read_bytes()
+    if b"-m\0research_core.cli\0serve\0" in cmdline.read_bytes()
 ]
 os.kill(serve, signal.SIGSTOP)
 time.sleep(7)
