@@ -7,9 +7,9 @@ history. One consumer per open request is that log's only writer: it translates 
 run events, appends each, and only then pushes it, so a push carries the cursor of the read
 returning the same event. Consumers start with the backend and resume from their log's last
 row, so a restart keeps what the log holds and loses what had not reached it, along with pushes
-not yet sent. Every connection reading a session hears its pushes. Page actions go to one of
-them: the connection that last sent a message or opened the session's view, when it renders the
-surface of the turn acting. A turn's surface is the one its sending connection registered.
+not yet sent. Every connection reading a session hears its pushes, page actions included when
+it renders the acting turn's surface: the one the turn's sending connection registered. The
+browser decides which page actions it performs.
 """
 
 import asyncio
@@ -887,7 +887,6 @@ class Subscription:
     def __init__(self, scope: Scope):
         self.scope = scope
         self.watchers: set[UUID] = set()  # every live connection that read the session
-        self.actor: UUID | None = None  # the watcher that last sent to it or opened its view
 
 
 class BoardFeed:
@@ -1323,11 +1322,6 @@ class Backend:
         if frontend_id in self.live:
             self.subscribers.setdefault(session_id, Subscription(scope)).watchers.add(frontend_id)
 
-    def claim(self, session_id: str, frontend_id: UUID) -> None:
-        """Route the session's page actions to the connection the user is interacting in."""
-        if frontend_id in self.live:
-            self.subscribers[session_id].actor = frontend_id
-
     def turn_surface(self, request_id: str) -> str | None:
         """The surface a running turn renders on: the one its sending connection registered."""
         origin = self.turn_origins.get(request_id)
@@ -1364,25 +1358,23 @@ class Backend:
             await self.send(self.socket, frontend_id, message)
 
     async def act(self, session_id: str, scope: Scope, request_id: str, data: dict) -> None:
-        """Send a turn's page action to the session's actor when it renders the turn's surface.
+        """Send a turn's page action to each watcher rendering the turn's surface.
 
-        A surface that did not author the action cannot perform it, so nothing is sent then. The
-        saved view stays readable to the next ``current_view`` read.
+        Another surface cannot render it. A browser performs a page interaction only for a turn
+        it sent, and a view missed while disconnected is read back with ``current_view``.
         """
-        subscription = self.subscribers.get(session_id)
-        if self.socket is None or subscription is None or subscription.actor is None:
-            return
-        renderer = self.renderers.get(subscription.actor)
         surface = self.turn_surface(request_id)
-        if renderer is None or surface is None or renderer.surface_id != surface:
+        if self.socket is None or surface is None or session_id not in self.subscribers:
             return
-        message = {
-            "jsonrpc": "2.0",
-            "id": str(uuid4()),
-            "method": "surface.act",
-            "params": {"scope": scope.model_dump(), "data": data},
-        }
-        await self.send(self.socket, subscription.actor, message)
+        for frontend_id in list(self.subscribers[session_id].watchers):
+            if frontend_id in self.renderers and self.renderers[frontend_id].surface_id == surface:
+                message = {
+                    "jsonrpc": "2.0",
+                    "id": str(uuid4()),
+                    "method": "surface.act",
+                    "params": {"scope": scope.model_dump(), "data": data},
+                }
+                await self.send(self.socket, frontend_id, message)
 
     async def changed(self, session_id: str) -> None:
         """Project and push ``state.changed`` serialized per session with its resolved title."""
@@ -1550,11 +1542,7 @@ class Backend:
                 await self.notify(request.session_id, "chat.chunk", params)
 
     async def component_catalog(self, session: str, call: str) -> str:
-        """The guide of the renderer that will show this view.
-
-        That is the session's actor when it renders the turn's surface, so the view matches its
-        version. While no such connection is attached, the surface's latest guide stands in.
-        """
+        """The latest guide registered for the surface of the turn authoring this view."""
         # Registration, the tool process, and the gateway event may arrive in any order.
         async with asyncio.timeout(12):
             async with self.view_ready:
@@ -1565,11 +1553,6 @@ class Backend:
                     )
                 )
                 surface = self.turn_surface(self.view_calls[session, call])
-                subscription = self.subscribers.get(session)
-                actor = None if subscription is None else subscription.actor
-                renderer = None if actor is None else self.renderers.get(actor)
-                if renderer is not None and renderer.surface_id == surface:
-                    return renderer.guide
                 assert surface is not None
                 return self.surface_guides[surface]
 
@@ -1909,7 +1892,6 @@ class Backend:
             return {"data": {"registered": True}}
         session_id = params.data.session_id
         await self.touch(session_id, params.scope, frontend_id)
-        self.claim(session_id, frontend_id)
         view = current_view(view_path(layout.from_env().state, session_id))
         return {"data": {"current": view}}
 
@@ -1945,7 +1927,6 @@ class Backend:
         await self.touch(params.session_id, params.scope, frontend_id)
         await self.call(self.seam, "POST", "/message", command=True, json=body)
         if not replay:
-            self.claim(params.session_id, frontend_id)
             async with self.view_ready:
                 self.turn_origins[request_id] = frontend_id
                 self.view_ready.notify_all()
@@ -2263,8 +2244,6 @@ class Backend:
         self.live.discard(frontend_id)
         for subscription in self.subscribers.values():
             subscription.watchers.discard(frontend_id)
-            if subscription.actor == frontend_id:
-                subscription.actor = None
         self.subscribers = {k: s for k, s in self.subscribers.items() if s.watchers}
         self.prune_renderers()
         for coworld, feed in list(self.boards.items()):

@@ -2150,18 +2150,14 @@ def test_pending_clarification_has_no_choices_field(system):
     run(system, scenario)
 
 
-def test_frontend_closed_ends_its_subscriptions_and_its_page_actions(system):
+def test_frontend_closed_ends_its_subscriptions(system):
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)
         state = {"resource": "sessions", "id": session_id, "scope": WORKSPACE}
         await call(backend, "state.get", state, frontend=OTHER)
-        view = {"scope": WORKSPACE, "data": {"kind": "current_view", "session_id": session_id}}
-        await call(backend, "surface.event", view, frontend=OTHER)
         assert backend.subscribers[session_id].watchers == {FRONTEND, OTHER}
-        assert backend.subscribers[session_id].actor == OTHER
         backend.closed(OTHER)
         assert backend.subscribers[session_id].watchers == {FRONTEND}
-        assert backend.subscribers[session_id].actor is None
         backend.closed(FRONTEND)
         assert backend.subscribers == {}
 
@@ -3037,8 +3033,8 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
                 )
                 assert response["result"]["data"]["registered"]
 
-            await register(OTHER, "different-site", "A different browser renderer")
-            assert not tool.done()
+            # Play registers its guide when its connection sees the backend present, in any
+            # order with the turn's tool call.
             await register(FRONTEND, "softmax", guide)
             await tool
             assert used_guides == [guide]
@@ -3050,17 +3046,19 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
                 "chat.send",
                 {"session_id": session_id, "messages": say("Again"), "scope": WORKSPACE},
             )
+            # The tab's socket drops mid-turn. A view authored meanwhile uses the surface's guide,
+            # even after a tab on another surface reads the session.
             backend.closed(FRONTEND)
-            await call(
-                backend,
-                "state.get",
-                {"resource": "sessions", "scope": WORKSPACE, "id": session_id},
-                frontend=OTHER,
-            )
+            session = {"resource": "sessions", "scope": WORKSPACE, "id": session_id}
+            await register(OTHER, "different-site", "A different browser renderer")
+            await call(backend, "state.get", session, frontend=OTHER)
             await invoke()
             assert used_guides == [guide, guide]
+            # The tab reconnects as Play does: the new connection registers its guide and reads
+            # the session again, then recovers the view authored while it was away.
             reconnected = uuid4()
             await register(reconnected, "softmax", updated_guide)
+            await call(backend, "state.get", session, frontend=reconnected)
             params = {
                 "scope": WORKSPACE,
                 "data": {"kind": "current_view", "session_id": session_id},
@@ -3078,7 +3076,9 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
             if f["message"].get("method") == "surface.act"
         ]
         assert len(actions) == 2 and actions[-1]["view"] == view
+        assert backend.socket.notes("surface.act", FRONTEND)[0]["data"] == actions[0]
         assert backend.socket.notes("surface.act", reconnected)[0]["data"] == actions[-1]
+        # The other surface hears the session's pushes but cannot render its views.
         assert not backend.socket.notes("surface.act", OTHER)
         assert backend.socket.notes("chat.finished", OTHER)
         assert any(
