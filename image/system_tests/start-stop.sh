@@ -30,8 +30,15 @@ docker volume create "$volume" >/dev/null
 # Kubernetes supplies this volume group ownership through fsGroup.
 docker run --rm --user 0 --entrypoint /bin/sh -v "$volume:/workspace" "$image" -c 'chown 10000:10000 /workspace'
 sentinel="retained-$name"
+# Mount the audit hook in both interpreters, including the Hermes CLI which clears PYTHONPATH.
+audit=$(cd "$(dirname "$0")/compile-audit" && pwd)/sitecustomize.py
+audit_mounts=()
+for python in /opt/hermes/.venv/bin/python /opt/workspace-env/bin/python; do
+  site=$(docker run --rm --entrypoint "$python" "$image" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
+  audit_mounts+=(--mount "type=bind,src=$audit,dst=$site/sitecustomize.py,readonly")
+done
 for cycle in $(seq 1 "$cycles"); do
-  docker run -d --name "$name" --read-only --cap-drop ALL --security-opt no-new-privileges \
+  docker run -d --name "$name" "${audit_mounts[@]}" --read-only --cap-drop ALL --security-opt no-new-privileges \
     --cpus 2 --memory 2g \
     --tmpfs /tmp:rw,size=1g --mount "type=volume,src=$volume,dst=/workspace" \
     --mount "type=bind,src=$scratch/bootstrap.json,dst=/run/workspace/bootstrap.json,readonly" "$image"
@@ -47,6 +54,12 @@ for cycle in $(seq 1 "$cycles"); do
     sleep 2
   done
   test "$ready" = true
+  docker exec "$name" sh -ec '
+    test "$(sort -u /tmp/startup-audited-interpreters | wc -l)" -eq 2
+    if test -s /tmp/startup-compiled-sources; then
+      sort -u /tmp/startup-compiled-sources >&2
+      exit 1
+    fi'
   docker exec "$name" /opt/hermes/.venv/bin/python /opt/distribution/image/system_tests/check-intake.py
   docker exec "$name" /opt/hermes/.venv/bin/python /opt/distribution/image/system_tests/check-terminal.py
   docker exec "$name" /opt/hermes/.venv/bin/python /opt/distribution/image/system_tests/check-session-coworld.py
@@ -110,6 +123,13 @@ PYTHON
   docker rm "$name" >/dev/null
 done
 
+# Mount the audit hook in both interpreters, including the Hermes CLI which clears PYTHONPATH.
+audit=$(cd "$(dirname "$0")/compile-audit" && pwd)/sitecustomize.py
+audit_mounts=()
+for python in /opt/hermes/.venv/bin/python /opt/workspace-env/bin/python; do
+  site=$(docker run --rm --entrypoint "$python" "$image" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
+  audit_mounts+=(--mount "type=bind,src=$audit,dst=$site/sitecustomize.py,readonly")
+done
 for cycle in $(seq 1 "$cycles"); do cat "$scratch/boot-$cycle.log"; done | docker run --rm -i --read-only \
   --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,size=64m \
   --entrypoint /opt/hermes/.venv/bin/python "$image" /opt/distribution/image/system_tests/check-startup.py "$cycles" | tee "$scratch/timings.txt"

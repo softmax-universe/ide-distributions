@@ -29,11 +29,16 @@ RUN bash /opt/distribution/image/install-native-attachments.sh \
     && /opt/hermes/.venv/bin/python -m compileall -q -l /opt/hermes \
     && /opt/hermes/.venv/bin/python -m compileall -q -x '/(tests|node_modules)/' \
        "$(/opt/hermes/.venv/bin/python -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')" \
-       /opt/hermes/.venv/lib /opt/hermes/agent /opt/hermes/cron /opt/hermes/gateway \
-       /opt/hermes/hermes_cli /opt/hermes/plugins /opt/hermes/pm /opt/hermes/tools \
-       /opt/distribution/core/src /opt/distribution/image \
+       /opt/hermes/.venv/lib /opt/distribution/core/src /opt/distribution/image \
+    && for init in /opt/hermes/*/__init__.py; do \
+         /opt/hermes/.venv/bin/python -m compileall -q -x '/(tests|node_modules)/' "${init%/*}" || exit 1; \
+       done \
     && chmod -R a+rX /opt/models/whisper-base \
     && rm -rf /tmp/uv-cache
+# Hermes probes the bundled pip executable during startup. Invoke pip's cached module
+# with that same interpreter instead of compiling its Python console script each wake.
+RUN base_python=$(/opt/hermes/.venv/bin/python -c 'import sys; print(sys._base_executable)') \
+    && printf '#!/bin/sh\nexec "%s" -P -m pip "$@"\n' "$base_python" > "$(dirname "$base_python")/pip"
 COPY image/workspace-path.sh /etc/profile.d/workspace-path.sh
 # Hosted workspaces use the built-in API transport. Keep other bundled plugins,
 # without discovering messaging adapters in the host or either profile.
@@ -43,6 +48,10 @@ RUN mkdir /opt/workspace-plugins \
            ln -s "$plugin" /opt/workspace-plugins/; \
          fi; \
        done
+# Python keys its bytecode cache by import path. The hosted plugin symlinks above
+# have different cache entries from the base image paths for the same sources.
+RUN /opt/hermes/.venv/bin/python -m compileall -q -x '/(tests|node_modules)/' \
+       /opt/workspace-plugins/*/
 # What names this image on every telemetry record: a hash of the sources it was built from, because
 # the build has no git history. image/runtime.py passes it on as IDE_IMAGE.
 RUN cd /opt/distribution \
@@ -60,7 +69,8 @@ ENV PYTHONUNBUFFERED=1 \
     XDG_RUNTIME_DIR=/tmp/hermes-runtime \
     PATH=/opt/workspace-env/bin:/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin
 RUN /opt/hermes/.venv/bin/python /opt/distribution/image/prepare-profiles.py \
+    && /opt/hermes/.venv/bin/python -m compileall -b -q /opt/distribution/image/runtime.py \
     && chmod -R a+rX /opt/distribution/prepared-profiles
 USER 10000:10000
 WORKDIR /workspace
-ENTRYPOINT ["/usr/bin/tini", "--", "/opt/hermes/.venv/bin/python", "/opt/distribution/image/runtime.py"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/hermes/.venv/bin/python", "/opt/distribution/image/runtime.pyc"]
