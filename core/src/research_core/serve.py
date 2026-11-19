@@ -1081,6 +1081,35 @@ class SeamServer:
             admissions.append_event(tx, op_id, event, body["run_id"], body["source_seq"])
         return {"op_id": op_id, "attempt": event["attempt"], "seq": event["seq"]}
 
+    def recoverable_requests(self) -> dict:
+        """Read the event-stream cursor and identify requests whose log still needs a consumer."""
+        with self.stores() as stores, stores.wstore.read_tx():
+            store = stores.wstore
+            owners = {}
+            unfinished = []
+            pending_sessions = {}
+            for row in store.q(
+                "SELECT ca.op_id,ca.session_id,"
+                " (SELECT kind FROM request_events WHERE request_id=ca.op_id"
+                " ORDER BY attempt DESC,seq DESC LIMIT 1) AS last_kind"
+                " FROM client_admissions ca JOIN sessions s ON s.id=ca.session_id"
+                " WHERE ca.kind='message' AND s.kind='chat' AND s.parent IS NULL"
+                " ORDER BY ca.created_at,ca.rowid"
+            ):
+                request_id, session_id = row["op_id"], row["session_id"]
+                owners[request_id] = session_id
+                if row["last_kind"] != "finished":
+                    unfinished.append(request_id)
+                    if session_id not in pending_sessions:
+                        pending_sessions[session_id] = self._require_session(stores, session_id)
+            return {
+                "seq": store.last_seq(),
+                "epoch": store.get_meta("created"),
+                "owners": owners,
+                "unfinished": unfinished,
+                "sessions": list(pending_sessions.values()),
+            }
+
     def message_events(self, query: dict[str, str]) -> dict:
         """A message's logged AIDE events after a cursor (``admissions.events_after``)."""
         with self.stores() as stores:
@@ -1601,6 +1630,8 @@ class _Handler(BaseHTTPRequestHandler):
                     self._json(HTTPStatus.OK, seam.session_pending(query["session_id"]))
                 elif url.path == "/input-response":
                     self._json(HTTPStatus.OK, seam.input_response(query["op_id"]))
+                elif url.path == "/recoverable-requests":
+                    self._json(HTTPStatus.OK, seam.recoverable_requests())
                 elif url.path == "/message-events":
                     self._json(HTTPStatus.OK, seam.message_events(query))
                 elif url.path == "/stream":

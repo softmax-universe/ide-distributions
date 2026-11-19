@@ -895,6 +895,10 @@ def test_a_rebuilt_backend_resumes_pushes_for_an_open_request_without_a_new_send
         assert [(e["seq"], e["delta"]) for e in live["events"]] == [(1, "Hel")]
         assert live["done"] is False
 
+        recovery = system[2].recoverable_requests()
+        assert recovery["unfinished"] == [request_id]
+        assert recovery["owners"] == {request_id: session_id}
+        assert [row["id"] for row in recovery["sessions"]] == [session_id]
         restarted = await backend.restart()
         await until(lambda: list(restarted.consumers) == [request_id])
         # A replayed send attaches to the open request and starts nothing.
@@ -911,6 +915,10 @@ def test_a_rebuilt_backend_resumes_pushes_for_an_open_request_without_a_new_send
         assert [(c["completion_id"], c["seq"]) for c in chunks] == [(f"{run_id}:1", 2)]
         assert [n["event"]["seq"] for n in restarted.socket.notes("chat.event")] == [2, 3]
         assert restarted.socket.notes("chat.finished")[0]["cursor"] == {"attempt": 0, "seq": 3}
+        recovery = system[2].recoverable_requests()
+        assert recovery["unfinished"] == []
+        assert recovery["sessions"] == []
+        assert recovery["owners"] == {request_id: session_id}
 
     run(system, scenario)
     assert [name for name, _ in system[1].calls].count("start") == 1

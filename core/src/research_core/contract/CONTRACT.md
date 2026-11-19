@@ -113,6 +113,12 @@ the same session id, which resumes the conversation's history.
 
 ## Message admissions
 
+On reconnect, AIDE reads `GET /recoverable-requests` to resume event delivery. One
+workspace-store transaction returns the epoch and event cursor, a mapping from message
+admissions to their top-level chat sessions, and the requests and session rows needed to
+resume unfinished logs. A terminal admission still needs a consumer until its log contains
+the final `finished` event.
+
 Each queued message is an admission in the workspace snapshot (`records.admissions`): `{op_id,
 session_id, message, status, run_id, error, error_class, resume_after, created_at, client_id}`.
 `status` is `queued` until its run starts, then `running`, and ends `completed`, `cancelled`,
