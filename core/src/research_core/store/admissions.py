@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Literal, get_args
 from uuid import NAMESPACE_URL, uuid5
 
+from research_core import session_preview
 from research_core.run_failures import ErrorClass
 from research_core.store import settings
 from research_core.store._common import parse_iso
@@ -104,7 +105,7 @@ def snapshot(store: Store, session_id: str | None = None) -> list[dict]:
     ]
 
 
-def requests(store: Store, session_ids: list[str]) -> list[dict]:
+def requests(store: Store, session_ids: list[str], *, preview: bool = False) -> list[dict]:
     """Every message admission of these sessions as AIDE's request records read it.
 
     Beside :func:`snapshot`'s fields: ``origin``; ``resumes``; ``revision`` and ``updated_at``,
@@ -114,6 +115,12 @@ def requests(store: Store, session_ids: list[str]) -> list[dict]:
     row of its event log (:func:`append_event`), once it has one. ``input`` is the user's
     message, or ``None`` for runtime work.
     """
+    if not preview:
+        selection = "session_id IN (SELECT value FROM json_each(?))"
+        selected_ids = json.dumps(session_ids)
+    else:
+        selection = "op_id IN (SELECT value FROM json_each(?))"
+        selected_ids = json.dumps(session_preview.request_ids(store, session_ids))
     rows = store.q(
         "SELECT op_id,session_id,origin,resumes,created_at,error,error_class,resume_after,"
         " CASE WHEN origin='answer' THEN json_object('role','user','content',message)"
@@ -126,8 +133,8 @@ def requests(store: Store, session_ids: list[str]) -> list[dict]:
         "'source_seq',source_seq,'event',json(event)) FROM request_events"
         " WHERE request_id=op_id ORDER BY attempt DESC, seq DESC LIMIT 1) AS logged"
         " FROM client_admissions WHERE kind='message'"
-        " AND session_id IN (SELECT value FROM json_each(?)) ORDER BY created_at, rowid",
-        (json.dumps(session_ids),),
+        f" AND {selection} ORDER BY created_at, rowid",
+        (selected_ids,),
     )
     runs: dict[str, list[dict]] = {row["op_id"]: [] for row in rows}
     attempts = dict.fromkeys(runs, 0)
@@ -135,8 +142,8 @@ def requests(store: Store, session_ids: list[str]) -> list[dict]:
         "SELECT subject,kind,payload FROM events"
         " WHERE kind IN ('client.started','client.resumed')"
         " AND subject IN (SELECT op_id FROM client_admissions WHERE kind='message'"
-        " AND session_id IN (SELECT value FROM json_each(?))) ORDER BY seq",
-        (json.dumps(session_ids),),
+        f" AND {selection}) ORDER BY seq",
+        (selected_ids,),
     ):
         payload = json.loads(event["payload"])
         if event["kind"] == "client.resumed":
