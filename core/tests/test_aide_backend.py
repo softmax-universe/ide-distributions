@@ -2998,34 +2998,31 @@ class PlayTab:
         return [n["data"] for n in self.backend.socket.notes("surface.act", frontend)]
 
 
-async def view_turn(backend, gateway, ctx, session_id, sender, *, meanwhile=None):
-    """Send a turn that authors a view; ``meanwhile`` runs while the view tool is in flight."""
+async def view_tool(ctx, session_id):
+    """Run the display_view tool as the turn's Hermes process does: it reads workspace state."""
     from research_core.tools.base import ToolContext, run_tool
 
+    env = {
+        **ctx.env,
+        "IDE_SESSION_ID": session_id,
+        "IDE_TOOL_CALL_ID": "call_view",
+        "OPENROUTER_API_KEY": "fixture",
+        "AIDE_VIEW_MODEL": "fixture/view-author",
+    }
+    return await asyncio.to_thread(
+        run_tool, "display_view", {"brief": "Score is 8"}, ToolContext.from_env("orchestrator", env)
+    )
+
+
+async def view_turn(backend, gateway, ctx, session_id, sender, *, meanwhile=None):
+    """Send a turn that authors a view; ``meanwhile`` runs while the turn is in flight."""
     request_id = str(uuid4())
     params = {"session_id": session_id, "messages": say("Score?"), "scope": WORKSPACE}
     await call(backend, "chat.send", params, request_id=request_id, frontend=sender)
-    await until(lambda: (session_id, "call_view") in backend.view_calls)
-    async with await asyncio.start_server(backend.relay, "127.0.0.1", 0) as server:
-        env = {
-            **ctx.env,
-            "IDE_SESSION_ID": session_id,
-            "IDE_TOOL_CALL_ID": "call_view",
-            "IDE_REASONING_RELAY": f"127.0.0.1:{server.sockets[0].getsockname()[1]}",
-            "OPENROUTER_API_KEY": "fixture",
-            "AIDE_VIEW_MODEL": "fixture/view-author",
-        }
-        tool = asyncio.create_task(
-            asyncio.to_thread(
-                run_tool,
-                "display_view",
-                {"brief": "Score is 8"},
-                ToolContext.from_env("orchestrator", env),
-            )
-        )
-        if meanwhile is not None:
-            await meanwhile()
-        assert "prepared" in await tool
+    tool = asyncio.create_task(view_tool(ctx, session_id))
+    if meanwhile is not None:
+        await meanwhile()
+    assert "prepared" in await tool
     gateway.gate.set()
     await until(lambda: request_id in backend.finished)
     gateway.gate.clear()
@@ -3043,10 +3040,12 @@ def test_a_play_tab_keeps_its_views_across_socket_and_relay_reconnects(system, m
         session_id = await opened(backend)
         tab = PlayTab(backend, session_id, "Render a version 1 view.")
 
-        # 1. Connect: the guide may register after the view tool asks for it.
-        await view_turn(
-            backend, gateway, ctx, session_id, FRONTEND, meanwhile=lambda: tab.present(FRONTEND)
-        )
+        # A conversation no registered surface has sent to has nowhere to display.
+        assert "no display surface" in await view_tool(ctx, session_id)
+
+        # 1. Connect: Play registers its guide when the backend is present, then the user sends.
+        await tab.present(FRONTEND)
+        await view_turn(backend, gateway, ctx, session_id, FRONTEND)
         assert used_guides == [tab.guide]
         (first,) = tab.views(FRONTEND)
         assert first["view"] == view and first["revision"] == 1
@@ -3145,25 +3144,7 @@ def test_a_play_view_survives_a_workspace_sleep_with_or_without_the_tab(system, 
         tab.backend = woken
         server.test_clock.now += timedelta(minutes=2)
 
-        from research_core.tools.base import ToolContext, run_tool
-
-        await until(lambda: (session_id, "call_view") in woken.view_calls)
-        async with await asyncio.start_server(woken.relay, "127.0.0.1", 0) as relay:
-            env = {
-                **ctx.env,
-                "IDE_SESSION_ID": session_id,
-                "IDE_TOOL_CALL_ID": "call_view",
-                "IDE_REASONING_RELAY": f"127.0.0.1:{relay.sockets[0].getsockname()[1]}",
-                "OPENROUTER_API_KEY": "fixture",
-                "AIDE_VIEW_MODEL": "fixture/view-author",
-            }
-            response = await asyncio.to_thread(
-                run_tool,
-                "display_view",
-                {"brief": "Score is 8"},
-                ToolContext.from_env("orchestrator", env),
-            )
-            assert "prepared" in response
+        assert "prepared" in await view_tool(ctx, session_id)
         gateway.gate.set()
         await until(lambda: request_id in woken.finished)
         gateway.gate.clear()

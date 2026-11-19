@@ -8,9 +8,9 @@ run events, appends each, and only then pushes it, so a push carries the cursor 
 returning the same event. Consumers start with the backend and resume from their log's last
 row, so a restart keeps what the log holds and loses what had not reached it, along with pushes
 not yet sent. Every connection reading a session hears its pushes. A session renders on the
-surface of the registered connection that last read it, and its page actions go to watchers
+surface of the registered connection that last sent to it, and its page actions go to watchers
 rendering that surface. The workspace state keeps each session's surface and each surface's
-guide, so a restarted backend authors views as before it stopped.
+guide, which the view tool reads, so a restarted backend authors views as before it stopped.
 """
 
 import asyncio
@@ -58,7 +58,13 @@ from research_core.session_preview import EMBEDDED_ACTIVE, RECENT_TERMINAL, fall
 from research_core.store.db import DEFAULT_MAX_HOLD_S
 from research_core.store.migrate import BUSY_TIMEOUT_MS
 from research_core.telemetry import correlation, propagator, span, tracer
-from research_core.tools.display_view import current_view, view_path
+from research_core.tools.display_view import (
+    Surfaces,
+    current_view,
+    read_surfaces,
+    surfaces_path,
+    view_path,
+)
 
 log = logging.getLogger(__name__)
 
@@ -165,11 +171,6 @@ class ComponentCatalog(Closed):
 class CurrentView(Closed):
     kind: Literal["current_view"]
     session_id: str
-
-
-class Surfaces(BaseModel):
-    guides: dict[str, str] = {}  # surface ID -> its latest registered renderer guide
-    sessions: dict[str, str] = {}  # session ID -> the surface it renders on
 
 
 class SurfaceEvent(Closed):
@@ -921,8 +922,6 @@ class Backend:
         self.subscribers: dict[str, Subscription] = {}
         self.session_locks: dict[str, asyncio.Lock] = {}
         self.publish_locks: dict[str, asyncio.Lock] = {}
-        self.view_calls: dict[tuple[str, str], str] = {}
-        self.view_ready = asyncio.Condition()
         self.live: set[UUID] = set()  # connections the relay has not reported closed
         self.renderers: dict[UUID, str] = {}  # live connection -> the surface it registered
         self.published_after: dict[str, int] = {}
@@ -1326,25 +1325,13 @@ class Backend:
         if frontend_id not in self.live:
             return
         self.subscribers.setdefault(session_id, Subscription(scope)).watchers.add(frontend_id)
-        if frontend_id in self.renderers:
-            await self.render_on([session_id], self.renderers[frontend_id])
 
     @cached_property
     def surfaces(self) -> Surfaces:
-        path = layout.from_env().state / "aide-surfaces.json"
-        return Surfaces.model_validate_json(path.read_bytes()) if path.exists() else Surfaces()
-
-    async def render_on(self, session_ids: list[str], surface: str) -> None:
-        """Record the surface these sessions render on, durably, and wake waiting view authors."""
-        async with self.view_ready:
-            changed = [s for s in session_ids if self.surfaces.sessions.get(s) != surface]
-            if changed:
-                self.surfaces.sessions.update(dict.fromkeys(changed, surface))
-                self.save_surfaces()
-                self.view_ready.notify_all()
+        return read_surfaces(layout.from_env().state)
 
     def save_surfaces(self) -> None:
-        path = layout.from_env().state / "aide-surfaces.json"
+        path = surfaces_path(layout.from_env().state)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.with_suffix(".part").write_text(self.surfaces.model_dump_json())
         path.with_suffix(".part").replace(path)
@@ -1380,16 +1367,18 @@ class Backend:
         if self.socket is None or session_id not in self.subscribers:
             return
         watchers = [f for f in self.subscribers[session_id].watchers if f in self.renderers]
-        for frontend_id in watchers:
-            # A registered watcher has put the session on a surface.
-            if self.renderers[frontend_id] == self.surfaces.sessions[session_id]:
-                message = {
-                    "jsonrpc": "2.0",
-                    "id": str(uuid4()),
-                    "method": "surface.act",
-                    "params": {"scope": scope.model_dump(), "data": data},
-                }
-                await self.send(self.socket, frontend_id, message)
+        # A session no registered surface has sent to has nowhere to display.
+        surface = self.surfaces.sessions.get(session_id) if watchers else None
+        # Choose every recipient before the first send: a connection can close while one awaits.
+        recipients = [f for f in watchers if self.renderers[f] == surface]
+        for frontend_id in recipients:
+            message = {
+                "jsonrpc": "2.0",
+                "id": str(uuid4()),
+                "method": "surface.act",
+                "params": {"scope": scope.model_dump(), "data": data},
+            }
+            await self.send(self.socket, frontend_id, message)
 
     async def changed(self, session_id: str) -> None:
         """Project and push ``state.changed`` serialized per session with its resolved title."""
@@ -1555,16 +1544,6 @@ class Backend:
                 }
                 await self.notify(request.session_id, "chat.chunk", params)
 
-    async def component_catalog(self, session: str, call: str) -> str:
-        """The latest guide registered for the surface this session renders on."""
-        # Registration, the tool process, and the gateway event may arrive in any order.
-        async with asyncio.timeout(12):
-            async with self.view_ready:
-                await self.view_ready.wait_for(
-                    lambda: (session, call) in self.view_calls and session in self.surfaces.sessions
-                )
-                return self.surfaces.guides[self.surfaces.sessions[session]]
-
     async def relay(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """The gateway plugin's reasoning lines, each to the follower of the run that serves its
         Session. A Session runs one request at a time, so this is that request's. A line for no
@@ -1572,17 +1551,7 @@ class Backend:
         """
         try:
             async for line in reader:
-                message = json.loads(line)
-                if message.get("kind") == "component_catalog":
-                    try:
-                        guide = await self.component_catalog(message["session"], message["call"])
-                        result = {"guide": guide}
-                    except (TimeoutError, ValueError, KeyError, TypeError, ConnectionClosed) as exc:
-                        result = {"error": str(exc) or "Component discovery timed out"}
-                    writer.write(json.dumps(result).encode() + b"\n")
-                    await writer.drain()
-                    return
-                thought = Thought.model_validate(message)
+                thought = Thought.model_validate_json(line)
                 # ``n`` starts again from one with a new gateway, which loses nothing here.
                 lost = max(0, thought.n - self.relayed - 1)
                 self.relayed = thought.n
@@ -1676,16 +1645,7 @@ class Backend:
                                 last_seq, progressed = event.seq, True
                                 progress.consumed[run.run_id] = last_seq
                                 await record(progress.place(run.run_id, event))
-                                if (
-                                    event.event == "tool.started"
-                                    and event.tool == "display_view"
-                                    and event.tool_call_id
-                                ):
-                                    async with self.view_ready:
-                                        self.view_calls[session_id, event.tool_call_id] = request_id
-                                        self.view_ready.notify_all()
                                 if event.event == "tool.completed":
-                                    self.view_calls.pop((session_id, event.tool_call_id), None)
                                     if event.tool == "display_view":
                                         await self.display_view(
                                             session_id, scope, event.tool_call_id
@@ -1787,7 +1747,6 @@ class Backend:
                     return
                 await wake.wait()
         finally:
-            self.view_calls = {k: v for k, v in self.view_calls.items() if v != request_id}
             del self.wakes[request_id]
 
     def ensure_consumer(self, request_id: str, session_id: str, scope: Scope) -> None:
@@ -1895,13 +1854,9 @@ class Backend:
                 return {"data": {"registered": True}}
             surface = params.data.surface_id
             self.renderers[frontend_id] = surface
-            async with self.view_ready:
-                if self.surfaces.guides.get(surface) != params.data.guide:
-                    self.surfaces.guides[surface] = params.data.guide
-                    self.save_surfaces()
-                    self.view_ready.notify_all()
-            watched = [s for s, sub in self.subscribers.items() if frontend_id in sub.watchers]
-            await self.render_on(watched, surface)
+            if self.surfaces.guides.get(surface) != params.data.guide:
+                self.surfaces.guides[surface] = params.data.guide
+                self.save_surfaces()
             return {"data": {"registered": True}}
         session_id = params.data.session_id
         await self.touch(session_id, params.scope, frontend_id)
@@ -1936,6 +1891,11 @@ class Backend:
             "actor": "user:aide",
         } | params.model_dump(mode="json", include={"context", "instructions"}, exclude_none=True)
         await self.touch(params.session_id, params.scope, frontend_id)
+        # The user sends from this surface, so the conversation's views render on it.
+        surface = self.renderers.get(frontend_id)
+        if surface is not None and self.surfaces.sessions.get(params.session_id) != surface:
+            self.surfaces.sessions[params.session_id] = surface
+            self.save_surfaces()
         await self.call(self.seam, "POST", "/message", command=True, json=body)
         if not replay:
             self.ensure_consumer(request_id, params.session_id, params.scope)
