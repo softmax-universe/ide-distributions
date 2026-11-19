@@ -35,6 +35,10 @@ RUN bash /opt/distribution/image/install-native-attachments.sh \
        done \
     && chmod -R a+rX /opt/models/whisper-base \
     && rm -rf /tmp/uv-cache
+# Hermes probes the bundled pip executable during startup. Invoke pip's cached module
+# with that same interpreter instead of compiling its Python console script each wake.
+RUN base_python=$(/opt/hermes/.venv/bin/python -c 'import sys; print(sys._base_executable)') \
+    && printf '#!/bin/sh\nexec "%s" -P -m pip "$@"\n' "$base_python" > "$(dirname "$base_python")/pip"
 COPY image/workspace-path.sh /etc/profile.d/workspace-path.sh
 # Hosted workspaces use the built-in API transport. Keep other bundled plugins,
 # without discovering messaging adapters in the host or either profile.
