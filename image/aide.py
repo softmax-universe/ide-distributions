@@ -1303,12 +1303,28 @@ class Backend:
         """
         subscription = self.subscribers.get(session_id)
         if subscription is None or subscription.scope != scope:
-            (row,) = (await self.scoped(scope, session_id=session_id)).records.sessions
-            # The seam compares only Coworld and league; a Coworld session with no league has no
-            # scope, and projecting one fails validation.
-            if row.scope() != scope:
-                raise Refusal("forbidden", "This session does not have that scope")
+            await self.subscribe_session(session_id, scope, frontend_id)
+        else:
+            subscription.frontends.add(frontend_id)
+
+    async def subscribe_session(
+        self, session_id: str, scope: Scope, frontend_id: UUID
+    ) -> SessionOpening:
+        """Validate the stored scope and register from the same event cursor as the read."""
+        opening = SessionOpening.model_validate_json(
+            await self.call(
+                self.seam,
+                "GET",
+                "/session-pending",
+                params={"session_id": session_id, "include_session": "1"},
+            )
+        )
+        if opening.session.scope() != scope:
+            raise Refusal("forbidden", "This session does not have that scope")
+        if not self.start.done():
+            self.start.set_result(opening.seq)
         self.subscribers.setdefault(session_id, Subscription(scope)).frontends.add(frontend_id)
+        return opening
 
     async def send(self, socket: ClientConnection, frontend_id: UUID, message: dict) -> None:
         body = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
@@ -1947,21 +1963,7 @@ class Backend:
         newest sat at native ``offset`` when it was issued. Newer messages only push it further
         down, so the offset is a starting hint and the sequence the boundary.
         """
-        opening = SessionOpening.model_validate_json(
-            await self.call(
-                self.seam,
-                "GET",
-                "/session-pending",
-                params={"session_id": params.session_id, "include_session": "1"},
-            )
-        )
-        if opening.session.scope() != params.scope:
-            raise Refusal("forbidden", "This session does not have that scope")
-        if not self.start.done():
-            self.start.set_result(opening.seq)
-        self.subscribers.setdefault(params.session_id, Subscription(params.scope)).frontends.add(
-            frontend_id
-        )
+        opening = await self.subscribe_session(params.session_id, params.scope, frontend_id)
         if params.cursor is not None and params.after_sequence is not None:
             raise Refusal("invalid", "cursor and after_sequence exclude each other")
         offset, boundary = 0, None
