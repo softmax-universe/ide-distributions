@@ -784,7 +784,10 @@ class SeamFault(httpx.AsyncBaseTransport):
         self.answers: list[int] = []  # the status of each matching request after the fault
 
     async def handle_async_request(self, request):
-        if (request.method, request.url.path) != (self.method, self.path):
+        if (request.method, request.url.path) != (
+            self.method,
+            self.path,
+        ) or "include_session" in request.url.params:
             return await self.real.handle_async_request(request)
         self.matched += 1
         if self.matched == self.failing and not self.committed:
@@ -1721,8 +1724,8 @@ class BeforeSessionRead(httpx.AsyncBaseTransport):
         if (
             self.hook
             and asyncio.current_task() is self.reader
-            and request.url.path == "/snapshot"
-            and "session_id" in request.url.params
+            and request.url.path == "/session-pending"
+            and "include_session" in request.url.params
         ):
             hook, self.hook = self.hook, None
             await hook()
@@ -1899,6 +1902,27 @@ def test_a_send_that_fails_after_its_commit_still_runs_once_and_finishes(system,
         assert len(backend.socket.notes("chat.finished")) == 1
 
     run(system, scenario)
+
+
+def test_restoring_session_reads_admissions_once_after_subscribing(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        session_id = await opened(backend)
+        await until(lambda: not system[2].session_pending(session_id)["pending"])
+        backend = await backend.restart()
+        subscribed_at_snapshot = []
+
+        async def record_read(request):
+            if request.url.path == "/snapshot":
+                subscribed_at_snapshot.append(FRONTEND in backend.subscribers[session_id].frontends)
+
+        backend.seam.event_hooks["request"].append(record_read)
+        response = await call(
+            backend, "state.get", {"resource": "sessions", "id": session_id, "scope": WORKSPACE}
+        )
+        assert response["result"]["item"]["id"] == session_id
+        assert subscribed_at_snapshot == [True]
+
+    run(system, scenario, watch=False)
 
 
 def test_first_history_read_validates_scope_without_loading_all_admissions(system):
