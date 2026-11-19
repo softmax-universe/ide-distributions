@@ -25,7 +25,7 @@ source = Path("/opt/distribution")
 for role in ("orchestrator", "researcher"):
     home = Path("/workspace/host/profiles") / role
     assert (home / "SOUL.md").read_bytes() == (source / role / "SOUL.md").read_bytes()
-    assert (home / ".softmax-distribution-image").read_bytes() == (source / "image-id").read_bytes()
+    assert (home / ".softmax-distribution-image").read_bytes() == (source / f"{role}.profile-id").read_bytes()
     assert (home / "memories/reuse-proof.txt").read_text() == "owner memory\n"
 with SessionDB(Path("/workspace/host/profiles/orchestrator/state.db")) as db:
     proof = Path("/workspace/.prompt-refresh-proof")

@@ -58,6 +58,17 @@ RUN cd /opt/distribution \
     && find pyproject.toml uv.lock core orchestrator researcher image -type f \
          ! -path '*/__pycache__/*' -print0 \
        | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16 > image-id
+# Profile updates copy one role's release payload using the pinned Hermes installer.
+# Normalize build timestamps and ownership while preserving paths, contents, links and modes.
+RUN cd /opt/distribution \
+    && sed -n '/^FROM /p' image/Dockerfile > /tmp/profile-bases \
+    && for role in orchestrator researcher; do \
+         tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+             --exclude=__pycache__ -cf /tmp/profile-payload.tar "$role" \
+         && sha256sum /tmp/profile-bases /tmp/profile-payload.tar > /tmp/profile-inputs \
+         && sha256sum /tmp/profile-inputs | cut -d ' ' -f1 > "$role.profile-id" || exit 1; \
+       done \
+    && rm /tmp/profile-bases /tmp/profile-payload.tar /tmp/profile-inputs
 ENV PYTHONUNBUFFERED=1 \
     HERMES_NEMO_RELAY_PLUGINS_TOML=/opt/distribution/image/relay-plugins.toml \
     HOME=/workspace/host \
