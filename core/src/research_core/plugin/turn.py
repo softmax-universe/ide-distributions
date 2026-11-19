@@ -5,7 +5,8 @@ leaving the stored message as it was: the validated client context block when th
 carries one, the unread notices (background news; a wake's ``chat_update`` in an interrupting
 category arrives as a message of its own), a short note of what changed in the store since this
 conversation's last turn, the session's Coworld, and, on the first turn of a new chat after an
-hour away, a summary of what happened meanwhile. Wake and task Sessions get nothing.
+hour away, a summary of what happened meanwhile. A cached Coworld version update may also
+appear. Wake and task Sessions get nothing.
 Stdlib only: this runs inside Hermes and must never fail a turn.
 """
 
@@ -15,6 +16,8 @@ import logging
 from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from threading import Lock, Thread
+from time import monotonic
 from typing import Any
 
 from research_core import contract
@@ -24,6 +27,7 @@ from research_core.tools.catalog import Role
 log = logging.getLogger(__name__)
 
 AWAY_AFTER = timedelta(hours=1)
+COWORLD_UPDATE_REFRESH_S = 60
 MAX_NOTICES = 12
 MAX_CHANGED_KINDS = 10
 SUMMARY_KINDS = {
@@ -206,6 +210,48 @@ def _away_summary(wstore: Any, coworld_store: Any, since: datetime, now: datetim
     )
 
 
+class _CoworldUpdates:
+    """Refresh league version notices in the background, at most one check per hook."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._worker: Thread | None = None
+        self._cached: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
+
+    def get(self, key: tuple[str, str, str], env: dict[str, str]) -> dict[str, Any]:
+        with self._lock:
+            now = monotonic()
+            if (cached := self._cached.get(key)) is not None and cached[0] > now:
+                return cached[1]
+            if self._worker is None or not self._worker.is_alive():
+                self._cached = {key: value for key, value in self._cached.items() if value[0] > now}
+                self._worker = Thread(
+                    target=self._refresh, args=(key, env), name="coworld-update", daemon=True
+                )
+                try:
+                    self._worker.start()
+                except RuntimeError as error:
+                    log.debug("could not start Coworld update check: %s", error)
+            return {}
+
+    def _refresh(self, key: tuple[str, str, str], env: dict[str, str]) -> None:
+        import json
+
+        from research_core.plugin.executor import run_in_workspace
+
+        try:
+            update = json.loads(
+                run_in_workspace("platform", {"action": "coworld_update"}, env, timeout_s=3)
+            )
+        except Exception as error:  # A background check must never affect chat.
+            log.debug("Coworld update check failed: %s", error)
+            update = {}
+        if not isinstance(update, dict) or update.get("status") != "update_available":
+            update = {}
+        with self._lock:
+            self._cached[key] = (monotonic() + COWORLD_UPDATE_REFRESH_S, update)
+
+
 _bound_terminals: set[tuple[str, str]] = set()
 
 
@@ -213,6 +259,8 @@ def make_pre_llm_call(
     role: Role, on_context: Callable[[str, Any, list[tuple[str, str]]], None] | None = None
 ) -> Callable[..., dict | None]:
     """``on_context`` hears each source added to a user message, for telemetry."""
+
+    version_updates = _CoworldUpdates()
 
     def pre_llm_call(
         session_id: str = "",
@@ -224,7 +272,7 @@ def make_pre_llm_call(
         if not session_id:
             return None
         try:
-            from research_core.plugin.executor import profile_env, run_in_workspace
+            from research_core.plugin.executor import profile_env
             from research_core.store import sessions
             from research_core.tools.base import ToolContext
 
@@ -273,10 +321,10 @@ def make_pre_llm_call(
                     ctx, session_id, is_first_turn=is_first_turn, now=datetime.now(UTC)
                 )
             )
-            if session and (session["session_context"] or {}).get("league") and coworld:
-                update = json.loads(
-                    run_in_workspace("platform", {"action": "coworld_update"}, env, timeout_s=3)
-                )
+            league = (session["session_context"] or {}).get("league") if session else None
+            if isinstance(league, str) and league and coworld is not None:
+                key = (str(ctx.workspace.root), league, coworld.coworld_id)
+                update = version_updates.get(key, env)
                 if update.get("status") == "update_available":
                     parts.append(
                         (
@@ -290,14 +338,6 @@ def make_pre_llm_call(
                             "session's league for practice so it runs the current version. "
                             "Decide whether a rebuild is needed before updating the mixin's "
                             "working version. Avoid repeating an offer already in this chat.",
-                        )
-                    )
-                elif not update["ok"]:
-                    parts.append(
-                        (
-                            "coworld_update",
-                            "[Coworld version check unavailable] Use platform coworld_update to "
-                            "retry before making version-sensitive changes.",
                         )
                     )
             if on_context is not None:

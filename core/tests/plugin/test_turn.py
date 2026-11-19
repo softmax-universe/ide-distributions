@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
-from types import MappingProxyType
+from functools import partial
+from types import MappingProxyType, SimpleNamespace
 
 from research_core.plugin import session_context, turn
 from research_core.store import coworlds, notices, sessions
@@ -123,6 +124,54 @@ def test_pre_llm_call_reports_each_source_it_adds(tmp_path, monkeypatch):
     assert [source for source, _text in parts] == ["notices", "session_coworld"]
     # What telemetry hears is exactly what joins the message.
     assert "\n\n".join(text for _source, text in parts) == result["context"]
+
+
+def test_coworld_update_never_blocks_a_turn_and_caches_the_result(tmp_path, monkeypatch):
+    monkeypatch.setenv("IDE_WORKSPACE", str(tmp_path))
+    ctx = make_ctx(tmp_path)
+    sessions.register(
+        ctx.wstore,
+        Actor.harness(),
+        session_id="chat1",
+        profile="orchestrator",
+        kind="chat",
+        coworld_id="cow_fake",
+        session_context={"league": "softmax-minecraft"},
+    )
+    queued = []
+    clock = 0.0
+
+    def thread(*, target, args, **_):
+        return SimpleNamespace(
+            start=lambda: queued.append(partial(target, *args)),
+            is_alive=lambda: bool(queued),
+        )
+
+    monkeypatch.setattr(turn, "Thread", thread)
+    monkeypatch.setattr(turn, "monotonic", lambda: clock)
+    monkeypatch.setattr(
+        "research_core.plugin.executor.run_in_workspace",
+        lambda *a, **kw: (
+            '{"status": "update_available", "current_id": "cow_new"}'
+            if clock == 0
+            else '{"ok": false}'
+        ),
+    )
+    hook = turn.make_pre_llm_call("orchestrator")
+
+    for _ in range(2):
+        assert "Coworld update" not in hook(session_id="chat1")["context"]
+    (refresh,) = queued
+    queued.clear()
+    refresh()
+    assert "cow_new" in hook(session_id="chat1")["context"]
+    assert not queued
+
+    clock += turn.COWORLD_UPDATE_REFRESH_S
+    assert "cow_new" not in hook(session_id="chat1")["context"]
+    queued.pop()()
+    assert "version check unavailable" not in hook(session_id="chat1")["context"]
+    assert not queued
 
 
 def test_session_context_section(tmp_path, monkeypatch):
