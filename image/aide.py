@@ -305,6 +305,14 @@ class Snapshot(BaseModel):
     records: Records
 
 
+class RecoverableRequests(BaseModel):
+    epoch: str
+    seq: int
+    owners: dict[str, str]
+    unfinished: list[str]
+    sessions: list[SessionRow]
+
+
 class Waiting(BaseModel):
     detail: str
 
@@ -1776,13 +1784,18 @@ class Backend:
 
     async def recover(self) -> None:
         """Consume every request whose event log is not closed yet, open or newly terminal."""
-        snapshot = await self.snapshot()
-        scopes = {row.id: row.scope() for row in snapshot.records.sessions}
-        for request in snapshot.records.requests:
-            scope = scopes[request.session_id]
-            closed = request.logged is not None and request.logged.event["kind"] == "finished"
-            if not closed and scope is not None:
-                self.ensure_consumer(request.op_id, request.session_id, scope)
+        recovery = RecoverableRequests.model_validate_json(
+            await self.call(self.seam, "GET", "/recoverable-requests")
+        )
+        self.requests.update(recovery.owners)
+        self.epoch = recovery.epoch
+        if not self.start.done():
+            self.start.set_result(recovery.seq)
+        scopes = {row.id: row.scope() for row in recovery.sessions}
+        for request_id in recovery.unfinished:
+            session_id = recovery.owners[request_id]
+            if (scope := scopes[session_id]) is not None:
+                self.ensure_consumer(request_id, session_id, scope)
 
     # --- methods ------------------------------------------------------------------------------
 
