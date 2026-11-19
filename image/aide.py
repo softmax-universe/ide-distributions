@@ -7,8 +7,10 @@ history. One consumer per open request is that log's only writer: it translates 
 run events, appends each, and only then pushes it, so a push carries the cursor of the read
 returning the same event. Consumers start with the backend and resume from their log's last
 row, so a restart keeps what the log holds and loses what had not reached it, along with pushes
-not yet sent. A frontend is subscribed to a session from its first request naming it until the
-relay reports ``frontend.closed`` or the backend rebinds.
+not yet sent. Every connection reading a session hears its pushes. A session renders on the
+surface of the registered connection that last sent to it, and its page actions go to watchers
+rendering that surface. The workspace state keeps each session's surface and each surface's
+guide, which the view tool reads, so a restarted backend authors views as before it stopped.
 """
 
 import asyncio
@@ -19,11 +21,12 @@ import logging
 import socket as net_socket
 import ssl
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import AsyncExitStack
 from contextvars import ContextVar
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from functools import cached_property
+from typing import Annotated, Any, Literal
 from urllib.parse import quote
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -37,6 +40,7 @@ from pydantic import (
     Field,
     JsonValue,
     ValidationError,
+    field_validator,
     model_serializer,
 )
 from websockets.asyncio.client import ClientConnection, connect
@@ -54,7 +58,13 @@ from research_core.session_preview import EMBEDDED_ACTIVE, RECENT_TERMINAL, fall
 from research_core.store.db import DEFAULT_MAX_HOLD_S
 from research_core.store.migrate import BUSY_TIMEOUT_MS
 from research_core.telemetry import correlation, propagator, span, tracer
-from research_core.tools.display_view import current_view, view_path
+from research_core.tools.display_view import (
+    Surfaces,
+    current_view,
+    read_surfaces,
+    surfaces_path,
+    view_path,
+)
 
 log = logging.getLogger(__name__)
 
@@ -142,9 +152,30 @@ class PageInteraction(Closed):
     ref: str | None = None
 
 
+class ComponentCatalog(Closed):
+    """A renderer's component guide for its surface, registered by each connection it serves."""
+
+    kind: Literal["component_catalog"]
+    # Play sent no surface ID before softmax#32419; remove the default once that ships.
+    surface_id: str = Field(default="softmax", min_length=1, max_length=128, pattern=r"\S")
+    guide: str = Field(pattern=r"\S")
+
+    @field_validator("guide")
+    @classmethod
+    def bounded(cls, guide: str) -> str:
+        if len(guide.encode()) > 128 * 1024:
+            raise ValueError("A renderer guide is at most 128 KiB")
+        return guide
+
+
+class CurrentView(Closed):
+    kind: Literal["current_view"]
+    session_id: str
+
+
 class SurfaceEvent(Closed):
     scope: Scope
-    data: dict[str, JsonValue]
+    data: Annotated[ComponentCatalog | CurrentView, Field(discriminator="kind")]
 
 
 class PageScope(Scope):
@@ -863,7 +894,7 @@ class Progress:
 class Subscription:
     def __init__(self, scope: Scope):
         self.scope = scope
-        self.frontends: set[UUID] = set()
+        self.watchers: set[UUID] = set()  # every live connection that read the session
 
 
 class BoardFeed:
@@ -891,10 +922,8 @@ class Backend:
         self.subscribers: dict[str, Subscription] = {}
         self.session_locks: dict[str, asyncio.Lock] = {}
         self.publish_locks: dict[str, asyncio.Lock] = {}
-        self.view_calls: dict[tuple[str, str], str] = {}
-        self.view_started = asyncio.Condition()
-        self.catalogs: dict[UUID, asyncio.Future[str]] = {}
-        self.page_origins: dict[str, UUID] = {}
+        self.live: set[UUID] = set()  # connections the relay has not reported closed
+        self.renderers: dict[UUID, str] = {}  # live connection -> the surface it registered
         self.published_after: dict[str, int] = {}
         self.titles: dict[str, str] = {}  # session id -> non-empty title read from Hermes
         self.boards: dict[str, BoardFeed] = {}
@@ -1280,7 +1309,7 @@ class Backend:
     # --- notifications ----------------------------------------------------------------------
 
     async def touch(self, session_id: str, scope: Scope, frontend_id: UUID) -> None:
-        """Subscribe a frontend to a session, once this is the session's own scope.
+        """Subscribe a live connection to a session, once this is the session's own scope.
 
         ``changed`` reads with the recorded scope, and a failure there ends the backend, so a
         wrong scope is refused to its request and leaves nothing behind. Every caller reads what
@@ -1293,7 +1322,19 @@ class Backend:
             # scope, and projecting one fails validation.
             if row.scope() != scope:
                 raise Refusal("forbidden", "This session does not have that scope")
-        self.subscribers.setdefault(session_id, Subscription(scope)).frontends.add(frontend_id)
+        if frontend_id not in self.live:
+            return
+        self.subscribers.setdefault(session_id, Subscription(scope)).watchers.add(frontend_id)
+
+    @cached_property
+    def surfaces(self) -> Surfaces:
+        return read_surfaces(layout.from_env().state)
+
+    def save_surfaces(self) -> None:
+        path = surfaces_path(layout.from_env().state)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.with_suffix(".part").write_text(self.surfaces.model_dump_json())
+        path.with_suffix(".part").replace(path)
 
     async def send(self, socket: ClientConnection, frontend_id: UUID, message: dict) -> None:
         body = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
@@ -1313,14 +1354,36 @@ class Backend:
             return
         if isinstance(params, BaseModel):
             params = params.model_dump(mode="json")
-        for frontend_id in list(self.subscribers[session_id].frontends):
+        for frontend_id in list(self.subscribers[session_id].watchers):
             message = {"jsonrpc": "2.0", "method": method, "params": params}
+            await self.send(self.socket, frontend_id, message)
+
+    async def act(self, session_id: str, scope: Scope, data: dict) -> None:
+        """Send a page action to each watcher rendering the session's surface.
+
+        A browser performs a page interaction only for a turn it sent, and a view missed while
+        disconnected is read back with ``current_view``.
+        """
+        if self.socket is None or session_id not in self.subscribers:
+            return
+        watchers = [f for f in self.subscribers[session_id].watchers if f in self.renderers]
+        # A session no registered surface has sent to has nowhere to display.
+        surface = self.surfaces.sessions.get(session_id) if watchers else None
+        # Choose every recipient before the first send: a connection can close while one awaits.
+        recipients = [f for f in watchers if self.renderers[f] == surface]
+        for frontend_id in recipients:
+            message = {
+                "jsonrpc": "2.0",
+                "id": str(uuid4()),
+                "method": "surface.act",
+                "params": {"scope": scope.model_dump(), "data": data},
+            }
             await self.send(self.socket, frontend_id, message)
 
     async def changed(self, session_id: str) -> None:
         """Project and push ``state.changed`` serialized per session with its resolved title."""
         async with self.session_locks.setdefault(session_id, asyncio.Lock()):
-            if session_id not in self.subscribers or not self.subscribers[session_id].frontends:
+            if session_id not in self.subscribers:
                 return
             snapshot = await self.scoped(self.subscribers[session_id].scope, session_id=session_id)
             (row,) = snapshot.records.sessions
@@ -1410,8 +1473,7 @@ class Backend:
                         }
                     if native.request_id not in steered:
                         break
-                origin = self.page_origins.get(native.request_id or request_id)
-                if self.socket is not None and origin is not None and native.role == "assistant":
+                if native.role == "assistant":
                     for entry in native.tool_calls or []:
                         function = entry.get("function") if isinstance(entry, dict) else None
                         if (
@@ -1424,22 +1486,14 @@ class Backend:
                                 )
                             except ValidationError:
                                 continue
-                            await self.send(
-                                self.socket,
-                                origin,
+                            await self.act(
+                                session_id,
+                                scope,
                                 {
-                                    "jsonrpc": "2.0",
-                                    "id": str(uuid4()),
-                                    "method": "surface.act",
-                                    "params": {
-                                        "scope": scope.model_dump(),
-                                        "data": {
-                                            **parsed.model_dump(),
-                                            "kind": "page_interaction",
-                                            "session_id": session_id,
-                                            "request_id": native.request_id or request_id,
-                                        },
-                                    },
+                                    **parsed.model_dump(),
+                                    "kind": "page_interaction",
+                                    "session_id": session_id,
+                                    "request_id": native.request_id or request_id,
                                 },
                             )
                 visible = record(native, session_id)
@@ -1490,22 +1544,6 @@ class Backend:
                 }
                 await self.notify(request.session_id, "chat.chunk", params)
 
-    async def component_catalog(self, session: str, call: str) -> str:
-        # Registration, the tool process, and the gateway event may arrive in any order.
-        async with asyncio.timeout(12):
-            async with self.view_started:
-                await self.view_started.wait_for(lambda: (session, call) in self.view_calls)
-            request = self.view_calls[session, call]
-            owner = self.page_origins.get(request)
-            if owner is None:
-                raise ValueError("The frontend that sent this turn is disconnected")
-            if owner not in self.catalogs:
-                self.catalogs[owner] = asyncio.get_running_loop().create_future()
-            guide = await asyncio.shield(self.catalogs[owner])
-            if not guide:
-                raise ValueError("The frontend that sent this turn is disconnected")
-            return guide
-
     async def relay(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """The gateway plugin's reasoning lines, each to the follower of the run that serves its
         Session. A Session runs one request at a time, so this is that request's. A line for no
@@ -1513,17 +1551,7 @@ class Backend:
         """
         try:
             async for line in reader:
-                message = json.loads(line)
-                if message.get("kind") == "component_catalog":
-                    try:
-                        guide = await self.component_catalog(message["session"], message["call"])
-                        result = {"guide": guide}
-                    except (TimeoutError, ValueError, KeyError, TypeError, ConnectionClosed) as exc:
-                        result = {"error": str(exc) or "Component discovery timed out"}
-                    writer.write(json.dumps(result).encode() + b"\n")
-                    await writer.drain()
-                    return
-                thought = Thought.model_validate(message)
+                thought = Thought.model_validate_json(line)
                 # ``n`` starts again from one with a new gateway, which loses nothing here.
                 lost = max(0, thought.n - self.relayed - 1)
                 self.relayed = thought.n
@@ -1617,16 +1645,7 @@ class Backend:
                                 last_seq, progressed = event.seq, True
                                 progress.consumed[run.run_id] = last_seq
                                 await record(progress.place(run.run_id, event))
-                                if (
-                                    event.event == "tool.started"
-                                    and event.tool == "display_view"
-                                    and event.tool_call_id
-                                ):
-                                    async with self.view_started:
-                                        self.view_calls[session_id, event.tool_call_id] = request_id
-                                        self.view_started.notify_all()
                                 if event.event == "tool.completed":
-                                    self.view_calls.pop((session_id, event.tool_call_id), None)
                                     if event.tool == "display_view":
                                         await self.display_view(
                                             session_id, scope, event.tool_call_id
@@ -1728,8 +1747,6 @@ class Backend:
                     return
                 await wake.wait()
         finally:
-            self.view_calls = {k: v for k, v in self.view_calls.items() if v != request_id}
-            self.page_origins.pop(request_id, None)
             del self.wakes[request_id]
 
     def ensure_consumer(self, request_id: str, session_id: str, scope: Scope) -> None:
@@ -1830,51 +1847,29 @@ class Backend:
         return {"kind": "offer", "target_session_id": target.id if target else None}
 
     async def surface_event(self, frontend_id: UUID, request_id: str, params: SurfaceEvent) -> dict:
-        if params.data.get("kind") == "component_catalog":
-            guide = params.data.get("guide")
-            if (
-                params.scope.scope != "workspace"
-                or params.scope.coworld
-                or params.scope.league
-                or not isinstance(guide, str)
-                or not guide.strip()
-                or len(guide.encode()) > 128 * 1024
-            ):
-                raise Refusal("invalid", "Expected a workspace renderer guide of at most 128 KiB")
-            ready = self.catalogs.get(frontend_id)
-            if ready is None or ready.done():
-                ready = self.catalogs[frontend_id] = asyncio.get_running_loop().create_future()
-            ready.set_result(guide)
+        if isinstance(params.data, ComponentCatalog):
+            if params.scope.scope != "workspace" or params.scope.coworld or params.scope.league:
+                raise Refusal("invalid", "A renderer guide registers at workspace scope")
+            if frontend_id not in self.live:
+                return {"data": {"registered": True}}
+            surface = params.data.surface_id
+            self.renderers[frontend_id] = surface
+            if self.surfaces.guides.get(surface) != params.data.guide:
+                self.surfaces.guides[surface] = params.data.guide
+                self.save_surfaces()
             return {"data": {"registered": True}}
-        session_id = params.data.get("session_id")
-        if params.data.get("kind") != "current_view" or not isinstance(session_id, str):
-            raise Refusal("unsupported", "Unknown surface observation")
+        session_id = params.data.session_id
         await self.touch(session_id, params.scope, frontend_id)
         view = current_view(view_path(layout.from_env().state, session_id))
         return {"data": {"current": view}}
 
     async def display_view(self, session_id: str, scope: Scope, call_id: str | None) -> None:
-        socket = self.socket
-        subscription = self.subscribers.get(session_id)
-        if socket is None or subscription is None:
-            return
         view = current_view(view_path(layout.from_env().state, session_id))
         if view is None or (view.get("call_id") and view["call_id"] != call_id):
             return
-        for frontend_id in list(subscription.frontends):
-            await self.send(
-                socket,
-                frontend_id,
-                {
-                    "jsonrpc": "2.0",
-                    "id": str(uuid4()),
-                    "method": "surface.act",
-                    "params": {"scope": scope.model_dump(), "data": view},
-                },
-            )
+        await self.act(session_id, scope, view)
 
     async def send_chat(self, frontend_id: UUID, request_id: str, params: Send) -> dict:
-        await self.touch(params.session_id, params.scope, frontend_id)
         if len(params.messages) != 1 or params.messages[0]["role"] != "user":
             raise Refusal("unsupported", "Send exactly one user message")
         snapshot = await self.scoped(params.scope, session_id=params.session_id)
@@ -1895,9 +1890,14 @@ class Backend:
             "message": params.messages[0],
             "actor": "user:aide",
         } | params.model_dump(mode="json", include={"context", "instructions"}, exclude_none=True)
+        await self.touch(params.session_id, params.scope, frontend_id)
+        # The user sends from this surface, so the conversation's views render on it.
+        surface = self.renderers.get(frontend_id)
+        if surface is not None and self.surfaces.sessions.get(params.session_id) != surface:
+            self.surfaces.sessions[params.session_id] = surface
+            self.save_surfaces()
         await self.call(self.seam, "POST", "/message", command=True, json=body)
         if not replay:
-            self.page_origins[request_id] = frontend_id
             self.ensure_consumer(request_id, params.session_id, params.scope)
         return {"accepted": True, "session_id": params.session_id, "request_id": request_id}
 
@@ -2155,7 +2155,13 @@ class Backend:
 
     # --- the connection -----------------------------------------------------------------------
 
-    async def answer(self, socket: ClientConnection, frame: Frame) -> None:
+    def answer(self, socket: ClientConnection, frame: Frame) -> Coroutine[Any, Any, None]:
+        # Observe the connection before scheduling its request. Closing it then invalidates
+        # even requests still waiting for a scope read before they can attach a session.
+        self.live.add(frame.frontend_id)
+        return self.handle_request(socket, frame)
+
+    async def handle_request(self, socket: ClientConnection, frame: Frame) -> None:
         with span("workspace.aide.request", context=propagator.extract(frame.trace_context)):
             message = frame.message
             request_id, method = str(message["id"]), str(message["method"])
@@ -2203,14 +2209,11 @@ class Backend:
 
     def closed(self, frontend_id: UUID) -> None:
         """The relay reports a frontend connection ended: its subscriptions end with it."""
-        catalog = self.catalogs.pop(frontend_id, None)
-        if catalog is not None and not catalog.done():
-            catalog.set_result("")
-        self.page_origins = {
-            key: owner for key, owner in self.page_origins.items() if owner != frontend_id
-        }
+        self.live.discard(frontend_id)
         for subscription in self.subscribers.values():
-            subscription.frontends.discard(frontend_id)
+            subscription.watchers.discard(frontend_id)
+        self.renderers.pop(frontend_id, None)
+        self.subscribers = {k: s for k, s in self.subscribers.items() if s.watchers}
         for coworld, feed in list(self.boards.items()):
             for reader in list(feed.readers):
                 if reader[0] == frontend_id:
@@ -2281,10 +2284,6 @@ class Backend:
                         "AIDE relay connection failed", extra={"attributes": {**fields, **failure}}
                     )
                     raise
-            # Frontends subscribe through one binding; after a rebind they subscribe again by
-            # reading their sessions, so the last binding's frontends are stale.
-            self.page_origins.clear()
-            self.subscribers.clear()
             self.titles.clear()
             self.socket = socket
             try:
@@ -2312,10 +2311,11 @@ class Backend:
                     )
             finally:
                 self.socket = None
-                for catalog in self.catalogs.values():
-                    if not catalog.done():
-                        catalog.set_result("")
-                self.catalogs.clear()
+                # Frontends subscribe through one binding; after a rebind they subscribe again by
+                # reading their sessions and registering again.
+                self.live.clear()
+                self.renderers.clear()
+                self.subscribers.clear()
                 for feed in self.boards.values():
                     if feed.watcher is not None:
                         feed.watcher.cancel()

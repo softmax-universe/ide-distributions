@@ -832,7 +832,7 @@ def test_an_append_with_no_answer_ends_the_backend_and_the_next_one_resumes_the_
         # Model an already subscribed frontend before recovery can push. state.get awaits
         # a scope read before subscribing, so it can otherwise race the recovering consumer.
         subscription = aide.Subscription(aide.Scope.model_validate(WORKSPACE))
-        subscription.frontends.add(FRONTEND)
+        subscription.watchers.add(FRONTEND)
         backend.subscribers[session_id] = subscription
         state = {"resource": "sessions", "id": session_id, "scope": WORKSPACE}
         await call(backend, "state.get", state)
@@ -1352,7 +1352,7 @@ def test_a_relay_rebind_ends_the_last_bindings_subscriptions(system):
 
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)
-        assert backend.subscribers[session_id].frontends == {FRONTEND}
+        assert backend.subscribers[session_id].watchers == {FRONTEND}
         binding = {"backend_id": str(uuid4()), "version": "1.0.0", "max_message_bytes": 1048576}
 
         async def relay(socket):
@@ -2153,14 +2153,13 @@ def test_pending_clarification_has_no_choices_field(system):
 def test_frontend_closed_ends_its_subscriptions(system):
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)
-        await call(
-            backend,
-            "state.get",
-            {"resource": "sessions", "id": session_id, "scope": WORKSPACE},
-            frontend=OTHER,
-        )
+        state = {"resource": "sessions", "id": session_id, "scope": WORKSPACE}
+        await call(backend, "state.get", state, frontend=OTHER)
+        assert backend.subscribers[session_id].watchers == {FRONTEND, OTHER}
         backend.closed(OTHER)
-        assert backend.subscribers[session_id].frontends == {FRONTEND}
+        assert backend.subscribers[session_id].watchers == {FRONTEND}
+        backend.closed(FRONTEND)
+        assert backend.subscribers == {}
 
     run(system, scenario)
 
@@ -2936,32 +2935,18 @@ def test_cached_hermes_title_skips_repeat_gateway_gets(system, monkeypatch):
     run(system, scenario)
 
 
-def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch):
+def view_author(monkeypatch, ctx, view):
+    """Stub the view model; it returns ``view`` and records the guide each request carried."""
     import openai
 
-    from research_core.tools.base import ToolContext, run_tool
-
-    ctx, _, _ = system
-    monkeypatch.setenv("IDE_WORKSPACE", str(ctx.workspace.root))
-    model = "fixture/view-author"
-    guide = "Render a version 1 view with a body of nodes."
-    view = {"version": 1, "body": [{"type": "metric", "label": "Score", "value": 8}]}
+    used_guides = []
 
     def generate(request):
         payload = json.loads(request.content)
-        assert payload["model"] == model
-        assert guide in payload["messages"][0]["content"]
-        assert payload["messages"][1]["content"] == "Score is 8"
+        used_guides.append(payload["messages"][0]["content"].split("\n", 1)[1])
+        message = {"role": "assistant", "content": json.dumps(view)}
         return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "finish_reason": "stop",
-                        "message": {"role": "assistant", "content": json.dumps(view)},
-                    }
-                ]
-            },
+            200, json={"choices": [{"finish_reason": "stop", "message": message}]}
         )
 
     client = openai.OpenAI
@@ -2972,93 +2957,208 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
             **kw, http_client=httpx.Client(transport=httpx.MockTransport(generate))
         ),
     )
+    monkeypatch.setenv("IDE_WORKSPACE", str(ctx.workspace.root))
+    return used_guides
+
+
+VIEW_RUN = [
+    {"event": "message.delta", "delta": "Score is 8."},
+    {"event": "tool.started", "tool": "display_view", "tool_call_id": "call_view"},
+    {"gate": True},
+    {"event": "tool.completed", "tool": "display_view", "tool_call_id": "call_view"},
+    {"event": "run.completed", "say": [{"role": "assistant", "content": "Score is 8."}]},
+]
+
+
+class PlayTab:
+    """One Play tab's AIDE traffic, as ``use-aide-chat.ts`` sends it."""
+
+    def __init__(self, backend, session_id, guide):
+        self.backend, self.session_id, self.guide = backend, session_id, guide
+
+    async def present(self, frontend):
+        """A connection sees the backend present: Play registers its guide and reads its session."""
+        catalog = {"kind": "component_catalog", "surface_id": "softmax", "guide": self.guide}
+        await call(
+            self.backend, "surface.event", {"scope": WORKSPACE, "data": catalog}, frontend=frontend
+        )
+        state = {"resource": "sessions", "id": self.session_id, "scope": WORKSPACE}
+        await call(self.backend, "state.get", state, frontend=frontend)
+
+    async def current_view(self, frontend):
+        """Play's view effect, which runs whenever its socket (re)opens."""
+        params = {
+            "scope": WORKSPACE,
+            "data": {"kind": "current_view", "session_id": self.session_id},
+        }
+        reply = await call(self.backend, "surface.event", params, frontend=frontend)
+        return reply["result"]["data"]["current"]
+
+    def views(self, frontend):
+        return [n["data"] for n in self.backend.socket.notes("surface.act", frontend)]
+
+
+async def view_tool(ctx, session_id):
+    """Run the display_view tool as the turn's Hermes process does: it reads workspace state."""
+    from research_core.tools.base import ToolContext, run_tool
+
+    env = {
+        **ctx.env,
+        "IDE_SESSION_ID": session_id,
+        "IDE_TOOL_CALL_ID": "call_view",
+        "OPENROUTER_API_KEY": "fixture",
+        "AIDE_VIEW_MODEL": "fixture/view-author",
+    }
+    return await asyncio.to_thread(
+        run_tool, "display_view", {"brief": "Score is 8"}, ToolContext.from_env("orchestrator", env)
+    )
+
+
+async def view_turn(backend, gateway, ctx, session_id, sender, *, meanwhile=None):
+    """Send a turn that authors a view; ``meanwhile`` runs while the turn is in flight."""
+    request_id = str(uuid4())
+    params = {"session_id": session_id, "messages": say("Score?"), "scope": WORKSPACE}
+    await call(backend, "chat.send", params, request_id=request_id, frontend=sender)
+    tool = asyncio.create_task(view_tool(ctx, session_id))
+    if meanwhile is not None:
+        await meanwhile()
+    assert "prepared" in await tool
+    gateway.gate.set()
+    await until(lambda: request_id in backend.finished)
+    gateway.gate.clear()
+
+
+def test_a_play_tab_keeps_its_views_across_socket_and_relay_reconnects(system, monkeypatch):
+    from websockets.asyncio.server import serve as websocket_server
+
+    ctx, _, _ = system
+    view = {"version": 1, "body": [{"type": "metric", "label": "Score", "value": 8}]}
+    used_guides = view_author(monkeypatch, ctx, view)
+
+    async def scenario(backend, gateway, ctx, hermes):
+        gateway.script = lambda run_id: VIEW_RUN
+        session_id = await opened(backend)
+        tab = PlayTab(backend, session_id, "Render a version 1 view.")
+
+        # A conversation no registered surface has sent to has nowhere to display.
+        assert "no display surface" in await view_tool(ctx, session_id)
+
+        # 1. Connect: Play registers its guide when the backend is present, then the user sends.
+        await tab.present(FRONTEND)
+        await view_turn(backend, gateway, ctx, session_id, FRONTEND)
+        assert used_guides == [tab.guide]
+        (first,) = tab.views(FRONTEND)
+        assert first["view"] == view and first["revision"] == 1
+
+        # 2. The socket drops mid-turn and the view completes while the tab is away. The new
+        # connection registers, reads its session and recovers the view when its socket opens.
+        away = uuid4()
+
+        async def drop():
+            backend.closed(FRONTEND)
+
+        await view_turn(backend, gateway, ctx, session_id, FRONTEND, meanwhile=drop)
+        assert used_guides == [tab.guide] * 2
+        assert len(backend.socket.notes("surface.act")) == 1
+        tab.guide = "Render a version 1 view. Tables are also available."
+        await tab.present(away)
+        assert (await tab.current_view(away))["revision"] == 2
+
+        # 3. The socket drops after sending and reconnects before the view: it arrives live,
+        # authored with the guide the new connection registered.
+        back = uuid4()
+
+        async def reconnect():
+            backend.closed(away)
+            await tab.present(back)
+
+        await view_turn(backend, gateway, ctx, session_id, away, meanwhile=reconnect)
+        assert used_guides[-1] == tab.guide
+        assert [v["revision"] for v in tab.views(back)] == [3]
+
+        # 4. The workspace's relay connection rebinds while the tab's socket stays open. A view
+        # finished in the gap is not pushed; the tab hears the backend present again,
+        # registers, reads its session, and gets the next view live.
+        fake = backend.socket
+        binding = {"backend_id": str(uuid4()), "version": "1.0.0", "max_message_bytes": 1048576}
+
+        async def relay(socket):
+            await socket.send(json.dumps({"binding": binding}))
+
+        async def rebind():
+            async with websocket_server(
+                relay, "127.0.0.1", 0, select_subprotocol=lambda _, offered: offered[0]
+            ) as server:
+                await backend.connect(
+                    f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}",
+                    "proof",
+                    workspace_id="proof",
+                )
+            backend.socket = fake
+
+        await view_turn(backend, gateway, ctx, session_id, back, meanwhile=rebind)
+        assert [v["revision"] for v in tab.views(back)] == [3]
+        assert (await tab.current_view(back))["revision"] == 4
+        await tab.present(back)
+        await view_turn(backend, gateway, ctx, session_id, back)
+        assert [v["revision"] for v in tab.views(back)] == [3, 5]
+        assert used_guides == [used_guides[0]] * 2 + [tab.guide] * 3
+
+    run(system, scenario)
+
+
+def test_a_play_view_survives_a_workspace_sleep_with_or_without_the_tab(system, monkeypatch):
+    ctx, hermes, server = system
+    view = {"version": 1, "body": [{"type": "metric", "label": "Score", "value": 8}]}
+    used_guides = view_author(monkeypatch, ctx, view)
+
+    def held_first(run):
+        if len(hermes.runs) == 1:
+            hermes.fail(run.run_id, "HTTP 429: slow down")
 
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)
-        env = {
-            **ctx.env,
-            "IDE_SESSION_ID": session_id,
-            "IDE_TOOL_CALL_ID": "call_view",
-            "OPENROUTER_API_KEY": "fixture",
-            "AIDE_VIEW_MODEL": model,
-        }
+        tab = PlayTab(backend, session_id, "Render a version 1 view.")
+        await tab.present(FRONTEND)
+
+        # A message held when the workspace sleeps resumes after the wake, on a new backend
+        # process, before any tab has reconnected. The view uses the stored guide and is
+        # recovered when the tab connects.
+        hermes.script = held_first
+        first_run = []
 
         def script(run_id):
-            return [
-                {"event": "message.delta", "delta": "Score is 8."},
-                {"event": "tool.started", "tool": "display_view", "tool_call_id": "call_view"},
-                {"gate": True},
-                {"event": "tool.completed", "tool": "display_view", "tool_call_id": "call_view"},
-                {
-                    "event": "run.completed",
-                    "say": [{"role": "assistant", "content": "Score is 8."}],
-                },
-            ]
+            if not first_run:
+                first_run.append(run_id)
+                return [{"event": "run.failed", "error": "HTTP 429: slow down"}]
+            return VIEW_RUN
 
         gateway.script = script
-        await call(
-            backend,
-            "chat.send",
-            {"session_id": session_id, "messages": say("Score?"), "scope": WORKSPACE},
-        )
-        async with await asyncio.start_server(backend.relay, "127.0.0.1", 0) as server:
-            env["IDE_REASONING_RELAY"] = f"127.0.0.1:{server.sockets[0].getsockname()[1]}"
+        request_id = str(uuid4())
+        params = {"session_id": session_id, "messages": say("Score?"), "scope": WORKSPACE}
+        await call(backend, "chat.send", params, request_id=request_id)
+        get = {"resource": "requests", "id": request_id, "scope": WORKSPACE}
+        while (await call(backend, "state.get", get))["result"]["item"]["status"] != "waiting":
+            await asyncio.sleep(0.05)
+        woken = await backend.restart()
+        tab.backend = woken
+        server.test_clock.now += timedelta(minutes=2)
 
-            async def invoke():
-                response = await asyncio.to_thread(
-                    run_tool,
-                    "display_view",
-                    {"brief": "Score is 8"},
-                    ToolContext.from_env("orchestrator", env),
-                )
-                assert "prepared" in response and "metric" not in response, response
+        assert "prepared" in await view_tool(ctx, session_id)
+        gateway.gate.set()
+        await until(lambda: request_id in woken.finished)
+        gateway.gate.clear()
+        assert used_guides == [tab.guide]
+        assert not woken.socket.notes("surface.act")
 
-            tool = asyncio.create_task(invoke())
-            await until(lambda: FRONTEND in backend.catalogs)
-
-            async def register(frontend, text):
-                response = await call(
-                    backend,
-                    "surface.event",
-                    {"scope": WORKSPACE, "data": {"kind": "component_catalog", "guide": text}},
-                    frontend=frontend,
-                )
-                assert response["result"]["data"]["registered"]
-
-            await register(OTHER, "A different browser renderer")
-            assert not tool.done()
-            await register(FRONTEND, guide)
-            await tool
-            await invoke()
-            gateway.gate.set()
-            await until(lambda: backend.socket.notes("chat.finished"))
-            backend.closed(FRONTEND)
-            gateway.gate.clear()
-            await call(
-                backend,
-                "chat.send",
-                {"session_id": session_id, "messages": say("Again"), "scope": WORKSPACE},
-                frontend=OTHER,
-            )
-            await register(OTHER, guide)
-            await invoke()
-            gateway.gate.set()
-        await until(lambda: backend.socket.notes("chat.finished", OTHER))
-        actions = [
-            f["message"]["params"]["data"]
-            for f in backend.socket.frames
-            if f["message"].get("method") == "surface.act"
-        ]
-        assert len(actions) == 2 and actions[-1]["view"] == view
-        assert any(
-            n["event"].get("delta") == "Score is 8." for n in backend.socket.notes("chat.event")
-        )
-        backend = await backend.restart()
-        params = {"scope": WORKSPACE, "data": {"kind": "current_view", "session_id": session_id}}
-        assert (await call(backend, "surface.event", params))["result"]["data"][
-            "current"
-        ] == actions[-1]
-        assert "error" in await call(backend, "surface.event", params | {"scope": LEAGUE})
+        # The tab reconnects to the woken workspace and recovers that view, then a new turn's
+        # view arrives live.
+        tab.guide = "Render a version 1 view. Tables are also available."
+        await tab.present(OTHER)
+        assert (await tab.current_view(OTHER))["revision"] == 1
+        await view_turn(woken, gateway, ctx, session_id, OTHER)
+        assert used_guides == ["Render a version 1 view.", tab.guide]
+        assert [v["revision"] for v in tab.views(OTHER)] == [2]
 
     run(system, scenario)
 

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import socket
 from pathlib import Path
+
+from pydantic import BaseModel
 
 from research_core.locks import file_lock
 from research_core.store import sessions
@@ -24,21 +25,20 @@ def current_view(path: Path) -> dict | None:
     return json.loads(path.read_bytes()) if path.exists() else None
 
 
-def request_catalog(call: ToolCall, session_id: str) -> str:
-    """Ask the workspace backend for the renderer attached to this tool call."""
-    call_id = call.ctx.env.get("IDE_TOOL_CALL_ID")
-    address = call.ctx.env.get("IDE_REASONING_RELAY")
-    if not call_id or not address:
-        raise ToolError("component discovery needs an attached Play turn")
-    host, port = address.rsplit(":", 1)
-    with socket.create_connection((host, int(port)), timeout=15) as connection:
-        message = {"kind": "component_catalog", "session": session_id, "call": call_id}
-        connection.sendall(json.dumps(message).encode() + b"\n")
-        with connection.makefile("rb") as stream:
-            result = json.loads(stream.readline(1024 * 1024))
-    if "error" in result:
-        raise ToolError(result["error"])
-    return result["guide"]
+class Surfaces(BaseModel):
+    """The renderers conversations display on. The AIDE backend writes it; this tool reads it."""
+
+    guides: dict[str, str] = {}  # surface ID -> its latest registered component guide
+    sessions: dict[str, str] = {}  # session ID -> the surface whose user last sent to it
+
+
+def surfaces_path(state: Path) -> Path:
+    return state / "aide-surfaces.json"
+
+
+def read_surfaces(state: Path) -> Surfaces:
+    path = surfaces_path(state)
+    return Surfaces.model_validate_json(path.read_bytes()) if path.exists() else Surfaces()
 
 
 def handle(call: ToolCall) -> dict:
@@ -49,7 +49,10 @@ def handle(call: ToolCall) -> dict:
     session = sessions.read(ctx.wstore, session_id)
     if not session or session["kind"] != "chat":
         raise ToolError("display_view requires an active chat session")
-    catalog = request_catalog(call, session_id)
+    surfaces = read_surfaces(ctx.workspace.state)
+    if session_id not in surfaces.sessions:
+        raise ToolError("no display surface has sent a message in this conversation")
+    catalog = surfaces.guides[surfaces.sessions[session_id]]
     with OpenAI(
         api_key=ctx.env["OPENROUTER_API_KEY"],
         base_url="https://openrouter.ai/api/v1",
@@ -117,7 +120,8 @@ def page_interaction(call: ToolCall) -> dict:
     action = call.get("action")
     if action != "remember" and not call.get("ref"):
         raise ToolError("this interaction needs a ref from the current page")
-    # The backend forwards this tool's completed call to the frontend that sent the turn.
+    # The backend forwards this tool's completed call to the conversation's surface; the page that
+    # sent the turn performs it.
     return {"status": "requested"}
 
 
