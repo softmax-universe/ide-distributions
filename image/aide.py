@@ -7,9 +7,10 @@ history. One consumer per open request is that log's only writer: it translates 
 run events, appends each, and only then pushes it, so a push carries the cursor of the read
 returning the same event. Consumers start with the backend and resume from their log's last
 row, so a restart keeps what the log holds and loses what had not reached it, along with pushes
-not yet sent. Every connection reading a session hears its pushes, page actions included when
-it renders the acting turn's surface: the one the turn's sending connection registered. The
-browser decides which page actions it performs.
+not yet sent. Every connection reading a session hears its pushes. A session renders on the
+surface of the registered connection that last read it, and its page actions go to watchers
+rendering that surface. The workspace state keeps each session's surface and each surface's
+guide, so a restarted backend authors views as before it stopped.
 """
 
 import asyncio
@@ -24,6 +25,7 @@ from collections.abc import AsyncIterator, Coroutine
 from contextlib import AsyncExitStack
 from contextvars import ContextVar
 from datetime import UTC, datetime
+from functools import cached_property
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -163,6 +165,11 @@ class ComponentCatalog(Closed):
 class CurrentView(Closed):
     kind: Literal["current_view"]
     session_id: str
+
+
+class Surfaces(BaseModel):
+    guides: dict[str, str] = {}  # surface ID -> its latest registered renderer guide
+    sessions: dict[str, str] = {}  # session ID -> the surface it renders on
 
 
 class SurfaceEvent(Closed):
@@ -917,10 +924,7 @@ class Backend:
         self.view_calls: dict[tuple[str, str], str] = {}
         self.view_ready = asyncio.Condition()
         self.live: set[UUID] = set()  # connections the relay has not reported closed
-        # What each connection registered. A closed one's stays while a turn it sent runs.
-        self.renderers: dict[UUID, ComponentCatalog] = {}
-        self.surface_guides: dict[str, str] = {}  # surface ID -> its latest registered guide
-        self.turn_origins: dict[str, UUID] = {}  # running request -> the connection that sent it
+        self.renderers: dict[UUID, str] = {}  # live connection -> the surface it registered
         self.published_after: dict[str, int] = {}
         self.titles: dict[str, str] = {}  # session id -> non-empty title read from Hermes
         self.boards: dict[str, BoardFeed] = {}
@@ -1319,21 +1323,31 @@ class Backend:
             # scope, and projecting one fails validation.
             if row.scope() != scope:
                 raise Refusal("forbidden", "This session does not have that scope")
-        if frontend_id in self.live:
-            self.subscribers.setdefault(session_id, Subscription(scope)).watchers.add(frontend_id)
+        if frontend_id not in self.live:
+            return
+        self.subscribers.setdefault(session_id, Subscription(scope)).watchers.add(frontend_id)
+        if frontend_id in self.renderers:
+            await self.render_on([session_id], self.renderers[frontend_id])
 
-    def turn_surface(self, request_id: str) -> str | None:
-        """The surface a running turn renders on: the one its sending connection registered."""
-        origin = self.turn_origins.get(request_id)
-        renderer = None if origin is None else self.renderers.get(origin)
-        return None if renderer is None else renderer.surface_id
+    @cached_property
+    def surfaces(self) -> Surfaces:
+        path = layout.from_env().state / "aide-surfaces.json"
+        return Surfaces.model_validate_json(path.read_bytes()) if path.exists() else Surfaces()
 
-    def prune_renderers(self) -> None:
-        self.renderers = {
-            frontend_id: renderer
-            for frontend_id, renderer in self.renderers.items()
-            if frontend_id in self.live or frontend_id in self.turn_origins.values()
-        }
+    async def render_on(self, session_ids: list[str], surface: str) -> None:
+        """Record the surface these sessions render on, durably, and wake waiting view authors."""
+        async with self.view_ready:
+            changed = [s for s in session_ids if self.surfaces.sessions.get(s) != surface]
+            if changed:
+                self.surfaces.sessions.update(dict.fromkeys(changed, surface))
+                self.save_surfaces()
+                self.view_ready.notify_all()
+
+    def save_surfaces(self) -> None:
+        path = layout.from_env().state / "aide-surfaces.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.with_suffix(".part").write_text(self.surfaces.model_dump_json())
+        path.with_suffix(".part").replace(path)
 
     async def send(self, socket: ClientConnection, frontend_id: UUID, message: dict) -> None:
         body = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
@@ -1357,17 +1371,18 @@ class Backend:
             message = {"jsonrpc": "2.0", "method": method, "params": params}
             await self.send(self.socket, frontend_id, message)
 
-    async def act(self, session_id: str, scope: Scope, request_id: str, data: dict) -> None:
-        """Send a turn's page action to each watcher rendering the turn's surface.
+    async def act(self, session_id: str, scope: Scope, data: dict) -> None:
+        """Send a page action to each watcher rendering the session's surface.
 
-        Another surface cannot render it. A browser performs a page interaction only for a turn
-        it sent, and a view missed while disconnected is read back with ``current_view``.
+        A browser performs a page interaction only for a turn it sent, and a view missed while
+        disconnected is read back with ``current_view``.
         """
-        surface = self.turn_surface(request_id)
-        if self.socket is None or surface is None or session_id not in self.subscribers:
+        if self.socket is None or session_id not in self.subscribers:
             return
-        for frontend_id in list(self.subscribers[session_id].watchers):
-            if frontend_id in self.renderers and self.renderers[frontend_id].surface_id == surface:
+        watchers = [f for f in self.subscribers[session_id].watchers if f in self.renderers]
+        for frontend_id in watchers:
+            # A registered watcher has put the session on a surface.
+            if self.renderers[frontend_id] == self.surfaces.sessions[session_id]:
                 message = {
                     "jsonrpc": "2.0",
                     "id": str(uuid4()),
@@ -1485,7 +1500,6 @@ class Backend:
                             await self.act(
                                 session_id,
                                 scope,
-                                request_id,
                                 {
                                     **parsed.model_dump(),
                                     "kind": "page_interaction",
@@ -1542,19 +1556,14 @@ class Backend:
                 await self.notify(request.session_id, "chat.chunk", params)
 
     async def component_catalog(self, session: str, call: str) -> str:
-        """The latest guide registered for the surface of the turn authoring this view."""
+        """The latest guide registered for the surface this session renders on."""
         # Registration, the tool process, and the gateway event may arrive in any order.
         async with asyncio.timeout(12):
             async with self.view_ready:
                 await self.view_ready.wait_for(
-                    lambda: (
-                        (session, call) in self.view_calls
-                        and self.turn_surface(self.view_calls[session, call]) is not None
-                    )
+                    lambda: (session, call) in self.view_calls and session in self.surfaces.sessions
                 )
-                surface = self.turn_surface(self.view_calls[session, call])
-                assert surface is not None
-                return self.surface_guides[surface]
+                return self.surfaces.guides[self.surfaces.sessions[session]]
 
     async def relay(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """The gateway plugin's reasoning lines, each to the follower of the run that serves its
@@ -1679,7 +1688,7 @@ class Backend:
                                     self.view_calls.pop((session_id, event.tool_call_id), None)
                                     if event.tool == "display_view":
                                         await self.display_view(
-                                            session_id, scope, request_id, event.tool_call_id
+                                            session_id, scope, event.tool_call_id
                                         )
                                     after = await self.publish(request_id, session_id, scope, after)
                                 elif event.event in CONTROLS:
@@ -1779,8 +1788,6 @@ class Backend:
                 await wake.wait()
         finally:
             self.view_calls = {k: v for k, v in self.view_calls.items() if v != request_id}
-            self.turn_origins.pop(request_id, None)
-            self.prune_renderers()
             del self.wakes[request_id]
 
     def ensure_consumer(self, request_id: str, session_id: str, scope: Scope) -> None:
@@ -1884,24 +1891,28 @@ class Backend:
         if isinstance(params.data, ComponentCatalog):
             if params.scope.scope != "workspace" or params.scope.coworld or params.scope.league:
                 raise Refusal("invalid", "A renderer guide registers at workspace scope")
+            if frontend_id not in self.live:
+                return {"data": {"registered": True}}
+            surface = params.data.surface_id
+            self.renderers[frontend_id] = surface
             async with self.view_ready:
-                if frontend_id in self.live:
-                    self.renderers[frontend_id] = params.data
-                    self.surface_guides[params.data.surface_id] = params.data.guide
+                if self.surfaces.guides.get(surface) != params.data.guide:
+                    self.surfaces.guides[surface] = params.data.guide
+                    self.save_surfaces()
                     self.view_ready.notify_all()
+            watched = [s for s, sub in self.subscribers.items() if frontend_id in sub.watchers]
+            await self.render_on(watched, surface)
             return {"data": {"registered": True}}
         session_id = params.data.session_id
         await self.touch(session_id, params.scope, frontend_id)
         view = current_view(view_path(layout.from_env().state, session_id))
         return {"data": {"current": view}}
 
-    async def display_view(
-        self, session_id: str, scope: Scope, request_id: str, call_id: str | None
-    ) -> None:
+    async def display_view(self, session_id: str, scope: Scope, call_id: str | None) -> None:
         view = current_view(view_path(layout.from_env().state, session_id))
         if view is None or (view.get("call_id") and view["call_id"] != call_id):
             return
-        await self.act(session_id, scope, request_id, view)
+        await self.act(session_id, scope, view)
 
     async def send_chat(self, frontend_id: UUID, request_id: str, params: Send) -> dict:
         if len(params.messages) != 1 or params.messages[0]["role"] != "user":
@@ -1927,9 +1938,6 @@ class Backend:
         await self.touch(params.session_id, params.scope, frontend_id)
         await self.call(self.seam, "POST", "/message", command=True, json=body)
         if not replay:
-            async with self.view_ready:
-                self.turn_origins[request_id] = frontend_id
-                self.view_ready.notify_all()
             self.ensure_consumer(request_id, params.session_id, params.scope)
         return {"accepted": True, "session_id": params.session_id, "request_id": request_id}
 
@@ -2244,8 +2252,8 @@ class Backend:
         self.live.discard(frontend_id)
         for subscription in self.subscribers.values():
             subscription.watchers.discard(frontend_id)
+        self.renderers.pop(frontend_id, None)
         self.subscribers = {k: s for k, s in self.subscribers.items() if s.watchers}
-        self.prune_renderers()
         for coworld, feed in list(self.boards.items()):
             for reader in list(feed.readers):
                 if reader[0] == frontend_id:
@@ -2344,10 +2352,10 @@ class Backend:
             finally:
                 self.socket = None
                 # Frontends subscribe through one binding; after a rebind they subscribe again by
-                # reading their sessions. Running turns keep the surface their sender registered.
+                # reading their sessions and registering again.
                 self.live.clear()
+                self.renderers.clear()
                 self.subscribers.clear()
-                self.prune_renderers()
                 for feed in self.boards.values():
                     if feed.watcher is not None:
                         feed.watcher.cancel()
