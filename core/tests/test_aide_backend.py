@@ -390,8 +390,8 @@ class _AideContract:
         self._validate(self.param_schemas[method], frame["params"])
 
 
-# Canonical Metta schema at a35440aedc (policy.list).
-_AIDE_ASYNCAPI_SHA256 = "f31015e897946f25fbaa7814da62cc7c7b82e0c768a10da044a0c4f3b54554da"
+# Canonical Metta schema at 228b15d985 (session.latest).
+_AIDE_ASYNCAPI_SHA256 = "1b39520f7d5df6902804d3d0eaa69b356e69ff989ccf458bb5134baba33ab268"
 
 
 @lru_cache(maxsize=1)
@@ -3034,22 +3034,33 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
             await until(lambda: backend.socket.notes("chat.finished"))
             backend.closed(FRONTEND)
             gateway.gate.clear()
+            await register(OTHER, guide)
             await call(
                 backend,
                 "chat.send",
                 {"session_id": session_id, "messages": say("Again"), "scope": WORKSPACE},
                 frontend=OTHER,
             )
-            await register(OTHER, guide)
+            backend.closed(OTHER)
+            reconnected = uuid4()
+            params = {
+                "scope": WORKSPACE,
+                "data": {"kind": "current_view", "session_id": session_id},
+            }
+            assert (await call(backend, "surface.event", params, frontend=reconnected))["result"][
+                "data"
+            ]["current"]["revision"] == 2
+            await register(reconnected, "A different browser renderer")
             await invoke()
             gateway.gate.set()
-        await until(lambda: backend.socket.notes("chat.finished", OTHER))
+        await until(lambda: backend.socket.notes("chat.finished", reconnected))
         actions = [
             f["message"]["params"]["data"]
             for f in backend.socket.frames
             if f["message"].get("method") == "surface.act"
         ]
         assert len(actions) == 2 and actions[-1]["view"] == view
+        assert backend.socket.notes("surface.act", reconnected)[0]["data"] == actions[-1]
         assert any(
             n["event"].get("delta") == "Score is 8." for n in backend.socket.notes("chat.event")
         )

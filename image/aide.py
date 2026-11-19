@@ -894,6 +894,7 @@ class Backend:
         self.view_calls: dict[tuple[str, str], str] = {}
         self.view_started = asyncio.Condition()
         self.catalogs: dict[UUID, asyncio.Future[str]] = {}
+        self.turn_catalogs: dict[str, asyncio.Future[str]] = {}
         self.page_origins: dict[str, UUID] = {}
         self.published_after: dict[str, int] = {}
         self.titles: dict[str, str] = {}  # session id -> non-empty title read from Hermes
@@ -1501,12 +1502,10 @@ class Backend:
             async with self.view_started:
                 await self.view_started.wait_for(lambda: (session, call) in self.view_calls)
             request = self.view_calls[session, call]
-            owner = self.page_origins.get(request)
-            if owner is None:
-                raise ValueError("The frontend that sent this turn is disconnected")
-            if owner not in self.catalogs:
-                self.catalogs[owner] = asyncio.get_running_loop().create_future()
-            guide = await asyncio.shield(self.catalogs[owner])
+            catalog = self.turn_catalogs.get(request)
+            if catalog is None:
+                raise ValueError("This turn has no registered component guide")
+            guide = await asyncio.shield(catalog)
             if not guide:
                 raise ValueError("The frontend that sent this turn is disconnected")
             return guide
@@ -1735,6 +1734,7 @@ class Backend:
         finally:
             self.view_calls = {k: v for k, v in self.view_calls.items() if v != request_id}
             self.page_origins.pop(request_id, None)
+            self.turn_catalogs.pop(request_id, None)
             del self.wakes[request_id]
 
     def ensure_consumer(self, request_id: str, session_id: str, scope: Scope) -> None:
@@ -1900,8 +1900,14 @@ class Backend:
             "message": params.messages[0],
             "actor": "user:aide",
         } | params.model_dump(mode="json", include={"context", "instructions"}, exclude_none=True)
+        catalog = self.catalogs.get(frontend_id)
+        if not replay and catalog is None:
+            catalog = self.catalogs[frontend_id] = asyncio.get_running_loop().create_future()
         await self.call(self.seam, "POST", "/message", command=True, json=body)
         if not replay:
+            # The guide can outlive its socket. Page actions still require a live origin.
+            assert catalog is not None
+            self.turn_catalogs[request_id] = catalog
             self.page_origins[request_id] = frontend_id
             self.ensure_consumer(request_id, params.session_id, params.scope)
         return {"accepted": True, "session_id": params.session_id, "request_id": request_id}
