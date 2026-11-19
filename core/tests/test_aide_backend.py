@@ -390,7 +390,7 @@ class _AideContract:
         self._validate(self.param_schemas[method], frame["params"])
 
 
-# Canonical Metta schema at 228b15d985 (session.latest).
+# Matches the canonical Metta AIDE release.
 _AIDE_ASYNCAPI_SHA256 = "1b39520f7d5df6902804d3d0eaa69b356e69ff989ccf458bb5134baba33ab268"
 
 
@@ -2978,16 +2978,13 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
 
     async def scenario(backend, gateway, ctx, hermes):
         session_id = await opened(backend)
-        context = ToolContext.from_env(
-            "orchestrator",
-            {
-                **ctx.env,
-                "IDE_SESSION_ID": session_id,
-                "IDE_TOOL_CALL_ID": "call_view",
-                "OPENROUTER_API_KEY": "fixture",
-                "AIDE_VIEW_MODEL": model,
-            },
-        )
+        env = {
+            **ctx.env,
+            "IDE_SESSION_ID": session_id,
+            "IDE_TOOL_CALL_ID": "call_view",
+            "OPENROUTER_API_KEY": "fixture",
+            "AIDE_VIEW_MODEL": model,
+        }
 
         def script(run_id):
             return [
@@ -3008,11 +3005,14 @@ def test_display_view_in_streaming_turn_and_after_reconnect(system, monkeypatch)
             {"session_id": session_id, "messages": say("Score?"), "scope": WORKSPACE},
         )
         async with await asyncio.start_server(backend.relay, "127.0.0.1", 0) as server:
-            context.env["IDE_REASONING_RELAY"] = f"127.0.0.1:{server.sockets[0].getsockname()[1]}"
+            env["IDE_REASONING_RELAY"] = f"127.0.0.1:{server.sockets[0].getsockname()[1]}"
 
             async def invoke():
                 response = await asyncio.to_thread(
-                    run_tool, "display_view", {"brief": "Score is 8"}, context
+                    run_tool,
+                    "display_view",
+                    {"brief": "Score is 8"},
+                    ToolContext.from_env("orchestrator", env),
                 )
                 assert "prepared" in response and "metric" not in response, response
 
@@ -3173,3 +3173,58 @@ def test_relay_failure_logs_the_observed_stage_and_code(
         assert event[code_field] == (errno.ECONNREFUSED if fault == "refused" else code)
     if trace_headers:
         assert event["otel_trace_id"] == trace_headers[0].split("-")[1]
+
+
+def test_latest_session_matches_play_selection(system):
+    async def scenario(backend, gateway, ctx, hermes):
+        async def listed(**filters):
+            reply = await call(backend, "state.list", {"resource": "sessions", **filters})
+            return reply["result"]["items"]
+
+        assert await listed(latest=True) == []
+        first = await opened(backend)
+        second = await opened(backend, LEAGUE)
+        with sqlite3.connect(ctx.workspace.store_path) as db:
+            db.execute(
+                "UPDATE sessions SET started=? WHERE id=?", ("2026-01-02T00:00:00.000000Z", second)
+            )
+            db.execute(
+                "UPDATE sessions SET started=? WHERE id=?", ("2026-01-01T00:00:00.000000Z", first)
+            )
+
+        assert [s["id"] for s in await listed(latest=True)] == [second]
+        with sqlite3.connect(ctx.workspace.store_path) as db:
+            for i in range(12):
+                op = str(uuid4())
+                at = f"2026-01-03T00:00:{i:02}.000000Z"
+                origin = "client" if i == 0 else "runtime"
+                db.execute(
+                    "INSERT INTO client_admissions(op_id,session_id,kind,status,origin,request,"
+                    "payload,message,created_at) "
+                    "VALUES (?,?,'message','completed',?,?,'{}','hi',?)",
+                    (
+                        op,
+                        first,
+                        origin,
+                        json.dumps({"message": {"role": "user", "content": "hi"}}),
+                        at,
+                    ),
+                )
+                db.execute(
+                    "INSERT INTO events(at,actor,kind,subject)"
+                    "VALUES (?,'test','client.completed',?)",
+                    (at, op),
+                )
+                if i == 0:
+                    user_request = op
+        # The first user request fell outside the ten embedded terminal records.
+        assert [s["id"] for s in await listed(latest=True)] == [second]
+        with sqlite3.connect(ctx.workspace.store_path) as db:
+            db.execute(
+                "INSERT INTO events(at,actor,kind,subject)VALUES (?,'test','client.completed',?)",
+                ("2026-01-04T00:00:00.000000Z", user_request),
+            )
+        expected = next(s for s in await listed() if s["id"] == first)
+        assert await listed(latest=True) == [expected]
+
+    run(system, scenario, watch=False)
