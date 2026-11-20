@@ -214,7 +214,7 @@ then exits and the normal container restart policy replaces that runtime; a fres
 clears the obligation before HTTP admission opens. Later chat inputs can then proceed. Release requests stop the recorded worker, then clear ownership and reservation;
 exhausted worker recovery records a failed Task for normal Orchestrator review.
 The stronger lifecycle v2 and descendant/delivery guarantees remain a separate future design.
-Merging changes here triggers `.github/workflows/release-hermes.yml` and the hosted image release.
+Merging changes here releases no hosted image (see Releases).
 
 Recovery frequency is available as `runtime_recovery_count` in `/status` and `research watcher status`.
 The image emits a typed `workspace_runtime_recovery` event before recycling, with workspace and boot IDs.
@@ -360,17 +360,11 @@ untouched and the workspace is paused until the matching release runs again.
 
 ## Releases
 
-A push to `main` touching the paths in `.github/workflows/release-hermes.yml` (what the image holds)
-dispatches Metta's image release for the `main` channel, unless the last nightly read-only platform
-check (`research platform check --read-only`) failed.
+This repository no longer releases a hosted image. Both platform channels release the aide-harness
+image: `main` from its `main` branch and `beta` from its `beta` branch (Metta spec 0161). Hosted
+ide-distributions workspaces are deleted before main's first aide-harness release.
 
-This repository releases the `main` channel only, and has no `beta` branch. The `beta` channel, which
-Softmax team members opt their workspace into on softmax.com, is a different image: the one in the
-aide-harness repository, released without a canary. Do not create a `beta` branch here.
-
-Metta's `deploy-hermes-agent.yml` builds `image/Dockerfile`, runs `image/system_tests/start-stop.sh`,
-publishes the digest and dispatches the `main` channel's qualification job.
-None of these sends a model request. The acceptance scenario ("submit the starter as my champion" on
+No check here sends a model request. The acceptance scenario ("submit the starter as my champion" on
 a new workspace ends in a submission) runs scripted, with no model, as a pull request check
 (`core/tests/scenarios/test_seam_end_to_end.py`); its real-gateway form needs a model key, so it
 runs by hand (`docs/local-end-to-end.md`). The daily lock refresh keeps `coworld` and `softmax-cli`
